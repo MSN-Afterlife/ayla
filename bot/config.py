@@ -18,6 +18,10 @@ class Settings:
     youtube_api_key: str | None = None
     google_search_api_key: str | None = None
     google_search_engine_id: str | None = None
+    levels_database_path: str = "data/levels.sqlite3"
+    levels_xp_min: int = 15
+    levels_xp_max: int = 25
+    levels_cooldown_seconds: int = 60
 
 
 def load_settings() -> Settings:
@@ -40,6 +44,10 @@ def load_settings() -> Settings:
         youtube_api_key=os.getenv("YOUTUBE_API_KEY"),
         google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
         google_search_engine_id=os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
+        levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),
+        levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),
+        levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
+        levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),
     )
 
 

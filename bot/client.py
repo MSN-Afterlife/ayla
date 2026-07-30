@@ -3,6 +3,7 @@ from discord.ext import commands
 
 from bot.commands.basic import setup_basic_commands
 from bot.commands.interactions import setup_interaction_commands
+from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
 from bot.config import Settings
 from bot.events.messages import setup_message_events
@@ -25,5 +26,6 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_basic_commands(bot)
     setup_media_commands(bot, settings)
     setup_interaction_commands(bot, settings)
+    setup_level_commands(bot, settings)
     setup_message_events(bot, settings)
     return bot

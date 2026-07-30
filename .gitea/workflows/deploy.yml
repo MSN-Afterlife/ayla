@@ -1,0 +1,29 @@
+name: Deploy Lyn
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: lyn-deploy
+    steps:
+      - name: Check out the pushed revision
+        uses: actions/checkout@v4
+
+      - name: Build and restart Lyn
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir=/home/maycon/bots/meu-bot/runtime
+          test -s "$runtime_dir/lyn.env"
+          mkdir -p "$runtime_dir/data"
+          docker build --pull --tag meu-bot:latest .
+          docker rm --force meu-bot 2>/dev/null || true
+          docker run --detach \
+            --name meu-bot \
+            --restart unless-stopped \
+            --env-file "$runtime_dir/lyn.env" \
+            --volume "$runtime_dir/data:/app/data" \
+            meu-bot:latest

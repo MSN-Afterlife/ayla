@@ -139,9 +139,29 @@ class MediaSearch:
         async with aiohttp.ClientSession() as session:
             async with session.get(request_url, headers=headers, timeout=10) as response:
                 if response.status != 200:
-                    raise MediaSearchError("A fonte de midia retornou erro. Verifique a chave da API e tente de novo.")
+                    details = await self._error_details(response)
+                    raise MediaSearchError(f"A fonte de midia retornou erro ({response.status}). {details}")
 
                 return await response.json()
+
+    async def _error_details(self, response: aiohttp.ClientResponse) -> str:
+        try:
+            data = await response.json(content_type=None)
+        except Exception:
+            return "Verifique a chave da API e tente de novo."
+
+        if not isinstance(data, dict):
+            return "Verifique a chave da API e tente de novo."
+
+        error = data.get("error", {})
+        message = error.get("message") if isinstance(error, dict) else None
+        status = error.get("status") if isinstance(error, dict) else None
+        if message and status:
+            return f"{status}: {message}"
+        if message:
+            return message
+
+        return "Verifique a chave da API e tente de novo."
 
     def _extract_first_url(self, data: Any) -> str:
         for candidate in self._walk(data):

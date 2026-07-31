@@ -24,7 +24,7 @@ jobs:
           env_file="$GITHUB_WORKSPACE/.env"
           test -s "$env_file"
           mkdir -p "$runtime_dir/data"
-          docker build --pull --tag meu-bot:latest .
+          docker build --tag meu-bot:latest .
           docker rm --force meu-bot 2>/dev/null || true
           docker run --detach \
             --name meu-bot \

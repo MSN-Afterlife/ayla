@@ -78,8 +78,9 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
 
     @bot.tree.command(name="help", description="Abre o menu de ajuda do bot.")
     async def help_slash(interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         view = HelpView("/")
-        await interaction.response.send_message(embed=build_help_embed("inicio", "/"), view=view)
+        await interaction.followup.send(embed=build_help_embed("inicio", "/"), view=view)
 
 
 class HelpView(discord.ui.View):
@@ -98,8 +99,9 @@ class HelpButton(discord.ui.Button):
         self._prefix = prefix
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         view = HelpView(self._prefix)
-        await interaction.response.edit_message(embed=build_help_embed(self._category_id, self._prefix), view=view)
+        await interaction.edit_original_response(embed=build_help_embed(self._category_id, self._prefix), view=view)
 
 
 def build_help_embed(category_id: str, prefix: str) -> discord.Embed:

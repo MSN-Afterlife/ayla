@@ -18,6 +18,8 @@ class Settings:
     youtube_api_key: str | None = None
     google_search_api_key: str | None = None
     google_search_engine_id: str | None = None
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
     levels_database_path: str = "data/levels.sqlite3"
     levels_xp_min: int = 15
     levels_xp_max: int = 25
@@ -45,6 +47,8 @@ def load_settings() -> Settings:
         youtube_api_key=os.getenv("YOUTUBE_API_KEY"),
         google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
         google_search_engine_id=os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),
         levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),

@@ -12,7 +12,7 @@ from bot.services.level_service import LevelService
 def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: ChatConfigStore) -> None:
     character = load_character(settings.character_file)
     memory = ConversationStore(limit=settings.memory_limit)
-    chat_engine = ChatEngine(character)
+    chat_engine = ChatEngine(character, settings)
     level_service = LevelService(settings)
 
     @bot.event

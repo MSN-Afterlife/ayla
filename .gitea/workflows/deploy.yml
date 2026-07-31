@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           runtime_dir=/home/maycon/bots/meu-bot/runtime
-          env_file=/run/secrets/lyn.env
+          env_file="$GITHUB_WORKSPACE/.env"
           test -s "$env_file"
           mkdir -p "$runtime_dir/data"
           docker build --pull --tag meu-bot:latest .

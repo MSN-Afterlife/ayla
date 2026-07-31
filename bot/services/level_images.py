@@ -7,6 +7,7 @@ from PIL import ImageDraw
 from PIL import ImageFont
 
 from bot.services.level_service import LevelProfile
+from bot.services.level_service import ProfileCustomization
 
 
 WIDTH = 980
@@ -17,18 +18,22 @@ async def build_profile_card(
     member: discord.Member | discord.User,
     profile: LevelProfile,
     scope: str,
-    background_url: str | None = None,
+    customization: ProfileCustomization | None = None,
+    guild: discord.Guild | None = None,
 ) -> discord.File:
-    image = await _profile_background(WIDTH, 360, background_url)
+    customization = customization or ProfileCustomization()
+    image = await _profile_background(WIDTH, 400, customization.background_url, customization.background_mode)
     draw = ImageDraw.Draw(image)
     font_big = _font(42, bold=True)
     font_medium = _font(28, bold=True)
     font_small = _font(22)
+    font_about = _font(19)
+    font_tiny = _font(16, bold=True)
 
     avatar = await _avatar_image(_avatar_url(member, 256), 142, fallback=member.display_name)
     image.paste(avatar, (52, 92), avatar)
 
-    draw.text((52, 34), scope.upper(), fill=(170, 190, 225), font=font_small)
+    await _draw_guild_badge(image, draw, guild, scope)
     draw.text((220, 88), _fit_text(draw, member.display_name, font_big, 520), fill=(250, 252, 255), font=font_big)
     draw.text((222, 138), f"#{profile.rank} no ranking", fill=(135, 225, 170), font=font_medium)
 
@@ -36,10 +41,14 @@ async def build_profile_card(
     needed = max(profile.next_level_xp - profile.current_level_xp, 1)
     percent = min(progress / needed, 1)
 
-    _stat_box(draw, 220, 202, "LEVEL", str(profile.level))
-    _stat_box(draw, 404, 202, "XP TOTAL", str(profile.xp))
-    _stat_box(draw, 622, 202, "PROGRESSO", f"{progress}/{needed}")
-    _progress(draw, 220, 306, 700, 20, percent)
+    _stat_box(draw, 220, 198, "LEVEL", str(profile.level))
+    _stat_box(draw, 404, 198, "XP TOTAL", str(profile.xp))
+    _stat_box(draw, 622, 198, "PROGRESSO", f"{progress}/{needed}")
+    _progress(draw, 220, 292, 700, 18, percent)
+
+    about = customization.about or "Sem sobre mim ainda."
+    draw.text((52, 330), "SOBRE MIM", fill=(146, 164, 198), font=font_tiny)
+    draw.text((52, 352), _fit_text(draw, about, font_about, 860), fill=(235, 240, 248), font=font_about)
 
     return _file(image, "rank-card.png")
 
@@ -103,17 +112,41 @@ def _background(width: int, height: int) -> Image.Image:
     return image
 
 
-async def _profile_background(width: int, height: int, url: str | None) -> Image.Image:
+async def _profile_background(width: int, height: int, url: str | None, mode: str) -> Image.Image:
     image = await _remote_image(url) if url else None
     if image is None:
         return _background(width, height)
 
-    image = _cover(image, width, height).convert("RGB")
+    if mode == "contain":
+        image = _contain(image, width, height).convert("RGB")
+    elif mode == "stretch":
+        image = image.resize((width, height)).convert("RGB")
+    else:
+        image = _cover(image, width, height).convert("RGB")
     overlay = Image.new("RGBA", (width, height), (8, 12, 22, 138))
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     ImageDraw.Draw(panel).rounded_rectangle((32, 74, width - 32, height - 34), radius=28, fill=(12, 18, 32, 178))
     return Image.alpha_composite(image.convert("RGBA"), panel).convert("RGB")
+
+
+async def _draw_guild_badge(
+    image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    guild: discord.Guild | None,
+    fallback_text: str,
+) -> None:
+    font = _font(20, bold=True)
+    small = _font(15)
+    text = guild.name if guild else fallback_text
+    x = 52
+    y = 28
+
+    icon_url = guild.icon.replace(format="png", size=96).url if guild and guild.icon else None
+    icon = await _avatar_image(icon_url, 42, fallback=text)
+    image.paste(icon, (x, y), icon)
+    draw.text((x + 54, y + 1), _fit_text(draw, text, font, 360), fill=(250, 252, 255), font=font)
+    draw.text((x + 54, y + 25), "perfil do servidor", fill=(170, 190, 225), font=small)
 
 
 async def _remote_image(url: str | None) -> Image.Image | None:
@@ -157,6 +190,17 @@ def _cover(image: Image.Image, width: int, height: int) -> Image.Image:
     left = (resized.width - width) // 2
     top = (resized.height - height) // 2
     return resized.crop((left, top, left + width, top + height))
+
+
+def _contain(image: Image.Image, width: int, height: int) -> Image.Image:
+    source_width, source_height = image.size
+    scale = min(width / source_width, height / source_height)
+    resized = image.resize((int(source_width * scale), int(source_height * scale)))
+    canvas = Image.new("RGB", (width, height), (12, 16, 27))
+    left = (width - resized.width) // 2
+    top = (height - resized.height) // 2
+    canvas.paste(resized, (left, top))
+    return canvas
 
 
 def _avatar_url(member: discord.Member | discord.User, size: int) -> str:

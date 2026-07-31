@@ -24,8 +24,8 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profile = level_service.get_guild_profile(ctx.guild.id, target.id, target.display_name)
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile, f"Rank local - {ctx.guild.name}", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile, f"Rank local - {ctx.guild.name}", customization, ctx.guild)
         await ctx.send(file=file)
 
     @bot.tree.command(name="level", description="Mostra seu level e rank local.")
@@ -38,16 +38,16 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
         profile = level_service.get_guild_profile(interaction.guild.id, target.id, target.display_name)
         await interaction.response.defer()
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile, f"Rank local - {interaction.guild.name}", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile, f"Rank local - {interaction.guild.name}", customization, interaction.guild)
         await interaction.followup.send(file=file)
 
     @bot.command(name="levelglobal", aliases=["globallevel", "globalrank", "rankglobal"])
     async def level_global(ctx: commands.Context, member: discord.Member | None = None) -> None:
         target = member or ctx.author
         profile = level_service.get_global_profile(target.id, target.display_name)
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile, "Rank global", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile, "Rank global", customization, ctx.guild)
         await ctx.send(file=file)
 
     @bot.tree.command(name="levelglobal", description="Mostra seu level e rank global.")
@@ -56,8 +56,8 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         target = member or interaction.user
         profile = level_service.get_global_profile(target.id, target.display_name)
         await interaction.response.defer()
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile, "Rank global", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile, "Rank global", customization, interaction.guild)
         await interaction.followup.send(file=file)
 
     @bot.command(name="perfil", aliases=["profile"])
@@ -68,14 +68,29 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profile_data = level_service.get_guild_profile(ctx.guild.id, target.id, target.display_name)
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile_data, f"Perfil - {ctx.guild.name}", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile_data, f"Perfil - {ctx.guild.name}", customization, ctx.guild)
         await ctx.send(file=file)
 
     @bot.command(name="perfilbg", aliases=["profilebg", "backgroundperfil"])
     async def profile_background(ctx: commands.Context, *, url: str) -> None:
         level_service.set_profile_background(ctx.author.id, url)
         await ctx.send("Background do seu perfil atualizado.")
+
+    @bot.command(name="perfilbgmodo", aliases=["profilebgmode"])
+    async def profile_background_mode(ctx: commands.Context, mode: str) -> None:
+        mode = mode.lower()
+        if mode not in {"cover", "contain", "stretch"}:
+            await ctx.send("Modo invalido. Use: cover, contain ou stretch.")
+            return
+
+        level_service.set_profile_background_mode(ctx.author.id, mode)
+        await ctx.send(f"Modo do background atualizado para `{mode}`.")
+
+    @bot.command(name="perfilsobre", aliases=["profileabout"])
+    async def profile_about(ctx: commands.Context, *, about: str) -> None:
+        level_service.set_profile_about(ctx.author.id, about[:120])
+        await ctx.send("Sobre mim atualizado.")
 
     @bot.command(name="perfilbgbuscar", aliases=["buscarperfilbg", "profilebgsearch"])
     async def search_profile_background(ctx: commands.Context, *, query: str) -> None:
@@ -103,8 +118,8 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
         await interaction.response.defer()
         profile_data = level_service.get_guild_profile(interaction.guild.id, target.id, target.display_name)
-        background_url = level_service.get_profile_background(target.id)
-        file = await build_profile_card(target, profile_data, f"Perfil - {interaction.guild.name}", background_url)
+        customization = level_service.get_profile_customization(target.id)
+        file = await build_profile_card(target, profile_data, f"Perfil - {interaction.guild.name}", customization, interaction.guild)
         await interaction.followup.send(file=file)
 
     @profile_group.command(name="background", description="Define o background do seu perfil por URL ou anexo.")
@@ -121,6 +136,34 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
         level_service.set_profile_background(interaction.user.id, background_url)
         await interaction.response.send_message("Background do seu perfil atualizado.", ephemeral=True)
+
+    @profile_group.command(name="modo", description="Define como o background se encaixa no perfil.")
+    @app_commands.describe(modo="cover corta preenchendo, contain mostra tudo, stretch estica.")
+    @app_commands.choices(
+        modo=[
+            app_commands.Choice(name="cover", value="cover"),
+            app_commands.Choice(name="contain", value="contain"),
+            app_commands.Choice(name="stretch", value="stretch"),
+        ]
+    )
+    async def profile_background_mode_slash(interaction: discord.Interaction, modo: app_commands.Choice[str]) -> None:
+        level_service.set_profile_background_mode(interaction.user.id, modo.value)
+        await interaction.response.send_message(f"Modo do background atualizado para `{modo.value}`.", ephemeral=True)
+
+    @profile_group.command(name="sobre", description="Define o campo sobre mim do seu perfil.")
+    @app_commands.describe(texto="Texto curto que aparece no seu perfil.")
+    async def profile_about_slash(interaction: discord.Interaction, texto: str) -> None:
+        level_service.set_profile_about(interaction.user.id, texto[:120])
+        await interaction.response.send_message("Sobre mim atualizado.", ephemeral=True)
+
+    @profile_group.command(name="status", description="Mostra suas configuracoes de perfil.")
+    async def profile_status_slash(interaction: discord.Interaction) -> None:
+        customization = level_service.get_profile_customization(interaction.user.id)
+        embed = discord.Embed(title="Perfil", color=0x5865F2)
+        embed.add_field(name="Background", value=customization.background_url or "Nenhum", inline=False)
+        embed.add_field(name="Modo", value=customization.background_mode, inline=True)
+        embed.add_field(name="Sobre mim", value=customization.about or "Nenhum", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @profile_group.command(name="buscarbackground", description="Busca uma imagem e usa como background do seu perfil.")
     @app_commands.describe(busca="Termo para buscar a imagem.")

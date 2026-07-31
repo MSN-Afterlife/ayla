@@ -19,6 +19,13 @@ class LevelProfile:
     rank: int
 
 
+@dataclass(frozen=True)
+class ProfileCustomization:
+    background_url: str | None = None
+    background_mode: str = "cover"
+    about: str | None = None
+
+
 class LevelService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -100,14 +107,24 @@ class LevelService:
 
         return [self._profile_from_row(row, row["user_id"], row["user_name"], index + 1) for index, row in enumerate(rows)]
 
-    def get_profile_background(self, user_id: int) -> str | None:
+    def get_profile_customization(self, user_id: int) -> ProfileCustomization:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT background_url FROM profile_backgrounds WHERE user_id = ?",
+                "SELECT background_url, background_mode, about FROM profile_backgrounds WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
 
-        return row["background_url"] if row else None
+        if not row:
+            return ProfileCustomization()
+
+        return ProfileCustomization(
+            background_url=row["background_url"],
+            background_mode=row["background_mode"] or "cover",
+            about=row["about"],
+        )
+
+    def get_profile_background(self, user_id: int) -> str | None:
+        return self.get_profile_customization(user_id).background_url
 
     def set_profile_background(self, user_id: int, background_url: str) -> None:
         now = int(time.time())
@@ -121,6 +138,36 @@ class LevelService:
                     updated_at = excluded.updated_at
                 """,
                 (user_id, background_url, now),
+            )
+            connection.commit()
+
+    def set_profile_background_mode(self, user_id: int, background_mode: str) -> None:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO profile_backgrounds (user_id, background_url, background_mode, updated_at)
+                VALUES (?, COALESCE((SELECT background_url FROM profile_backgrounds WHERE user_id = ?), ''), ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    background_mode = excluded.background_mode,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, user_id, background_mode, now),
+            )
+            connection.commit()
+
+    def set_profile_about(self, user_id: int, about: str) -> None:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO profile_backgrounds (user_id, background_url, about, updated_at)
+                VALUES (?, COALESCE((SELECT background_url FROM profile_backgrounds WHERE user_id = ?), ''), ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    about = excluded.about,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, user_id, about, now),
             )
             connection.commit()
 
@@ -168,16 +215,25 @@ class LevelService:
                 CREATE TABLE IF NOT EXISTS profile_backgrounds (
                     user_id INTEGER PRIMARY KEY,
                     background_url TEXT NOT NULL,
+                    background_mode TEXT NOT NULL DEFAULT 'cover',
+                    about TEXT,
                     updated_at INTEGER NOT NULL
                 )
                 """
             )
+            self._ensure_column(connection, "profile_backgrounds", "background_mode", "TEXT NOT NULL DEFAULT 'cover'")
+            self._ensure_column(connection, "profile_backgrounds", "about", "TEXT")
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _add_xp(
         self,

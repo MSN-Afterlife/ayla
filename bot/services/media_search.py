@@ -1,9 +1,15 @@
+import asyncio
 from typing import Any
 from urllib.parse import urlencode
 
 import aiohttp
 
 from bot.config import Settings
+
+try:
+    from ddgs import DDGS
+except ImportError:
+    DDGS = None
 
 
 class MediaSearchError(Exception):
@@ -87,10 +93,48 @@ class MediaSearch:
         return self._extract_first_url(data)
 
     async def search_image(self, query: str) -> str:
+        providers = self._settings.image_provider_order or ["ddgs", "google"]
+        errors: list[str] = []
+
+        for provider in providers:
+            try:
+                if provider == "ddgs":
+                    return await self._search_ddgs_image(query)
+                if provider == "google":
+                    return await self._search_google_image(query)
+
+                errors.append(f"{provider}: provedor desconhecido")
+            except MediaSearchError as error:
+                errors.append(f"{provider}: {error}")
+
+        details = "; ".join(errors)
+        raise MediaSearchError(f"Nao encontrei imagem nas fontes configuradas. {details}")
+
+    async def _search_ddgs_image(self, query: str) -> str:
+        if DDGS is None:
+            raise MediaSearchError("instale ddgs ou use IMAGE_PROVIDER_ORDER=google")
+
+        return await asyncio.to_thread(self._search_ddgs_image_sync, query)
+
+    def _search_ddgs_image_sync(self, query: str) -> str:
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.images(query, max_results=8, safesearch="moderate"))
+        except Exception as error:
+            raise MediaSearchError(f"DuckDuckGo falhou: {error}") from error
+
+        for item in results:
+            url = item.get("image") or item.get("thumbnail")
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+
+        raise MediaSearchError("nenhuma imagem encontrada")
+
+    async def _search_google_image(self, query: str) -> str:
         api_key = self._settings.google_search_api_key
         engine_id = self._settings.google_search_engine_id
         if not api_key or not engine_id:
-            raise MediaSearchError("Configure GOOGLE_SEARCH_API_KEY e GOOGLE_SEARCH_ENGINE_ID no .env para usar !imagem.")
+            raise MediaSearchError("configure GOOGLE_SEARCH_API_KEY e GOOGLE_SEARCH_ENGINE_ID")
 
         params = {
             "key": api_key,

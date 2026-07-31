@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.commands.basic import setup_basic_commands
@@ -27,9 +28,10 @@ def create_bot(settings: Settings) -> commands.Bot:
     @bot.event
     async def on_ready() -> None:
         if not bot._slash_synced:
-            synced = await bot.tree.sync()
+            synced = await _sync_slash_commands(bot)
             bot._slash_synced = True
-            print(f"{len(synced)} comandos slash sincronizados.")
+            names = ", ".join(command.name for command in synced)
+            print(f"{len(synced)} comandos slash sincronizados: {names}")
 
         print(f"Bot conectado como {bot.user}")
 
@@ -41,3 +43,18 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
     return bot
+
+
+async def _sync_slash_commands(bot: commands.Bot) -> list[app_commands.AppCommand]:
+    if bot.guilds:
+        synced: list[app_commands.AppCommand] = []
+        for guild in bot.guilds:
+            guild_object = discord.Object(id=guild.id)
+            bot.tree.copy_global_to(guild=guild_object)
+            guild_synced = await bot.tree.sync(guild=guild_object)
+            synced.extend(guild_synced)
+            print(f"{len(guild_synced)} comandos slash sincronizados no servidor {guild.name} ({guild.id}).")
+
+        return synced
+
+    return await bot.tree.sync()

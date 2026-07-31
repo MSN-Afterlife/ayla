@@ -100,6 +100,35 @@ class LevelService:
 
         return [self._profile_from_row(row, row["user_id"], row["user_name"], index + 1) for index, row in enumerate(rows)]
 
+    def get_profile_background(self, user_id: int) -> str | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT background_url FROM profile_backgrounds WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+        return row["background_url"] if row else None
+
+    def set_profile_background(self, user_id: int, background_url: str) -> None:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO profile_backgrounds (user_id, background_url, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    background_url = excluded.background_url,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, background_url, now),
+            )
+            connection.commit()
+
+    def clear_profile_background(self, user_id: int) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute("DELETE FROM profile_backgrounds WHERE user_id = ?", (user_id,))
+            connection.commit()
+
     def _initialize(self) -> None:
         with closing(self._connect()) as connection:
             connection.execute(
@@ -131,6 +160,15 @@ class LevelService:
                     user_id INTEGER NOT NULL,
                     last_xp_at INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS profile_backgrounds (
+                    user_id INTEGER PRIMARY KEY,
+                    background_url TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
                 )
                 """
             )

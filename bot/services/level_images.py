@@ -13,14 +13,19 @@ WIDTH = 980
 ROW_HEIGHT = 92
 
 
-async def build_profile_card(member: discord.Member | discord.User, profile: LevelProfile, scope: str) -> discord.File:
-    image = _background(WIDTH, 360)
+async def build_profile_card(
+    member: discord.Member | discord.User,
+    profile: LevelProfile,
+    scope: str,
+    background_url: str | None = None,
+) -> discord.File:
+    image = await _profile_background(WIDTH, 360, background_url)
     draw = ImageDraw.Draw(image)
     font_big = _font(42, bold=True)
     font_medium = _font(28, bold=True)
     font_small = _font(22)
 
-    avatar = await _avatar_image(member.display_avatar.url, 142)
+    avatar = await _avatar_image(_avatar_url(member, 256), 142, fallback=member.display_name)
     image.paste(avatar, (52, 92), avatar)
 
     draw.text((52, 34), scope.upper(), fill=(170, 190, 225), font=font_small)
@@ -39,7 +44,13 @@ async def build_profile_card(member: discord.Member | discord.User, profile: Lev
     return _file(image, "rank-card.png")
 
 
-async def build_leaderboard_card(title: str, scope: str, profiles: list[LevelProfile], guild: discord.Guild | None) -> discord.File:
+async def build_leaderboard_card(
+    title: str,
+    scope: str,
+    profiles: list[LevelProfile],
+    guild: discord.Guild | None,
+    users: dict[int, discord.Member | discord.User] | None = None,
+) -> discord.File:
     height = 170 + max(len(profiles), 1) * ROW_HEIGHT
     image = _background(WIDTH, height)
     draw = ImageDraw.Draw(image)
@@ -58,7 +69,7 @@ async def build_leaderboard_card(title: str, scope: str, profiles: list[LevelPro
 
     for index, profile in enumerate(profiles):
         y = 140 + index * ROW_HEIGHT
-        member = guild.get_member(profile.user_id) if guild else None
+        member = users.get(profile.user_id) if users else guild.get_member(profile.user_id) if guild else None
         name = member.display_name if member else profile.user_name
 
         accent = (255, 207, 86) if index == 0 else (112, 180, 255) if index == 1 else (148, 232, 180)
@@ -66,7 +77,7 @@ async def build_leaderboard_card(title: str, scope: str, profiles: list[LevelPro
         draw.rounded_rectangle((42, y, 52, y + 74), radius=5, fill=accent)
         draw.text((72, y + 20), f"#{profile.rank}", fill=accent, font=font_rank)
 
-        avatar_url = member.display_avatar.url if member else None
+        avatar_url = _avatar_url(member, 128) if member else None
         avatar = await _avatar_image(avatar_url, 58, fallback=name)
         image.paste(avatar, (150, y + 8), avatar)
 
@@ -92,16 +103,37 @@ def _background(width: int, height: int) -> Image.Image:
     return image
 
 
+async def _profile_background(width: int, height: int, url: str | None) -> Image.Image:
+    image = await _remote_image(url) if url else None
+    if image is None:
+        return _background(width, height)
+
+    image = _cover(image, width, height).convert("RGB")
+    overlay = Image.new("RGBA", (width, height), (8, 12, 22, 138))
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    ImageDraw.Draw(panel).rounded_rectangle((32, 74, width - 32, height - 34), radius=28, fill=(12, 18, 32, 178))
+    return Image.alpha_composite(image.convert("RGBA"), panel).convert("RGB")
+
+
+async def _remote_image(url: str | None) -> Image.Image | None:
+    if not url:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    return None
+                return Image.open(BytesIO(await response.read())).convert("RGB")
+    except Exception:
+        return None
+
+
 async def _avatar_image(url: str | None, size: int, fallback: str = "?") -> Image.Image:
     image = None
     if url:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=8) as response:
-                    if response.status == 200:
-                        image = Image.open(BytesIO(await response.read())).convert("RGB")
-        except Exception:
-            image = None
+        image = await _remote_image(url)
 
     if image is None:
         image = Image.new("RGB", (size, size), (56, 73, 108))
@@ -116,6 +148,19 @@ async def _avatar_image(url: str | None, size: int, fallback: str = "?") -> Imag
     ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
     image.putalpha(mask)
     return image
+
+
+def _cover(image: Image.Image, width: int, height: int) -> Image.Image:
+    source_width, source_height = image.size
+    scale = max(width / source_width, height / source_height)
+    resized = image.resize((int(source_width * scale), int(source_height * scale)))
+    left = (resized.width - width) // 2
+    top = (resized.height - height) // 2
+    return resized.crop((left, top, left + width, top + height))
+
+
+def _avatar_url(member: discord.Member | discord.User, size: int) -> str:
+    return member.display_avatar.replace(format="png", size=size).url
 
 
 def _stat_box(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, value: str) -> None:

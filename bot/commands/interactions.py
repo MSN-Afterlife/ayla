@@ -89,10 +89,10 @@ INTERACTIONS: list[InteractionAction] = [
 
 def setup_interaction_commands(bot: commands.Bot, settings: Settings) -> None:
     media_search = MediaSearch(settings)
+    actions_by_name = {action.name: action for action in INTERACTIONS}
 
     for action in INTERACTIONS:
         bot.add_command(_build_interaction_command(action, media_search))
-        bot.tree.add_command(_build_interaction_slash_command(action, media_search))
 
     @bot.command(name="interacoes", aliases=["interactions", "acoes"])
     async def interactions(ctx: commands.Context) -> None:
@@ -101,6 +101,24 @@ def setup_interaction_commands(bot: commands.Bot, settings: Settings) -> None:
     @bot.tree.command(name="interacoes", description="Lista os comandos de interacao social.")
     async def interactions_slash(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=_interactions_list_embed())
+
+    @bot.tree.command(name="interagir", description="Usa uma interacao social.")
+    @app_commands.describe(acao="Nome da interacao.", target="Usuario alvo.")
+    @app_commands.autocomplete(acao=_interaction_autocomplete)
+    async def interact_slash(interaction: discord.Interaction, acao: str, target: discord.Member | None = None) -> None:
+        action = actions_by_name.get(acao.lower())
+        if not action:
+            await interaction.response.send_message("Nao conheco essa interacao. Use `/interacoes` para ver a lista.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        embed = await _build_interaction_embed(
+            action=action,
+            media_search=media_search,
+            author=interaction.user,
+            target=target,
+        )
+        await interaction.followup.send(embed=embed)
 
 
 def _build_interaction_command(action: InteractionAction, media_search: MediaSearch) -> commands.Command:
@@ -129,24 +147,6 @@ def _build_interaction_command(action: InteractionAction, media_search: MediaSea
         await ctx.send(embed=embed)
 
     return commands.Command(callback, name=action.name, aliases=action.aliases)
-
-
-def _build_interaction_slash_command(action: InteractionAction, media_search: MediaSearch) -> app_commands.Command:
-    async def callback(interaction: discord.Interaction, target: discord.Member | None = None) -> None:
-        await interaction.response.defer()
-        embed = await _build_interaction_embed(
-            action=action,
-            media_search=media_search,
-            author=interaction.user,
-            target=target,
-        )
-        await interaction.followup.send(embed=embed)
-
-    return app_commands.Command(
-        name=action.name,
-        description=f"Interacao social: {action.name}.",
-        callback=callback,
-    )
 
 
 async def _build_interaction_embed(
@@ -179,11 +179,22 @@ async def _build_interaction_embed(
 
 
 def _interactions_list_embed() -> discord.Embed:
-    names = ", ".join(f"`/{action.name}`" for action in INTERACTIONS)
+    names = ", ".join(f"`{action.name}`" for action in INTERACTIONS)
     embed = discord.Embed(
         title=f"{len(INTERACTIONS)} comandos de interacao",
         description=names,
         color=0x5865F2,
     )
-    embed.set_footer(text="Use: /slap usuario ou +slap @usuario")
+    embed.set_footer(text="Use: /interagir acao:hug target:usuario ou +hug @usuario")
     return embed
+
+
+async def _interaction_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    del interaction
+    current = current.lower()
+    matches = [
+        action
+        for action in INTERACTIONS
+        if current in action.name or any(current in alias for alias in action.aliases)
+    ]
+    return [app_commands.Choice(name=action.name, value=action.name) for action in matches[:25]]

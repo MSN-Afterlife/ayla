@@ -46,6 +46,12 @@ def create_bot(settings: Settings) -> commands.Bot:
 
 
 async def _sync_slash_commands(bot: commands.Bot) -> list[app_commands.AppCommand]:
+    local_commands = bot.tree.get_commands()
+    bot.tree.clear_commands(guild=None)
+    await bot.tree.sync()
+    for command in local_commands:
+        bot.tree.add_command(command)
+
     if bot.guilds:
         synced: list[app_commands.AppCommand] = []
         for guild in bot.guilds:

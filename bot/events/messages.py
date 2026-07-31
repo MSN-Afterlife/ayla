@@ -5,10 +5,11 @@ from bot.characters.loader import load_character
 from bot.config import Settings
 from bot.memory.conversation_store import ConversationStore
 from bot.services.chat_engine import ChatEngine
+from bot.services.chat_config import ChatConfigStore
 from bot.services.level_service import LevelService
 
 
-def setup_message_events(bot: commands.Bot, settings: Settings) -> None:
+def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: ChatConfigStore) -> None:
     character = load_character(settings.character_file)
     memory = ConversationStore(limit=settings.memory_limit)
     chat_engine = ChatEngine(character)
@@ -31,12 +32,17 @@ def setup_message_events(bot: commands.Bot, settings: Settings) -> None:
                 user_name=message.author.display_name,
             )
 
-        if bot.user and bot.user not in message.mentions:
+        configured_channel_id = chat_config.get_channel_id(message.guild.id) if message.guild else None
+        if configured_channel_id and message.channel.id != configured_channel_id:
+            return
+
+        mentioned = bool(bot.user and bot.user in message.mentions)
+        if not configured_channel_id and not mentioned:
             return
 
         conversation_id = f"{message.guild.id if message.guild else 'dm'}:{message.channel.id}"
         user_name = message.author.display_name
-        content = message.clean_content.replace(f"@{bot.user.display_name}", "").strip() if bot.user else message.clean_content
+        content = _clean_bot_mention(message.clean_content, bot.user.display_name if bot.user else "")
 
         history = memory.get_recent(conversation_id)
         response = await chat_engine.reply(history, user_name, content)
@@ -52,3 +58,10 @@ def _is_command_message(content: str, prefixes) -> bool:
         return content.startswith(prefixes)
 
     return any(content.startswith(prefix) for prefix in prefixes)
+
+
+def _clean_bot_mention(content: str, bot_name: str) -> str:
+    if not bot_name:
+        return content.strip()
+
+    return content.replace(f"@{bot_name}", "").strip()

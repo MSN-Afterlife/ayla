@@ -16,6 +16,7 @@ HELP_CATEGORIES = {
         ),
         "fields": [
             ("Chat", "Mencione o bot em uma mensagem normal para conversar com a persona.", False),
+            ("Canal de chat", "`/chatconfig canal #canal` define um canal fixo para conversa.", False),
             ("Atalho", "`+interacoes` mostra todas as interacoes sociais.", False),
         ],
         "color": 0x5865F2,
@@ -29,6 +30,7 @@ HELP_CATEGORIES = {
             ("`+hello`", "Recebe uma saudacao do bot.", True),
             ("`+say <texto>`", "Faz o bot repetir uma mensagem.", True),
             ("`+calc 10 + 5`", "Calcula soma, subtracao, multiplicacao ou divisao.", False),
+            ("`/chatconfig status`", "Mostra onde o chat com a persona esta ativo.", False),
         ],
         "color": 0x3498DB,
     },

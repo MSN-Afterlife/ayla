@@ -22,6 +22,7 @@ class Settings:
     levels_xp_min: int = 15
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60
+    chat_config_path: str = "data/chat_config.json"
 
 
 def load_settings() -> Settings:
@@ -48,6 +49,7 @@ def load_settings() -> Settings:
         levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
         levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),
+        chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
     )
 
 

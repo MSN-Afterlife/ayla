@@ -5,6 +5,7 @@ from bot.characters.loader import load_character
 from bot.config import Settings
 from bot.memory.conversation_store import ConversationStore
 from bot.services.chat_engine import ChatEngine
+from bot.services.chat_engine import ChatEngineError
 from bot.services.chat_config import ChatConfigStore
 from bot.services.level_service import LevelService
 
@@ -45,7 +46,11 @@ def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: Cha
         content = _clean_bot_mention(message.clean_content, bot.user.display_name if bot.user else "")
 
         history = memory.get_recent(conversation_id)
-        response = await chat_engine.reply(history, user_name, content)
+        try:
+            response = await chat_engine.reply(history, user_name, content)
+        except ChatEngineError as error:
+            await message.channel.send(str(error))
+            return
 
         memory.add(conversation_id, user_name, content)
         memory.add(conversation_id, character.name, response)

@@ -3,6 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
+from bot.services.level_images import build_leaderboard_card
+from bot.services.level_images import build_profile_card
 from bot.services.level_service import LevelProfile
 from bot.services.level_service import LevelService
 
@@ -18,7 +20,8 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profile = level_service.get_guild_profile(ctx.guild.id, target.id, target.display_name)
-        await ctx.send(embed=_profile_embed(target, profile, "Rank local", ctx.guild.name))
+        file = await build_profile_card(target, profile, f"Rank local - {ctx.guild.name}")
+        await ctx.send(file=file)
 
     @bot.tree.command(name="level", description="Mostra seu level e rank local.")
     @app_commands.describe(member="Usuario para consultar.")
@@ -29,20 +32,25 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profile = level_service.get_guild_profile(interaction.guild.id, target.id, target.display_name)
-        await interaction.response.send_message(embed=_profile_embed(target, profile, "Rank local", interaction.guild.name))
+        await interaction.response.defer()
+        file = await build_profile_card(target, profile, f"Rank local - {interaction.guild.name}")
+        await interaction.followup.send(file=file)
 
     @bot.command(name="levelglobal", aliases=["globallevel", "globalrank", "rankglobal"])
     async def level_global(ctx: commands.Context, member: discord.Member | None = None) -> None:
         target = member or ctx.author
         profile = level_service.get_global_profile(target.id, target.display_name)
-        await ctx.send(embed=_profile_embed(target, profile, "Rank global", "Todos os servidores"))
+        file = await build_profile_card(target, profile, "Rank global")
+        await ctx.send(file=file)
 
     @bot.tree.command(name="levelglobal", description="Mostra seu level e rank global.")
     @app_commands.describe(member="Usuario para consultar.")
     async def level_global_slash(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
         target = member or interaction.user
         profile = level_service.get_global_profile(target.id, target.display_name)
-        await interaction.response.send_message(embed=_profile_embed(target, profile, "Rank global", "Todos os servidores"))
+        await interaction.response.defer()
+        file = await build_profile_card(target, profile, "Rank global")
+        await interaction.followup.send(file=file)
 
     @bot.command(name="leaderboard", aliases=["lb", "top", "ranking"])
     async def leaderboard(ctx: commands.Context) -> None:
@@ -51,7 +59,8 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profiles = level_service.get_guild_leaderboard(ctx.guild.id)
-        await ctx.send(embed=_leaderboard_embed("Ranking local", ctx.guild.name, profiles))
+        file = await build_leaderboard_card("Ranking local", ctx.guild.name, profiles, ctx.guild)
+        await ctx.send(file=file)
 
     @bot.tree.command(name="leaderboard", description="Mostra o ranking local de levels.")
     async def leaderboard_slash(interaction: discord.Interaction) -> None:
@@ -60,17 +69,22 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             return
 
         profiles = level_service.get_guild_leaderboard(interaction.guild.id)
-        await interaction.response.send_message(embed=_leaderboard_embed("Ranking local", interaction.guild.name, profiles))
+        await interaction.response.defer()
+        file = await build_leaderboard_card("Ranking local", interaction.guild.name, profiles, interaction.guild)
+        await interaction.followup.send(file=file)
 
     @bot.command(name="leaderboardglobal", aliases=["lbglobal", "topglobal", "rankingglobal"])
     async def leaderboard_global(ctx: commands.Context) -> None:
         profiles = level_service.get_global_leaderboard()
-        await ctx.send(embed=_leaderboard_embed("Ranking global", "Todos os servidores", profiles))
+        file = await build_leaderboard_card("Ranking global", "Todos os servidores", profiles, ctx.guild)
+        await ctx.send(file=file)
 
     @bot.tree.command(name="leaderboardglobal", description="Mostra o ranking global de levels.")
     async def leaderboard_global_slash(interaction: discord.Interaction) -> None:
         profiles = level_service.get_global_leaderboard()
-        await interaction.response.send_message(embed=_leaderboard_embed("Ranking global", "Todos os servidores", profiles))
+        await interaction.response.defer()
+        file = await build_leaderboard_card("Ranking global", "Todos os servidores", profiles, interaction.guild)
+        await interaction.followup.send(file=file)
 
 
 def _profile_embed(member: discord.Member | discord.User, profile: LevelProfile, title: str, scope: str) -> discord.Embed:

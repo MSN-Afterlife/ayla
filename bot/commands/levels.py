@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
@@ -19,11 +20,29 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         profile = level_service.get_guild_profile(ctx.guild.id, target.id, target.display_name)
         await ctx.send(embed=_profile_embed(target, profile, "Rank local", ctx.guild.name))
 
+    @bot.tree.command(name="level", description="Mostra seu level e rank local.")
+    @app_commands.describe(member="Usuario para consultar.")
+    async def level_slash(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        target = member or interaction.user
+        if not interaction.guild:
+            await interaction.response.send_message("Esse comando de level local funciona dentro de um servidor.", ephemeral=True)
+            return
+
+        profile = level_service.get_guild_profile(interaction.guild.id, target.id, target.display_name)
+        await interaction.response.send_message(embed=_profile_embed(target, profile, "Rank local", interaction.guild.name))
+
     @bot.command(name="levelglobal", aliases=["globallevel", "globalrank", "rankglobal"])
     async def level_global(ctx: commands.Context, member: discord.Member | None = None) -> None:
         target = member or ctx.author
         profile = level_service.get_global_profile(target.id, target.display_name)
         await ctx.send(embed=_profile_embed(target, profile, "Rank global", "Todos os servidores"))
+
+    @bot.tree.command(name="levelglobal", description="Mostra seu level e rank global.")
+    @app_commands.describe(member="Usuario para consultar.")
+    async def level_global_slash(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        target = member or interaction.user
+        profile = level_service.get_global_profile(target.id, target.display_name)
+        await interaction.response.send_message(embed=_profile_embed(target, profile, "Rank global", "Todos os servidores"))
 
     @bot.command(name="leaderboard", aliases=["lb", "top", "ranking"])
     async def leaderboard(ctx: commands.Context) -> None:
@@ -34,10 +53,24 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         profiles = level_service.get_guild_leaderboard(ctx.guild.id)
         await ctx.send(embed=_leaderboard_embed("Ranking local", ctx.guild.name, profiles))
 
+    @bot.tree.command(name="leaderboard", description="Mostra o ranking local de levels.")
+    async def leaderboard_slash(interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Esse ranking local funciona dentro de um servidor.", ephemeral=True)
+            return
+
+        profiles = level_service.get_guild_leaderboard(interaction.guild.id)
+        await interaction.response.send_message(embed=_leaderboard_embed("Ranking local", interaction.guild.name, profiles))
+
     @bot.command(name="leaderboardglobal", aliases=["lbglobal", "topglobal", "rankingglobal"])
     async def leaderboard_global(ctx: commands.Context) -> None:
         profiles = level_service.get_global_leaderboard()
         await ctx.send(embed=_leaderboard_embed("Ranking global", "Todos os servidores", profiles))
+
+    @bot.tree.command(name="leaderboardglobal", description="Mostra o ranking global de levels.")
+    async def leaderboard_global_slash(interaction: discord.Interaction) -> None:
+        profiles = level_service.get_global_leaderboard()
+        await interaction.response.send_message(embed=_leaderboard_embed("Ranking global", "Todos os servidores", profiles))
 
 
 def _profile_embed(member: discord.Member | discord.User, profile: LevelProfile, title: str, scope: str) -> discord.Embed:

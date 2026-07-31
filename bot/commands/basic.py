@@ -4,19 +4,19 @@ from bot.services.calculator import calculate
 
 
 def setup_basic_commands(bot: commands.Bot) -> None:
-    @bot.command(name="ping")
+    @bot.hybrid_command(name="ping", description="Testa se o bot esta online.")
     async def ping(ctx: commands.Context) -> None:
         await ctx.send("Pong!")
 
-    @bot.command(name="hello")
+    @bot.hybrid_command(name="hello", description="Recebe uma saudacao do bot.")
     async def hello(ctx: commands.Context) -> None:
         await ctx.send(f"Ola, {ctx.author.mention}! Tudo bem?")
 
-    @bot.command(name="say")
+    @bot.hybrid_command(name="say", description="Faz o bot repetir uma mensagem.")
     async def say(ctx: commands.Context, *, message: str) -> None:
         await ctx.send(message)
 
-    @bot.command(name="calc", aliases=["soma"])
+    @bot.hybrid_command(name="calc", aliases=["soma"], description="Calcula uma operacao simples.")
     async def calc(ctx: commands.Context, a: float, operator: str, b: float) -> None:
         try:
             result = calculate(a, operator, b)

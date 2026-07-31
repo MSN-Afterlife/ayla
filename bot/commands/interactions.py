@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
@@ -91,17 +92,15 @@ def setup_interaction_commands(bot: commands.Bot, settings: Settings) -> None:
 
     for action in INTERACTIONS:
         bot.add_command(_build_interaction_command(action, media_search))
+        bot.tree.add_command(_build_interaction_slash_command(action, media_search))
 
     @bot.command(name="interacoes", aliases=["interactions", "acoes"])
     async def interactions(ctx: commands.Context) -> None:
-        names = ", ".join(f"`+{action.name}`" for action in INTERACTIONS)
-        embed = discord.Embed(
-            title=f"{len(INTERACTIONS)} comandos de interacao",
-            description=names,
-            color=0x5865F2,
-        )
-        embed.set_footer(text="Use: +slap @usuario ou !slap @usuario")
-        await ctx.send(embed=embed)
+        await ctx.send(embed=_interactions_list_embed())
+
+    @bot.tree.command(name="interacoes", description="Lista os comandos de interacao social.")
+    async def interactions_slash(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(embed=_interactions_list_embed())
 
 
 def _build_interaction_command(action: InteractionAction, media_search: MediaSearch) -> commands.Command:
@@ -130,3 +129,61 @@ def _build_interaction_command(action: InteractionAction, media_search: MediaSea
         await ctx.send(embed=embed)
 
     return commands.Command(callback, name=action.name, aliases=action.aliases)
+
+
+def _build_interaction_slash_command(action: InteractionAction, media_search: MediaSearch) -> app_commands.Command:
+    async def callback(interaction: discord.Interaction, target: discord.Member | None = None) -> None:
+        await interaction.response.defer()
+        embed = await _build_interaction_embed(
+            action=action,
+            media_search=media_search,
+            author=interaction.user,
+            target=target,
+        )
+        await interaction.followup.send(embed=embed)
+
+    return app_commands.Command(
+        name=action.name,
+        description=f"Interacao social: {action.name}.",
+        callback=callback,
+    )
+
+
+async def _build_interaction_embed(
+    action: InteractionAction,
+    media_search: MediaSearch,
+    author: discord.Member | discord.User,
+    target: discord.Member | discord.User | None,
+) -> discord.Embed:
+    target_text = target.mention if target else None
+    description = (
+        f"{author.mention} {action.verb} {target_text}!"
+        if target_text
+        else f"{author.mention} {action.self_text}!"
+    )
+
+    embed = discord.Embed(
+        title=action.name.capitalize(),
+        description=description,
+        color=action.color,
+    )
+    embed.set_footer(text=f"Pedido por {author.display_name}")
+
+    try:
+        gif_url = await media_search.search_gif(action.gif_query)
+        embed.set_image(url=gif_url)
+    except MediaSearchError as error:
+        embed.add_field(name="GIF indisponivel", value=str(error), inline=False)
+
+    return embed
+
+
+def _interactions_list_embed() -> discord.Embed:
+    names = ", ".join(f"`/{action.name}`" for action in INTERACTIONS)
+    embed = discord.Embed(
+        title=f"{len(INTERACTIONS)} comandos de interacao",
+        description=names,
+        color=0x5865F2,
+    )
+    embed.set_footer(text="Use: /slap usuario ou +slap @usuario")
+    return embed

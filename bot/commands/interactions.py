@@ -96,11 +96,11 @@ def setup_interaction_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @bot.command(name="interacoes", aliases=["interactions", "acoes"])
     async def interactions(ctx: commands.Context) -> None:
-        await ctx.send(embed=_interactions_list_embed())
+        await ctx.send(embed=_interactions_list_embed(settings.command_prefix))
 
     @bot.tree.command(name="interacoes", description="Lista os comandos de interacao social.")
     async def interactions_slash(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(embed=_interactions_list_embed())
+        await interaction.response.send_message(embed=_interactions_list_embed(settings.command_prefix))
 
     @bot.tree.command(name="interagir", description="Usa uma interacao social.")
     @app_commands.describe(acao="Nome da interacao.", target="Usuario alvo.")
@@ -178,14 +178,14 @@ async def _build_interaction_embed(
     return embed
 
 
-def _interactions_list_embed() -> discord.Embed:
+def _interactions_list_embed(prefix: str) -> discord.Embed:
     names = ", ".join(f"`{action.name}`" for action in INTERACTIONS)
     embed = discord.Embed(
         title=f"{len(INTERACTIONS)} comandos de interacao",
         description=names,
         color=0x5865F2,
     )
-    embed.set_footer(text="Use: /interagir acao:hug target:usuario ou +hug @usuario")
+    embed.set_footer(text=f"Use: /interagir acao:hug target:usuario ou {prefix}hug @usuario")
     return embed
 
 

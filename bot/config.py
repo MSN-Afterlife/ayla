@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
-    command_prefix: str = "!"
+    command_prefix: str = "a!"
     character_file: str = "bot/characters/default.json"
     memory_limit: int = 12
     gif_provider_order: list[str] | None = None
@@ -37,7 +37,7 @@ def load_settings() -> Settings:
 
     return Settings(
         discord_token=token,
-        command_prefix=os.getenv("COMMAND_PREFIX", "!"),
+        command_prefix=os.getenv("COMMAND_PREFIX", "a!"),
         character_file=os.getenv("CHARACTER_FILE", "bot/characters/default.json"),
         memory_limit=int(os.getenv("MEMORY_LIMIT", "12")),
         gif_provider_order=_load_list("GIF_PROVIDER_ORDER", ["klipy", "apileague"]),

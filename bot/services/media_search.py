@@ -154,7 +154,7 @@ class MediaSearch:
     async def search_youtube(self, query: str) -> str:
         api_key = self._settings.youtube_api_key
         if not api_key:
-            raise MediaSearchError("Configure YOUTUBE_API_KEY no .env para usar !youtube.")
+            raise MediaSearchError("Configure YOUTUBE_API_KEY no .env para usar o comando youtube.")
 
         params = {
             "key": api_key,

@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.utils import utcnow
 
 from bot.commands.basic import setup_basic_commands
 from bot.commands.chat_config import setup_chat_config_commands
@@ -17,12 +18,9 @@ def create_bot(settings: Settings) -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
 
-    prefixes = [settings.command_prefix]
-    if "+" not in prefixes:
-        prefixes.append("+")
-
-    bot = commands.Bot(command_prefix=prefixes, intents=intents, help_command=None)
+    bot = commands.Bot(command_prefix=settings.command_prefix, intents=intents, help_command=None)
     bot._slash_synced = False
+    bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)
 
     @bot.event

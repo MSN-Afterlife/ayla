@@ -5,6 +5,7 @@ from discord.utils import utcnow
 
 from bot.commands.basic import setup_basic_commands
 from bot.commands.chat_config import setup_chat_config_commands
+from bot.commands.economy import setup_economy_commands
 from bot.commands.help import setup_help_command
 from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
@@ -40,6 +41,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_interaction_commands(bot, settings)
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)
+    setup_economy_commands(bot, settings)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
     return bot

@@ -6,4 +6,4 @@ aiohttp
 openai
 pillow
 ddgs
-yt-dlp
+yt-dlp[default]

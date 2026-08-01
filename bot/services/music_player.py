@@ -29,6 +29,7 @@ YTDL_OPTIONS = {
     "noplaylist": False,
     "ignoreerrors": True,
     "extract_flat": False,
+    "js_runtimes": {"node": {}},
 }
 
 FFMPEG_RECONNECT_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"

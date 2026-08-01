@@ -76,15 +76,28 @@ HELP_CATEGORIES = {
     "level": {
         "label": "Level",
         "title": "Sistema de level",
-        "description": "XP automatico com ranking local por servidor e ranking global.",
+        "description": "XP automatico com card separado de progresso e ranking.",
         "fields": [
-            ("`{prefix}level` / `{prefix}rank`", "Mostra seu rank local.", False),
-            ("`{prefix}level @user`", "Mostra o rank local de outra pessoa.", False),
+            ("`{prefix}level` / `{prefix}rank`", "Mostra seu level, rank e barra de XP.", False),
+            ("`{prefix}perfil`", "Mostra seu perfil social com sobre mim, economia e background.", False),
+            ("`{prefix}perfilsobre <texto>`", "Atualiza o sobre mim do perfil.", False),
+            ("`{prefix}perfilbgbuscar <busca>`", "Abre uma escolha de imagens para o background.", False),
             ("`{prefix}rankglobal`", "Mostra o rank global.", False),
             ("`{prefix}top` / `{prefix}ranking`", "Mostra o ranking local.", False),
             ("`{prefix}topglobal`", "Mostra o ranking global.", False),
         ],
         "color": 0xF1C40F,
+    },
+    "economia": {
+        "label": "Economia",
+        "title": "Sistema de economia",
+        "description": "Moedas persistentes preparadas para integracao futura com site.",
+        "fields": [
+            ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
+            ("`{prefix}daily`", "Coleta moedas diarias com bonus de streak.", False),
+            ("`{prefix}pagar @user 100`", "Transfere moedas para outra pessoa.", False),
+        ],
+        "color": 0x2ECC71,
     },
 }
 

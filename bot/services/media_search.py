@@ -93,15 +93,19 @@ class MediaSearch:
         return self._extract_first_url(data)
 
     async def search_image(self, query: str) -> str:
+        results = await self.search_images(query, limit=1)
+        return results[0]
+
+    async def search_images(self, query: str, limit: int = 6) -> list[str]:
         providers = self._settings.image_provider_order or ["ddgs", "google"]
         errors: list[str] = []
 
         for provider in providers:
             try:
                 if provider == "ddgs":
-                    return await self._search_ddgs_image(query)
+                    return await self._search_ddgs_images(query, limit)
                 if provider == "google":
-                    return await self._search_google_image(query)
+                    return await self._search_google_images(query, limit)
 
                 errors.append(f"{provider}: provedor desconhecido")
             except MediaSearchError as error:
@@ -110,27 +114,30 @@ class MediaSearch:
         details = "; ".join(errors)
         raise MediaSearchError(f"Nao encontrei imagem nas fontes configuradas. {details}")
 
-    async def _search_ddgs_image(self, query: str) -> str:
+    async def _search_ddgs_images(self, query: str, limit: int) -> list[str]:
         if DDGS is None:
             raise MediaSearchError("instale ddgs ou use IMAGE_PROVIDER_ORDER=google")
 
-        return await asyncio.to_thread(self._search_ddgs_image_sync, query)
+        return await asyncio.to_thread(self._search_ddgs_image_sync, query, limit)
 
-    def _search_ddgs_image_sync(self, query: str) -> str:
+    def _search_ddgs_image_sync(self, query: str, limit: int) -> list[str]:
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.images(query, max_results=8, safesearch="moderate"))
+                results = list(ddgs.images(query, max_results=max(limit * 2, 8), safesearch="moderate"))
         except Exception as error:
             raise MediaSearchError(f"DuckDuckGo falhou: {error}") from error
 
+        urls = []
         for item in results:
             url = item.get("image") or item.get("thumbnail")
             if isinstance(url, str) and url.startswith("http"):
-                return url
+                urls.append(url)
+            if len(urls) >= limit:
+                return urls
 
         raise MediaSearchError("nenhuma imagem encontrada")
 
-    async def _search_google_image(self, query: str) -> str:
+    async def _search_google_images(self, query: str, limit: int) -> list[str]:
         api_key = self._settings.google_search_api_key
         engine_id = self._settings.google_search_engine_id
         if not api_key or not engine_id:
@@ -141,7 +148,7 @@ class MediaSearch:
             "cx": engine_id,
             "q": query,
             "searchType": "image",
-            "num": 1,
+            "num": min(max(limit, 1), 10),
             "safe": "active",
         }
         data = await self._get_json("https://www.googleapis.com/customsearch/v1", params)
@@ -149,7 +156,7 @@ class MediaSearch:
         if not items:
             raise MediaSearchError("Nao encontrei nenhuma imagem para essa busca.")
 
-        return items[0]["link"]
+        return [item["link"] for item in items if item.get("link")]
 
     async def search_youtube(self, query: str) -> str:
         api_key = self._settings.youtube_api_key

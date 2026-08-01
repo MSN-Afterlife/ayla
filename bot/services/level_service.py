@@ -172,8 +172,18 @@ class LevelService:
             connection.commit()
 
     def clear_profile_background(self, user_id: int) -> None:
+        now = int(time.time())
         with closing(self._connect()) as connection:
-            connection.execute("DELETE FROM profile_backgrounds WHERE user_id = ?", (user_id,))
+            connection.execute(
+                """
+                INSERT INTO profile_backgrounds (user_id, background_url, updated_at)
+                VALUES (?, '', ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    background_url = '',
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, now),
+            )
             connection.commit()
 
     def _initialize(self) -> None:

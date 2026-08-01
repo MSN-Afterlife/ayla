@@ -1,6 +1,8 @@
 discord.py
+PyNaCl
 python-dotenv
 aiohttp
 openai
 pillow
 ddgs
+yt-dlp

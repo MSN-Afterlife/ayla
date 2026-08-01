@@ -45,6 +45,19 @@ HELP_CATEGORIES = {
         ],
         "color": 0xE67E22,
     },
+    "musica": {
+        "label": "Musica",
+        "title": "Comandos de musica",
+        "description": "Toca audio em canal de voz usando nome ou link.",
+        "fields": [
+            ("`{prefix}play <nome ou link>`", "Aceita YouTube, SoundCloud e outras fontes do yt-dlp.", False),
+            ("Spotify/Deezer", "Links sao convertidos para busca e tocados por uma fonte compativel.", False),
+            ("`{prefix}pause` / `{prefix}resume`", "Pausa ou continua a musica atual.", True),
+            ("`{prefix}skip` / `{prefix}stop`", "Pula a musica ou encerra a fila.", True),
+            ("`{prefix}queue` / `{prefix}nowplaying`", "Mostra a fila ou a musica atual.", False),
+        ],
+        "color": 0x1DB954,
+    },
     "interacoes": {
         "label": "Interacoes",
         "title": "Interacoes sociais",

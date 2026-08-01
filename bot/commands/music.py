@@ -271,11 +271,17 @@ async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
     channel = ctx.author.voice.channel
     voice_client = ctx.voice_client
 
-    if not voice_client:
-        return await channel.connect()
+    try:
+        if not voice_client:
+            return await channel.connect()
 
-    if voice_client.channel != channel:
-        await voice_client.move_to(channel)
+        if voice_client.channel != channel:
+            await voice_client.move_to(channel)
+    except RuntimeError as error:
+        message = str(error).lower()
+        if "davey" in message or "voice" in message:
+            raise MusicError("A dependencia de voz esta faltando. Rode `pip install -r requirements.txt` e recrie o container.") from error
+        raise
 
     return voice_client
 

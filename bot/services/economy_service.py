@@ -2,13 +2,13 @@ import sqlite3
 import time
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, time as datetime_time, timedelta
 from pathlib import Path
 
 from bot.config import Settings
 
 
 DAILY_AMOUNT = 1500
-DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -56,12 +56,14 @@ class EconomyService:
 
     def claim_daily(self, user_id: int) -> DailyClaim:
         now = int(time.time())
+        today = _local_date(now)
         with closing(self._connect()) as connection:
             profile = self.get_profile(user_id)
-            if profile.last_daily_at and now - profile.last_daily_at < DAILY_COOLDOWN_SECONDS:
-                return DailyClaim(profile, DAILY_COOLDOWN_SECONDS - (now - profile.last_daily_at))
+            if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today:
+                return DailyClaim(profile, _seconds_until_next_local_midnight(now))
 
-            streak = profile.daily_streak + 1 if profile.last_daily_at and now - profile.last_daily_at < DAILY_COOLDOWN_SECONDS * 2 else 1
+            yesterday = today - timedelta(days=1)
+            streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
             bonus = min(streak * 100, 1000)
             amount = DAILY_AMOUNT + bonus
             connection.execute(
@@ -172,3 +174,14 @@ class EconomyService:
             """,
             (user_id, now),
         )
+
+
+def _local_date(timestamp: int):
+    return datetime.fromtimestamp(timestamp).date()
+
+
+def _seconds_until_next_local_midnight(timestamp: int) -> int:
+    now = datetime.fromtimestamp(timestamp)
+    tomorrow = now.date() + timedelta(days=1)
+    next_midnight = datetime.combine(tomorrow, datetime_time.min)
+    return max(1, int((next_midnight - now).total_seconds()))

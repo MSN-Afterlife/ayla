@@ -118,18 +118,34 @@ HELP_CATEGORIES = {
     "economia": {
         "label": "Economia",
         "title": "Sistema de economia",
-        "description": "Moedas persistentes preparadas para integracao futura com site.",
+        "description": "Luas persistentes com daily, transferencias e apostas.",
         "fields": [
             ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
             ("`{prefix}daily`", "Abre o link do site para resgatar o daily.", False),
             ("`{prefix}dailyconfig <url>`", "Administradores configuram o link do daily.", False),
-            ("`{prefix}pagar @user 100`", "Transfere moedas para outra pessoa.", False),
+            ("`{prefix}pagar @user 100`", "Transfere luas para outra pessoa.", False),
             ("`{prefix}cf 500 cara`", "Aposta cara ou coroa contra a Ayla.", False),
-            ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com moedas.", False),
+            ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com luas.", False),
             ("`{prefix}roleta 500 vermelho`", "Aposta em cor, par/impar ou numero 0-36.", False),
+            ("`{prefix}highlow 500 maior`", "Aposta se a proxima carta sera maior ou menor.", False),
+            ("`{prefix}21 500`", "Joga 21 contra a Ayla com botoes de pedir/parar.", False),
+            ("`{prefix}cartaalta 500`", "Maior carta vence contra a Ayla.", False),
             ("`{prefix}apostar @user 500`", "Desafia outro usuario para uma aposta.", False),
         ],
         "color": 0x2ECC71,
+    },
+    "uno": {
+        "label": "UNO",
+        "title": "UNO da Ayla",
+        "description": "Mesa de UNO no canal com cartas enviadas por mensagem privada.",
+        "fields": [
+            ("`{prefix}uno criar` / `{prefix}uno entrar`", "Cria uma mesa e permite 2+ jogadores entrarem.", False),
+            ("`{prefix}uno iniciar`", "Inicia a partida e envia a mao de cada jogador no privado.", False),
+            ("`{prefix}uno jogar 3 azul`", "Joga a carta numero 3; cor e obrigatoria em coringa e +4.", False),
+            ("`{prefix}uno comprar` / `{prefix}uno passar`", "Compra uma carta e passa a vez se nao jogar.", False),
+            ("`{prefix}uno mao` / `{prefix}uno mesa` / `{prefix}uno uno`", "Reenvia sua mao, mostra a mesa ou declara UNO.", False),
+        ],
+        "color": 0xE74C3C,
     },
 }
 

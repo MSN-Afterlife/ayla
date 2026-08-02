@@ -64,6 +64,20 @@ class LevelService:
             self.get_guild_profile(guild_id, user_id, user_name),
         )
 
+    def add_xp(self, guild_id: int, user_id: int, user_name: str, amount: int) -> tuple[LevelProfile, LevelProfile]:
+        if amount <= 0:
+            raise ValueError("A quantidade de XP precisa ser maior que zero.")
+
+        with closing(self._connect()) as connection:
+            self._add_admin_xp(connection, "global_levels", user_id, None, user_name, amount)
+            self._add_admin_xp(connection, "guild_levels", user_id, guild_id, user_name, amount)
+            connection.commit()
+
+        return (
+            self.get_global_profile(user_id, user_name),
+            self.get_guild_profile(guild_id, user_id, user_name),
+        )
+
     def get_global_profile(self, user_id: int, user_name: str) -> LevelProfile:
         with closing(self._connect()) as connection:
             row = connection.execute(
@@ -284,6 +298,43 @@ class LevelService:
                 user_name = excluded.user_name,
                 xp = guild_levels.xp + excluded.xp,
                 message_count = guild_levels.message_count + 1,
+                updated_at = excluded.updated_at
+            """,
+            (guild_id, user_id, user_name, xp_gain, now),
+        )
+
+    def _add_admin_xp(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        user_id: int,
+        guild_id: int | None,
+        user_name: str,
+        xp_gain: int,
+    ) -> None:
+        now = int(time.time())
+
+        if table == "global_levels":
+            connection.execute(
+                """
+                INSERT INTO global_levels (user_id, user_name, xp, message_count, updated_at)
+                VALUES (?, ?, ?, 0, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    user_name = excluded.user_name,
+                    xp = global_levels.xp + excluded.xp,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, user_name, xp_gain, now),
+            )
+            return
+
+        connection.execute(
+            """
+            INSERT INTO guild_levels (guild_id, user_id, user_name, xp, message_count, updated_at)
+            VALUES (?, ?, ?, ?, 0, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                user_name = excluded.user_name,
+                xp = guild_levels.xp + excluded.xp,
                 updated_at = excluded.updated_at
             """,
             (guild_id, user_id, user_name, xp_gain, now),

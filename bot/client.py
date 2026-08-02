@@ -13,6 +13,7 @@ from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
 from bot.commands.music import setup_music_commands
+from bot.commands.uno import setup_uno_commands
 from bot.config import Settings
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
@@ -62,6 +63,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)
     setup_economy_commands(bot, settings)
+    setup_uno_commands(bot)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
     return bot

@@ -32,6 +32,24 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         file = await build_level_card(target, profile, f"Rank local - {ctx.guild.name}", ctx.guild)
         await ctx.send(file=file)
 
+    @bot.command(name="addxp")
+    @commands.has_permissions(administrator=True)
+    async def add_xp(ctx: commands.Context, member: discord.Member, amount: int) -> None:
+        if not ctx.guild:
+            await ctx.send("Esse comando so funciona dentro de um servidor.")
+            return
+
+        try:
+            _, guild_profile = level_service.add_xp(ctx.guild.id, member.id, member.display_name, amount)
+        except ValueError as error:
+            await ctx.send(str(error))
+            return
+
+        await ctx.send(
+            f"Adicionado `{amount}` XP para {member.mention}. "
+            f"XP local: `{guild_profile.xp}` | Level: `{guild_profile.level}` | Rank: `#{guild_profile.rank}`"
+        )
+
     @bot.tree.command(name="level", description="Mostra seu level e rank local.")
     @app_commands.describe(member="Usuario para consultar.")
     async def level_slash(interaction: discord.Interaction, member: discord.Member | None = None) -> None:

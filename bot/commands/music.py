@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 
+from bot.config import Settings
 from bot.services.music_player import MAX_PLAYLIST_TRACKS
 from bot.services.music_player import FILTERS
 from bot.services.music_player import MusicError
@@ -22,8 +23,8 @@ async def _send(ctx: commands.Context, message: str) -> None:
             await ctx.channel.send(message)
 
 
-def setup_music_commands(bot: commands.Bot) -> None:
-    music = MusicService(bot)
+def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
+    music = MusicService(bot, settings)
     lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")

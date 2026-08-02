@@ -3,6 +3,7 @@ import random
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from time import monotonic
 from typing import Callable
 from urllib.parse import urlparse
@@ -10,6 +11,8 @@ from urllib.parse import urlparse
 import aiohttp
 import discord
 import yt_dlp
+
+from bot.config import Settings
 
 
 MAX_PLAYLIST_TRACKS = 50
@@ -29,7 +32,6 @@ YTDL_OPTIONS = {
     "noplaylist": False,
     "ignoreerrors": True,
     "extract_flat": False,
-    "js_runtimes": {"node": {}},
 }
 
 FFMPEG_RECONNECT_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -257,8 +259,9 @@ class GuildMusicPlayer:
 
 
 class MusicService:
-    def __init__(self, bot) -> None:
+    def __init__(self, bot, settings: Settings) -> None:
         self._bot = bot
+        self._settings = settings
         self._players: dict[int, GuildMusicPlayer] = {}
 
     def player_for(self, guild_id: int) -> GuildMusicPlayer:
@@ -297,12 +300,34 @@ class MusicService:
 
     def _extract_info(self, query: str) -> dict:
         try:
-            with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ytdl:
-                return ytdl.extract_info(query, download=False)
+            with yt_dlp.YoutubeDL(self._ytdl_options()) as ytdl:
+                info = ytdl.extract_info(query, download=False)
         except Exception as error:
-            raise MusicError(f"Nao consegui carregar essa musica: {error}") from error
+            raise MusicError(_friendly_ytdl_error(error)) from error
 
-    def _entries_from_info(self, info: dict) -> list[dict]:
+        if info is None:
+            raise MusicError("Nao consegui carregar essa musica. O YouTube pode ter bloqueado temporariamente a extracao; tente de novo mais tarde ou use outro link/fonte.")
+
+        return info
+
+    def _ytdl_options(self) -> dict:
+        options = dict(YTDL_OPTIONS)
+        js_path = self._settings.youtube_js_runtime_path
+        if js_path:
+            options["js_runtimes"] = {"node": {"path": js_path}}
+        else:
+            options["js_runtimes"] = {"node": {}}
+        options["remote_components"] = ["ejs:npm"]
+
+        cookies_path = self._settings.youtube_cookies_path
+        if cookies_path and Path(cookies_path).exists():
+            options["cookiefile"] = cookies_path
+
+        return options
+
+    def _entries_from_info(self, info: dict | None) -> list[dict]:
+        if not info:
+            return []
         if "entries" not in info:
             return [info]
         return [entry for entry in info["entries"] if entry and entry.get("url")]
@@ -361,6 +386,16 @@ class MusicService:
 def _is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _friendly_ytdl_error(error: Exception) -> str:
+    message = str(error)
+    normalized = message.lower()
+    if "too many requests" in normalized or "http error 429" in normalized:
+        return "O YouTube limitou temporariamente as requisicoes do bot (HTTP 429). Tente outra fonte, aguarde um pouco ou configure cookies do YouTube no bot."
+    if "sign in to confirm" in normalized or "not a bot" in normalized or "cookies" in normalized:
+        return "O YouTube pediu verificacao anti-bot. Configure `YOUTUBE_COOKIES_PATH` com um arquivo cookies.txt exportado de uma conta do YouTube, ou use SoundCloud/outro link."
+    return f"Nao consegui carregar essa musica: {message}"
 
 
 def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False) -> discord.Embed:

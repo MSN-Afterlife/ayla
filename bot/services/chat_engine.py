@@ -1,3 +1,5 @@
+import re
+
 from bot.characters.loader import Character
 from bot.config import Settings
 from bot.memory.conversation_store import MessageEntry
@@ -39,10 +41,10 @@ class ChatEngine:
             response = await self._client.chat.completions.create(
                 model=self._settings.openai_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.95,
+                temperature=0.8,
                 max_tokens=220,
                 presence_penalty=0.4,
-                frequency_penalty=0.3,
+                frequency_penalty=0.7,
             )
         except RateLimitError as error:
             if getattr(error, "code", None) == "insufficient_quota":
@@ -53,4 +55,11 @@ class ChatEngine:
             raise ChatEngineError("A API da OpenAI retornou erro agora. Tente novamente daqui a pouco.") from error
 
         content = response.choices[0].message.content
-        return content.strip() if content else "Nao sei nem o que te responder agora."
+        return _sanitize_reply(content) if content else "Nao sei nem o que te responder agora."
+
+
+def _sanitize_reply(content: str) -> str:
+    cleaned = content.strip()
+    cleaned = re.sub(r"^(?:Ayla|Lyn)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bLyn\b", "Ayla", cleaned)
+    return cleaned.strip() or "Nao sei nem o que te responder agora."

@@ -55,7 +55,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_basic_commands(bot)
     setup_announcement_commands(bot)
     setup_media_commands(bot, settings)
-    setup_music_commands(bot)
+    setup_music_commands(bot, settings)
     setup_interaction_commands(bot, settings)
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)

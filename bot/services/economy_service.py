@@ -88,6 +88,26 @@ class EconomyService:
 
         return self.get_profile(sender_id), self.get_profile(receiver_id)
 
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT value FROM economy_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO economy_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+            connection.commit()
+
     def _initialize(self) -> None:
         with closing(self._connect()) as connection:
             connection.execute(
@@ -97,6 +117,15 @@ class EconomyService:
                     balance INTEGER NOT NULL DEFAULT 0,
                     daily_streak INTEGER NOT NULL DEFAULT 0,
                     last_daily_at INTEGER,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS economy_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 )
                 """

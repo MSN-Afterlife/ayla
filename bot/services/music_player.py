@@ -54,6 +54,7 @@ class Track:
     duration: int | None = None
     artist: str | None = None
     album: str | None = None
+    thumbnail_url: str | None = None
 
 
 class GuildMusicPlayer:
@@ -66,6 +67,7 @@ class GuildMusicPlayer:
         self._current_seek: int = 0
         self._source: discord.PCMVolumeTransformer | None = None
         self._text_channel: discord.abc.Messageable | None = None
+        self._now_playing_view_factory: Callable[[Track], discord.ui.View] | None = None
         self._volume = DEFAULT_VOLUME
         self._repeat = RepeatMode.OFF
         self._filter_name = "none"
@@ -97,8 +99,15 @@ class GuildMusicPlayer:
 
     def add_many(self, tracks: list[Track], text_channel: discord.abc.Messageable) -> int:
         self._text_channel = text_channel
+        first_position = self.queue_size(include_current=True) + 1
         self._queue.extend(tracks)
-        return len(self._queue)
+        return first_position
+
+    def set_now_playing_view_factory(self, factory: Callable[[Track], discord.ui.View]) -> None:
+        self._now_playing_view_factory = factory
+
+    def queue_size(self, *, include_current: bool = False) -> int:
+        return len(self._queue) + (1 if include_current and self._current else 0)
 
     async def start_if_idle(self, voice_client: discord.VoiceClient) -> None:
         if not voice_client.is_playing() and not voice_client.is_paused():
@@ -204,7 +213,8 @@ class GuildMusicPlayer:
         self._play_current(voice_client)
 
         if self._text_channel:
-            await self._text_channel.send(f"Tocando agora: **{self._current.title}**")
+            view = self._now_playing_view_factory(self._current) if self._now_playing_view_factory and self._current else None
+            await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
 
     def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0) -> None:
         if not self._current:
@@ -290,6 +300,7 @@ class MusicService:
             duration=info.get("duration"),
             artist=info.get("artist") or info.get("creator") or info.get("uploader"),
             album=info.get("album"),
+            thumbnail_url=info.get("thumbnail"),
         )
 
     async def _normalize_query(self, query: str) -> str:
@@ -330,3 +341,42 @@ class MusicService:
 def _is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False) -> discord.Embed:
+    track = player.current
+    title = "Tocando agora" if automatic else "Now playing"
+    embed = discord.Embed(title=title, color=0x1DB954)
+    if not track:
+        embed.description = "Nao tem nenhuma musica tocando agora."
+        return embed
+
+    duration = _format_track_time(player.current_position(), track.duration)
+    embed.description = f"**[{track.title}]({track.webpage_url})**"
+    if track.artist:
+        embed.add_field(name="Artista", value=track.artist, inline=True)
+    if track.album:
+        embed.add_field(name="Album", value=track.album, inline=True)
+    embed.add_field(name="Tempo", value=f"`{duration}`", inline=True)
+    embed.add_field(name="Volume", value=f"`{player.volume_percent}%`", inline=True)
+    embed.add_field(name="Repeat", value=f"`{player.repeat.value}`", inline=True)
+    embed.add_field(name="Filtro", value=f"`{player.filter_name}`", inline=True)
+    embed.add_field(name="Pedido por", value=f"`{track.requested_by}`", inline=True)
+    if track.thumbnail_url:
+        embed.set_thumbnail(url=track.thumbnail_url)
+    embed.set_footer(text=f"{player.queue_size()} musica(s) aguardando na fila")
+    return embed
+
+
+def _format_track_time(position: int, duration: int | None) -> str:
+    if duration is None:
+        return _format_duration(position)
+    return f"{_format_duration(position)} / {_format_duration(duration)}"
+
+
+def _format_duration(seconds: int) -> str:
+    minutes, remaining_seconds = divmod(max(0, seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{remaining_seconds:02d}"
+    return f"{minutes}:{remaining_seconds:02d}"

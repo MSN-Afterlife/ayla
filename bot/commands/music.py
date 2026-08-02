@@ -7,6 +7,7 @@ from bot.services.music_player import MusicError
 from bot.services.music_player import MusicService
 from bot.services.music_player import RepeatMode
 from bot.services.music_player import Track
+from bot.services.music_player import build_now_playing_embed
 from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
 
@@ -39,6 +40,7 @@ def setup_music_commands(bot: commands.Bot) -> None:
             voice_client = await _connect_or_move(ctx)
             tracks = await music.resolve_tracks(query, ctx.author.display_name)
             player = music.player_for(ctx.guild.id)
+            player.set_now_playing_view_factory(lambda track: MusicNowPlayingView(lyrics_service, track))
             position = player.add_many(tracks, ctx.channel)
             await player.start_if_idle(voice_client)
         except MusicError as error:
@@ -46,12 +48,11 @@ def setup_music_commands(bot: commands.Bot) -> None:
             return
 
         if len(tracks) == 1:
-            if position > 1:
-                await ctx.send(f"Adicionado a fila: **{tracks[0].title}** (`#{position}`)")
+            await ctx.send(embed=_queued_embed(tracks[0], position), view=MusicNowPlayingView(lyrics_service, tracks[0]))
             return
 
         limited = " " if len(tracks) < MAX_PLAYLIST_TRACKS else f" Limitei em {MAX_PLAYLIST_TRACKS} faixas."
-        await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila.{limited}")
+        await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila a partir da posicao `#{position}`.{limited}")
 
     @bot.hybrid_command(name="pause", aliases=["pa"], description="Pausa a musica atual.")
     async def pause(ctx: commands.Context) -> None:
@@ -109,7 +110,8 @@ def setup_music_commands(bot: commands.Bot) -> None:
 
         upcoming = player.queue_snapshot()
         if upcoming:
-            lines.extend(_format_queue(upcoming))
+            start = 2 if player.current else 1
+            lines.extend(_format_queue(upcoming, start=start))
 
         await _send(ctx, "\n".join(lines) if lines else "A fila esta vazia.")
 
@@ -125,14 +127,7 @@ def setup_music_commands(bot: commands.Bot) -> None:
             await _send(ctx, "Nao tem nenhuma musica tocando agora.")
             return
 
-        duration = _format_track_time(player.current_position(), current.duration)
-        await _send(
-            ctx,
-            f"Tocando agora: **{current.title}**\n"
-            f"Tempo: `{duration}` | Volume: `{player.volume_percent}%` | Repeat: `{player.repeat.value}` | Filtro: `{player.filter_name}`\n"
-            f"Pedido por: `{current.requested_by}`\n"
-            f"{current.webpage_url}",
-        )
+        await ctx.send(embed=build_now_playing_embed(player), view=MusicNowPlayingView(lyrics_service, current))
 
     @bot.hybrid_command(name="volume", aliases=["v", "vol"], description="Ajusta o volume entre 0 e 200.")
     async def volume(ctx: commands.Context, percent: int | None = None) -> None:
@@ -311,12 +306,29 @@ async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
     return voice_client
 
 
-def _format_queue(tracks: list[Track]) -> list[str]:
+def _format_queue(tracks: list[Track], *, start: int = 1) -> list[str]:
     visible_tracks = tracks[:10]
-    lines = [f"{index}. **{track.title}** - pedido por `{track.requested_by}`" for index, track in enumerate(visible_tracks, 1)]
+    lines = [f"{index}. **{track.title}** - pedido por `{track.requested_by}`" for index, track in enumerate(visible_tracks, start)]
     if len(tracks) > len(visible_tracks):
         lines.append(f"...e mais {len(tracks) - len(visible_tracks)} musica(s).")
     return lines
+
+
+def _queued_embed(track: Track, position: int) -> discord.Embed:
+    title = "Preparando musica" if position == 1 else "Musica adicionada a fila"
+    embed = discord.Embed(
+        title=title,
+        description=f"**[{track.title}]({track.webpage_url})**",
+        color=0x1DB954,
+    )
+    embed.add_field(name="Posicao", value=f"`#{position}`", inline=True)
+    if track.duration:
+        embed.add_field(name="Duracao", value=f"`{_format_duration(track.duration)}`", inline=True)
+    if track.artist:
+        embed.add_field(name="Artista", value=track.artist, inline=True)
+    if track.thumbnail_url:
+        embed.set_thumbnail(url=track.thumbnail_url)
+    return embed
 
 
 def _format_track_time(position: int, duration: int | None) -> str:
@@ -382,3 +394,26 @@ def _lyrics_pages(lyrics: str) -> list[str]:
         pages.append(current)
 
     return pages or ["Letra indisponivel."]
+
+
+class MusicNowPlayingView(discord.ui.View):
+    def __init__(self, lyrics_service: LyricsService, track: Track) -> None:
+        super().__init__(timeout=300)
+        self._lyrics_service = lyrics_service
+        self._track = track
+
+    @discord.ui.button(label="Lyrics", emoji="🎤", style=discord.ButtonStyle.primary)
+    async def lyrics_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await self._lyrics_service.find_for_track(self._track)
+        except LyricsError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+
+        pages = _lyrics_pages(result.lyrics)
+        await interaction.followup.send(
+            embed=_lyrics_embed(result.title, result.artist, pages, 0),
+            view=LyricsView(result.title, result.artist, pages),
+            ephemeral=True,
+        )

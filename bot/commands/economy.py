@@ -2,8 +2,10 @@ import discord
 from discord.ext import commands
 
 from bot.config import Settings
-from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
+
+
+DAILY_URL_SETTING = "daily_site_url"
 
 
 def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -15,17 +17,31 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         profile = economy.get_profile(target.id)
         await ctx.send(f"Saldo de **{target.display_name}**: `{profile.balance}` moedas | Daily streak: `{profile.daily_streak}`")
 
-    @bot.hybrid_command(name="daily", aliases=["diario"], description="Coleta suas moedas diarias.")
+    @bot.hybrid_command(name="daily", aliases=["diario"], description="Abre o site para coletar suas moedas diarias.")
     async def daily(ctx: commands.Context) -> None:
-        profile, remaining = economy.claim_daily(ctx.author.id)
-        if remaining:
-            await ctx.send(f"Voce ja pegou o daily. Tente de novo em `{_format_remaining(remaining)}`.")
+        daily_url = economy.get_setting(DAILY_URL_SETTING, settings.daily_site_url)
+        embed = discord.Embed(
+            title="Daily pelo site",
+            description="O resgate diario de moedas agora e feito somente pelo site.",
+            color=0x2ECC71,
+        )
+        embed.add_field(name="Link", value=daily_url, inline=False)
+        await ctx.send(embed=embed, view=DailyRedirectView(daily_url))
+
+    @bot.hybrid_command(name="dailyconfig", aliases=["configdaily"], description="Configura o link do daily no site.")
+    @commands.has_permissions(manage_guild=True)
+    async def daily_config(ctx: commands.Context, url: str | None = None) -> None:
+        if not url:
+            daily_url = economy.get_setting(DAILY_URL_SETTING, settings.daily_site_url)
+            await ctx.send(f"Link atual do daily: {daily_url}")
             return
 
-        await ctx.send(
-            f"Daily coletado! Voce recebeu pelo menos `{DAILY_AMOUNT}` moedas, com bonus de streak. "
-            f"Saldo atual: `{profile.balance}` | Streak: `{profile.daily_streak}`"
-        )
+        if not url.startswith(("http://", "https://")):
+            await ctx.send("Envie uma URL valida com `http://` ou `https://`.")
+            return
+
+        economy.set_setting(DAILY_URL_SETTING, url)
+        await ctx.send(f"Link do daily atualizado para: {url}")
 
     @bot.hybrid_command(name="pagar", aliases=["pay"], description="Transfere moedas para outro usuario.")
     async def pay(ctx: commands.Context, member: discord.Member, amount: int) -> None:
@@ -41,7 +57,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
 
-def _format_remaining(seconds: int) -> str:
-    hours, remainder = divmod(seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return f"{hours}h {minutes}m"
+class DailyRedirectView(discord.ui.View):
+    def __init__(self, url: str) -> None:
+        super().__init__(timeout=180)
+        self.add_item(discord.ui.Button(label="Resgatar daily", url=url))

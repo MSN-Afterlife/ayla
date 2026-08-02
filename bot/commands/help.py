@@ -34,6 +34,20 @@ HELP_CATEGORIES = {
         ],
         "color": 0x3498DB,
     },
+    "avisos": {
+        "label": "Avisos",
+        "title": "Comandos de avisos",
+        "description": "Comandos administrativos para anuncios no servidor.",
+        "fields": [
+            ("`{prefix}avisoayla`", "Envia o aviso oficial de chegada da Ayla no canal atual.", False),
+            ("`{prefix}avisoayla #canal`", "Envia o aviso oficial em um canal especifico.", False),
+            ("`{prefix}aviso #canal <mensagem>`", "Envia um aviso personalizado em embed.", False),
+            ("`{prefix}avisojson #canal` + anexo", "Envia um embed personalizado a partir de um JSON.", False),
+            ("`{prefix}avisoimportar nome` + anexo", "Salva um modelo JSON para reutilizar depois.", False),
+            ("`{prefix}avisomodelo #canal nome`", "Envia um modelo salvo em `bot/announcements`.", False),
+        ],
+        "color": 0x9B59B6,
+    },
     "midia": {
         "label": "Midia",
         "title": "Comandos de midia",
@@ -95,7 +109,8 @@ HELP_CATEGORIES = {
         "description": "Moedas persistentes preparadas para integracao futura com site.",
         "fields": [
             ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
-            ("`{prefix}daily`", "Coleta moedas diarias com bonus de streak.", False),
+            ("`{prefix}daily`", "Abre o link do site para resgatar o daily.", False),
+            ("`{prefix}dailyconfig <url>`", "Administradores configuram o link do daily.", False),
             ("`{prefix}pagar @user 100`", "Transfere moedas para outra pessoa.", False),
         ],
         "color": 0x2ECC71,

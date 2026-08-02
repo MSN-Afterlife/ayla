@@ -1,0 +1,22 @@
+{
+  "embed": {
+    "title": "Ayla chegou ao servidor",
+    "description": "A partir de agora, a Ayla faz parte oficialmente da nossa comunidade como bot oficial do servidor.\n\nEla vai ajudar com comandos, interacoes, sistema de level, perfil, economia, musica e outras novidades que vamos liberar aos poucos.",
+    "color": "#9B59B6",
+    "fields": [
+      {
+        "name": "O que ela ja faz",
+        "value": "- Conversa com a comunidade\n- Mostra perfil, level e ranking\n- Gerencia economia e daily pelo site\n- Toca musicas e busca letras\n- Envia imagens, GIFs e interacoes sociais"
+      },
+      {
+        "name": "Como usar",
+        "value": "Use `a!help` ou `/help` para abrir o menu de comandos."
+      },
+      {
+        "name": "Boas-vindas",
+        "value": "Recebam bem a Ayla. Ela vai crescer junto com o MSN Afterlife."
+      }
+    ],
+    "footer": "Ayla | Bot oficial"
+  }
+}

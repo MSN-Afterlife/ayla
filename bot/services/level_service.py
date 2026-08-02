@@ -17,6 +17,7 @@ class LevelProfile:
     current_level_xp: int
     next_level_xp: int
     rank: int
+    message_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class LevelService:
     def get_global_profile(self, user_id: int, user_name: str) -> LevelProfile:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT user_id, user_name, xp FROM global_levels WHERE user_id = ?",
+                "SELECT user_id, user_name, xp, message_count FROM global_levels WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
             rank = self._rank(connection, "global_levels", user_id)
@@ -76,7 +77,7 @@ class LevelService:
     def get_guild_profile(self, guild_id: int, user_id: int, user_name: str) -> LevelProfile:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT user_id, user_name, xp FROM guild_levels WHERE guild_id = ? AND user_id = ?",
+                "SELECT user_id, user_name, xp, message_count FROM guild_levels WHERE guild_id = ? AND user_id = ?",
                 (guild_id, user_id),
             ).fetchone()
             rank = self._rank(connection, "guild_levels", user_id, guild_id)
@@ -86,7 +87,7 @@ class LevelService:
     def get_global_leaderboard(self, limit: int = 10) -> list[LevelProfile]:
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                "SELECT user_id, user_name, xp FROM global_levels ORDER BY xp DESC, user_id ASC LIMIT ?",
+                "SELECT user_id, user_name, xp, message_count FROM global_levels ORDER BY xp DESC, user_id ASC LIMIT ?",
                 (limit,),
             ).fetchall()
 
@@ -96,7 +97,7 @@ class LevelService:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
-                SELECT user_id, user_name, xp
+                SELECT user_id, user_name, xp, message_count
                 FROM guild_levels
                 WHERE guild_id = ?
                 ORDER BY xp DESC, user_id ASC
@@ -194,6 +195,7 @@ class LevelService:
                     user_id INTEGER PRIMARY KEY,
                     user_name TEXT NOT NULL,
                     xp INTEGER NOT NULL DEFAULT 0,
+                    message_count INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL
                 )
                 """
@@ -205,6 +207,7 @@ class LevelService:
                     user_id INTEGER NOT NULL,
                     user_name TEXT NOT NULL,
                     xp INTEGER NOT NULL DEFAULT 0,
+                    message_count INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL,
                     PRIMARY KEY (guild_id, user_id)
                 )
@@ -231,6 +234,8 @@ class LevelService:
                 )
                 """
             )
+            self._ensure_column(connection, "global_levels", "message_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "guild_levels", "message_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(connection, "profile_backgrounds", "background_mode", "TEXT NOT NULL DEFAULT 'cover'")
             self._ensure_column(connection, "profile_backgrounds", "about", "TEXT")
             connection.commit()
@@ -259,11 +264,12 @@ class LevelService:
         if table == "global_levels":
             connection.execute(
                 """
-                INSERT INTO global_levels (user_id, user_name, xp, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO global_levels (user_id, user_name, xp, message_count, updated_at)
+                VALUES (?, ?, ?, 1, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     user_name = excluded.user_name,
                     xp = global_levels.xp + excluded.xp,
+                    message_count = global_levels.message_count + 1,
                     updated_at = excluded.updated_at
                 """,
                 (user_id, user_name, xp_gain, now),
@@ -272,11 +278,12 @@ class LevelService:
 
         connection.execute(
             """
-            INSERT INTO guild_levels (guild_id, user_id, user_name, xp, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO guild_levels (guild_id, user_id, user_name, xp, message_count, updated_at)
+            VALUES (?, ?, ?, ?, 1, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 user_name = excluded.user_name,
                 xp = guild_levels.xp + excluded.xp,
+                message_count = guild_levels.message_count + 1,
                 updated_at = excluded.updated_at
             """,
             (guild_id, user_id, user_name, xp_gain, now),
@@ -307,6 +314,7 @@ class LevelService:
 
     def _profile_from_row(self, row, user_id: int, user_name: str, rank: int) -> LevelProfile:
         xp = int(row["xp"]) if row else 0
+        message_count = int(row["message_count"]) if row and "message_count" in row.keys() else 0
         level = level_from_xp(xp)
         current_level_xp = xp_for_level(level)
         next_level_xp = xp_for_level(level + 1)
@@ -319,6 +327,7 @@ class LevelService:
             current_level_xp=current_level_xp,
             next_level_xp=next_level_xp,
             rank=rank,
+            message_count=message_count,
         )
 
 

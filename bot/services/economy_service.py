@@ -7,7 +7,7 @@ from pathlib import Path
 from bot.config import Settings
 
 
-DAILY_AMOUNT = 250
+DAILY_AMOUNT = 1500
 DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
@@ -17,6 +17,14 @@ class EconomyProfile:
     balance: int
     daily_streak: int
     last_daily_at: int | None
+
+
+@dataclass(frozen=True)
+class DailyClaim:
+    profile: EconomyProfile
+    remaining_seconds: int | None
+    amount: int = 0
+    bonus: int = 0
 
 
 class EconomyService:
@@ -46,15 +54,15 @@ class EconomyService:
             last_daily_at=int(row["last_daily_at"]) if row["last_daily_at"] is not None else None,
         )
 
-    def claim_daily(self, user_id: int) -> tuple[EconomyProfile, int | None]:
+    def claim_daily(self, user_id: int) -> DailyClaim:
         now = int(time.time())
         with closing(self._connect()) as connection:
             profile = self.get_profile(user_id)
             if profile.last_daily_at and now - profile.last_daily_at < DAILY_COOLDOWN_SECONDS:
-                return profile, DAILY_COOLDOWN_SECONDS - (now - profile.last_daily_at)
+                return DailyClaim(profile, DAILY_COOLDOWN_SECONDS - (now - profile.last_daily_at))
 
             streak = profile.daily_streak + 1 if profile.last_daily_at and now - profile.last_daily_at < DAILY_COOLDOWN_SECONDS * 2 else 1
-            bonus = min(streak * 25, 250)
+            bonus = min(streak * 100, 1000)
             amount = DAILY_AMOUNT + bonus
             connection.execute(
                 """
@@ -66,7 +74,7 @@ class EconomyService:
             )
             connection.commit()
 
-        return self.get_profile(user_id), None
+        return DailyClaim(self.get_profile(user_id), None, amount, bonus)
 
     def transfer(self, sender_id: int, receiver_id: int, amount: int) -> tuple[EconomyProfile, EconomyProfile]:
         if amount <= 0:
@@ -87,6 +95,24 @@ class EconomyService:
             connection.commit()
 
         return self.get_profile(sender_id), self.get_profile(receiver_id)
+
+    def add_balance(self, user_id: int, amount: int) -> EconomyProfile:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            self._ensure_profile(connection, user_id)
+            row = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (user_id,)).fetchone()
+            new_balance = int(row["balance"]) + amount
+            if new_balance < 0:
+                raise ValueError("Saldo insuficiente.")
+            connection.execute(
+                "UPDATE economy_profiles SET balance = ?, updated_at = ? WHERE user_id = ?",
+                (new_balance, now, user_id),
+            )
+            connection.commit()
+        return self.get_profile(user_id)
+
+    def can_afford(self, user_id: int, amount: int) -> bool:
+        return self.get_profile(user_id).balance >= amount
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         with closing(self._connect()) as connection:

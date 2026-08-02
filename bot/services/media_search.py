@@ -123,7 +123,7 @@ class MediaSearch:
     def _search_ddgs_image_sync(self, query: str, limit: int) -> list[str]:
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.images(query, max_results=max(limit * 2, 8), safesearch="moderate"))
+                results = list(ddgs.images(query, max_results=max(limit * 3, 12), safesearch="moderate"))
         except Exception as error:
             raise MediaSearchError(f"DuckDuckGo falhou: {error}") from error
 
@@ -143,20 +143,27 @@ class MediaSearch:
         if not api_key or not engine_id:
             raise MediaSearchError("configure GOOGLE_SEARCH_API_KEY e GOOGLE_SEARCH_ENGINE_ID")
 
-        params = {
-            "key": api_key,
-            "cx": engine_id,
-            "q": query,
-            "searchType": "image",
-            "num": min(max(limit, 1), 10),
-            "safe": "active",
-        }
-        data = await self._get_json("https://www.googleapis.com/customsearch/v1", params)
-        items = data.get("items", [])
-        if not items:
+        urls = []
+        for start in range(1, min(limit, 30) + 1, 10):
+            params = {
+                "key": api_key,
+                "cx": engine_id,
+                "q": query,
+                "searchType": "image",
+                "num": min(10, limit - len(urls)),
+                "start": start,
+                "safe": "active",
+            }
+            data = await self._get_json("https://www.googleapis.com/customsearch/v1", params)
+            items = data.get("items", [])
+            urls.extend(item["link"] for item in items if item.get("link"))
+            if len(urls) >= limit or not items:
+                break
+
+        if not urls:
             raise MediaSearchError("Nao encontrei nenhuma imagem para essa busca.")
 
-        return [item["link"] for item in items if item.get("link")]
+        return urls[:limit]
 
     async def search_youtube(self, query: str) -> str:
         api_key = self._settings.youtube_api_key

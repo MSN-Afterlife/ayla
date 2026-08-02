@@ -67,7 +67,7 @@ class GuildMusicPlayer:
         self._current_seek: int = 0
         self._source: discord.PCMVolumeTransformer | None = None
         self._text_channel: discord.abc.Messageable | None = None
-        self._now_playing_view_factory: Callable[[Track], discord.ui.View] | None = None
+        self._now_playing_view_factory: Callable[["GuildMusicPlayer"], discord.ui.View] | None = None
         self._volume = DEFAULT_VOLUME
         self._repeat = RepeatMode.OFF
         self._filter_name = "none"
@@ -103,7 +103,7 @@ class GuildMusicPlayer:
         self._queue.extend(tracks)
         return first_position
 
-    def set_now_playing_view_factory(self, factory: Callable[[Track], discord.ui.View]) -> None:
+    def set_now_playing_view_factory(self, factory: Callable[["GuildMusicPlayer"], discord.ui.View]) -> None:
         self._now_playing_view_factory = factory
 
     def queue_size(self, *, include_current: bool = False) -> int:
@@ -213,7 +213,7 @@ class GuildMusicPlayer:
         self._play_current(voice_client)
 
         if self._text_channel:
-            view = self._now_playing_view_factory(self._current) if self._now_playing_view_factory and self._current else None
+            view = self._now_playing_view_factory(self) if self._now_playing_view_factory and self._current else None
             await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
 
     def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0) -> None:
@@ -268,12 +268,32 @@ class MusicService:
 
     async def resolve_tracks(self, query: str, requested_by: str) -> list[Track]:
         normalized_query = await self._normalize_query(query)
-        info = await asyncio.to_thread(self._extract_info, normalized_query)
+        info = await asyncio.to_thread(self._extract_best_info, normalized_query)
         entries = self._entries_from_info(info)
         if not entries:
             raise MusicError("Nao encontrei nenhum resultado para essa busca.")
 
-        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:MAX_PLAYLIST_TRACKS]]
+        limit = MAX_PLAYLIST_TRACKS if _is_url(normalized_query) else 1
+        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:limit]]
+
+    def _extract_best_info(self, query: str) -> dict:
+        if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
+            return self._extract_info(query)
+
+        errors: list[str] = []
+        for candidate in (f"ytsearch5:{query}", f"scsearch5:{query}", query):
+            try:
+                info = self._extract_info(candidate)
+            except MusicError as error:
+                errors.append(str(error))
+                continue
+
+            entries = self._entries_from_info(info)
+            if entries:
+                return entries[0]
+
+        detail = "; ".join(errors[-2:])
+        raise MusicError(f"Nao encontrei musica nas fontes disponiveis. {detail}")
 
     def _extract_info(self, query: str) -> dict:
         try:

@@ -88,6 +88,18 @@ HELP_CATEGORIES = {
         ],
         "color": 0xFF69B4,
     },
+    "ayla": {
+        "label": "Ayla",
+        "title": "Memoria e personalidade",
+        "description": "Comandos para acompanhar a relacao da Ayla com os usuarios.",
+        "fields": [
+            ("`{prefix}afeto`", "Mostra como a Ayla esta se dando com voce.", False),
+            ("`{prefix}afeto @user`", "Mostra a memoria afetiva da Ayla sobre alguem.", False),
+            ("`{prefix}afetoajustar @user 30 10`", "Administradores ajustam afeto e respeito manualmente.", False),
+            ("`{prefix}afetolimpar @user`", "Administradores resetam a memoria afetiva de alguem.", False),
+        ],
+        "color": 0x3BA7FF,
+    },
     "level": {
         "label": "Level",
         "title": "Sistema de level",

@@ -3,6 +3,7 @@ import re
 from bot.characters.loader import Character
 from bot.config import Settings
 from bot.memory.conversation_store import MessageEntry
+from bot.services.affection_service import AffectionProfile
 from bot.services.prompt_builder import build_prompt
 
 try:
@@ -31,20 +32,26 @@ class ChatEngine:
         self._settings = settings
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-    async def reply(self, history: list[MessageEntry], user_name: str, message: str) -> str:
+    async def reply(
+        self,
+        history: list[MessageEntry],
+        user_name: str,
+        message: str,
+        affection: AffectionProfile | None = None,
+    ) -> str:
         cleaned_message = message.strip()
         if not cleaned_message:
             cleaned_message = "oi"
 
-        prompt = build_prompt(self._character, history, user_name, cleaned_message)
+        prompt = build_prompt(self._character, history, user_name, cleaned_message, affection)
         try:
             response = await self._client.chat.completions.create(
                 model=self._settings.openai_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.8,
+                temperature=1.05,
                 max_tokens=220,
                 presence_penalty=0.4,
-                frequency_penalty=0.7,
+                frequency_penalty=0.55,
             )
         except RateLimitError as error:
             if getattr(error, "code", None) == "insufficient_quota":

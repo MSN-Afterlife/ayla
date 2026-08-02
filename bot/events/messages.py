@@ -7,6 +7,7 @@ from bot.memory.conversation_store import ConversationStore
 from bot.services.chat_engine import ChatEngine
 from bot.services.chat_engine import ChatEngineError
 from bot.services.chat_config import ChatConfigStore
+from bot.services.affection_service import AffectionService
 from bot.services.level_service import LevelService
 
 
@@ -14,6 +15,7 @@ def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: Cha
     character = load_character(settings.character_file)
     memory = ConversationStore(limit=settings.memory_limit)
     chat_engine = ChatEngine(character, settings)
+    affection_service = AffectionService(settings)
     level_service = LevelService(settings)
 
     @bot.event
@@ -44,10 +46,16 @@ def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: Cha
         conversation_id = f"{message.guild.id if message.guild else 'dm'}:{message.channel.id}"
         user_name = message.author.display_name
         content = _clean_bot_mention(message.clean_content, bot.user.display_name if bot.user else "")
+        affection = affection_service.observe_message(
+            guild_id=message.guild.id if message.guild else None,
+            user_id=message.author.id,
+            user_name=user_name,
+            content=content,
+        )
 
         history = memory.get_recent(conversation_id)
         try:
-            response = await chat_engine.reply(history, user_name, content)
+            response = await chat_engine.reply(history, user_name, content, affection)
         except ChatEngineError as error:
             await message.channel.send(str(error))
             return

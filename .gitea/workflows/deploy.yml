@@ -29,6 +29,7 @@ jobs:
           docker run --detach \
             --name meu-bot \
             --restart unless-stopped \
+            --publish 127.0.0.1:8090:8090 \
             --env-file "$env_file" \
             --volume "$runtime_dir/data:/app/data" \
             meu-bot:latest

@@ -28,7 +28,7 @@ class Settings:
     chat_config_path: str = "data/chat_config.json"
     site_api_enabled: bool = True
     site_api_host: str = "0.0.0.0"
-    site_api_port: int = 8080
+    site_api_port: int = 8090
     site_api_cors_origin: str = "*"
     site_api_key: str | None = None
 
@@ -63,7 +63,7 @@ def load_settings() -> Settings:
         chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
         site_api_enabled=_load_bool("SITE_API_ENABLED", True),
         site_api_host=os.getenv("SITE_API_HOST", "0.0.0.0"),
-        site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8080"))),
+        site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),
         site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
         site_api_key=os.getenv("SITE_API_KEY"),
     )

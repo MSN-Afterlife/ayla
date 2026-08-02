@@ -54,6 +54,7 @@ HELP_CATEGORIES = {
             ("Spotify/Deezer", "Links de faixa sao convertidos para busca e tocados por uma fonte compativel.", False),
             ("`{prefix}pa` / `{prefix}r` / `{prefix}sk` / `{prefix}s`", "Pausa, continua, pula ou para a fila.", False),
             ("`{prefix}q` / `{prefix}np`", "Mostra a fila ou a musica atual.", True),
+            ("`{prefix}lyrics` / `{prefix}ly` / `{prefix}letra`", "Busca a letra da musica atual ou de uma busca.", False),
             ("`{prefix}v 80` / `{prefix}go 90`", "Ajusta volume ou vai para um tempo da faixa atual.", True),
             ("`{prefix}ff 10` / `{prefix}rw 10`", "Avanca ou volta alguns segundos.", True),
             ("`{prefix}flt bassboost`", "Filtros: none, bassboost, nightcore, vaporwave e soft.", True),

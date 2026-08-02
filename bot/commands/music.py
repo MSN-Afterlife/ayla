@@ -7,6 +7,8 @@ from bot.services.music_player import MusicError
 from bot.services.music_player import MusicService
 from bot.services.music_player import RepeatMode
 from bot.services.music_player import Track
+from bot.services.lyrics_service import LyricsError
+from bot.services.lyrics_service import LyricsService
 
 
 async def _send(ctx: commands.Context, message: str) -> None:
@@ -21,6 +23,7 @@ async def _send(ctx: commands.Context, message: str) -> None:
 
 def setup_music_commands(bot: commands.Bot) -> None:
     music = MusicService(bot)
+    lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")
     async def play(ctx: commands.Context, *, query: str) -> None:
@@ -266,6 +269,28 @@ def setup_music_commands(bot: commands.Bot) -> None:
 
         await _send(ctx, f"Filtro definido como `{selected}`. Opcoes: `{', '.join(FILTERS)}`.")
 
+    @bot.hybrid_command(name="lyrics", aliases=["ly", "letra"], description="Busca a letra da musica atual ou de uma busca.")
+    async def lyrics(ctx: commands.Context, *, query: str | None = None) -> None:
+        await ctx.defer()
+        try:
+            if query:
+                result = await lyrics_service.search(query)
+            else:
+                if not ctx.guild:
+                    await ctx.send("Use uma busca ou rode esse comando dentro de um servidor com musica tocando.")
+                    return
+                current = music.player_for(ctx.guild.id).current
+                if not current:
+                    await ctx.send("Nao tem musica tocando agora. Use `a!lyrics nome da musica`.")
+                    return
+                result = await lyrics_service.find_for_track(current)
+        except LyricsError as error:
+            await ctx.send(str(error))
+            return
+
+        pages = _lyrics_pages(result.lyrics)
+        await ctx.send(embed=_lyrics_embed(result.title, result.artist, pages, 0), view=LyricsView(result.title, result.artist, pages))
+
 
 async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
     channel = ctx.author.voice.channel
@@ -306,3 +331,54 @@ def _format_duration(seconds: int) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{remaining_seconds:02d}"
     return f"{minutes}:{remaining_seconds:02d}"
+
+
+class LyricsView(discord.ui.View):
+    def __init__(self, title: str, artist: str | None, pages: list[str]) -> None:
+        super().__init__(timeout=180)
+        self._title = title
+        self._artist = artist
+        self._pages = pages
+        self._index = 0
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._index = (self._index - 1) % len(self._pages)
+        await interaction.response.edit_message(embed=_lyrics_embed(self._title, self._artist, self._pages, self._index), view=self)
+
+    @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._index = (self._index + 1) % len(self._pages)
+        await interaction.response.edit_message(embed=_lyrics_embed(self._title, self._artist, self._pages, self._index), view=self)
+
+
+def _lyrics_embed(title: str, artist: str | None, pages: list[str], index: int) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"Letra - {title}",
+        description=pages[index],
+        color=0x1DB954,
+    )
+    if artist:
+        embed.add_field(name="Artista", value=artist, inline=False)
+    embed.set_footer(text=f"Pagina {index + 1}/{len(pages)}")
+    return embed
+
+
+def _lyrics_pages(lyrics: str) -> list[str]:
+    max_length = 3600
+    lines = lyrics.splitlines()
+    pages = []
+    current = ""
+
+    for line in lines:
+        candidate = f"{current}\n{line}".strip()
+        if len(candidate) > max_length and current:
+            pages.append(current)
+            current = line
+        else:
+            current = candidate
+
+    if current:
+        pages.append(current)
+
+    return pages or ["Letra indisponivel."]

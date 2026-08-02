@@ -17,27 +17,29 @@ from bot.services.chat_config import ChatConfigStore
 from bot.services.site_api import SiteApiServer
 
 
+class AylaBot(commands.Bot):
+    def __init__(self, settings: Settings, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._site_api = SiteApiServer(settings) if settings.site_api_enabled else None
+
+    async def setup_hook(self) -> None:
+        if self._site_api:
+            await self._site_api.start()
+
+    async def close(self) -> None:
+        if self._site_api:
+            await self._site_api.stop()
+        await super().close()
+
+
 def create_bot(settings: Settings) -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
 
-    bot = commands.Bot(command_prefix=settings.command_prefix, intents=intents, help_command=None)
+    bot = AylaBot(settings, command_prefix=settings.command_prefix, intents=intents, help_command=None)
     bot._slash_synced = False
     bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)
-    site_api = SiteApiServer(settings) if settings.site_api_enabled else None
-
-    async def setup_hook() -> None:
-        if site_api:
-            await site_api.start()
-
-    async def close() -> None:
-        if site_api:
-            await site_api.stop()
-        await commands.Bot.close(bot)
-
-    bot.setup_hook = setup_hook
-    bot.close = close
 
     @bot.event
     async def on_ready() -> None:

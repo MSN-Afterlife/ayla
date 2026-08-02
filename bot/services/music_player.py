@@ -52,6 +52,8 @@ class Track:
     stream_url: str
     requested_by: str
     duration: int | None = None
+    artist: str | None = None
+    album: str | None = None
 
 
 class GuildMusicPlayer:
@@ -281,11 +283,13 @@ class MusicService:
             raise MusicError("Nao consegui obter o audio dessa fonte.")
 
         return Track(
-            title=info.get("title") or "Musica sem titulo",
+            title=info.get("track") or info.get("title") or "Musica sem titulo",
             webpage_url=info.get("webpage_url") or fallback_url,
             stream_url=stream_url,
             requested_by=requested_by,
             duration=info.get("duration"),
+            artist=info.get("artist") or info.get("creator") or info.get("uploader"),
+            album=info.get("album"),
         )
 
     async def _normalize_query(self, query: str) -> str:

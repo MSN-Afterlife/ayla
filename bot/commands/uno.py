@@ -2,6 +2,7 @@ import random
 from dataclasses import dataclass, field
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 
@@ -169,6 +170,7 @@ class UnoGame:
 
 def setup_uno_commands(bot: commands.Bot) -> None:
     games: dict[int, UnoGame] = {}
+    uno_slash = app_commands.Group(name="uno", description="Joga UNO da Ayla com 2+ jogadores.")
 
     @bot.group(name="uno", invoke_without_command=True)
     async def uno(ctx: commands.Context) -> None:
@@ -325,6 +327,185 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
         games.pop(ctx.channel.id, None)
         await ctx.send("Mesa de UNO cancelada.")
+
+    @uno_slash.command(name="criar", description="Cria uma mesa de UNO neste canal.")
+    async def uno_create_slash(interaction: discord.Interaction) -> None:
+        if not interaction.guild or not interaction.channel:
+            await interaction.response.send_message("UNO precisa ser criado dentro de um servidor.", ephemeral=True)
+            return
+        if interaction.channel.id in games:
+            await interaction.response.send_message("Ja existe uma mesa de UNO neste canal.", ephemeral=True)
+            return
+
+        games[interaction.channel.id] = UnoGame(interaction.channel.id, interaction.user)
+        await interaction.response.send_message(f"Mesa de UNO criada por {interaction.user.mention}. Use `/uno entrar` para participar.")
+
+    @uno_slash.command(name="entrar", description="Entra na mesa de UNO deste canal.")
+    async def uno_join_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game:
+            await interaction.response.send_message("Nao tem mesa de UNO neste canal. Use `/uno criar`.", ephemeral=True)
+            return
+        if game.add_player(interaction.user):
+            await interaction.response.send_message(f"{interaction.user.mention} entrou na mesa. Jogadores: `{len(game.players)}`.")
+            return
+        await interaction.response.send_message("Voce ja esta na mesa ou a partida ja comecou.", ephemeral=True)
+
+    @uno_slash.command(name="iniciar", description="Inicia a partida e envia as cartas por DM.")
+    async def uno_start_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game:
+            await interaction.response.send_message("Nao tem mesa de UNO neste canal.", ephemeral=True)
+            return
+        if interaction.user.id != game.host_id:
+            await interaction.response.send_message("Apenas quem criou a mesa pode iniciar.", ephemeral=True)
+            return
+        if len(game.players) < 2:
+            await interaction.response.send_message("UNO precisa de pelo menos 2 jogadores.", ephemeral=True)
+            return
+
+        game.start()
+        failed = await _dm_all_hands(game)
+        message = "Nao consegui mandar DM para: " + ", ".join(failed) if failed else None
+        await interaction.response.send_message(content=message, embed=_table_embed(game, "Partida iniciada."))
+
+    @uno_slash.command(name="mao", description="Reenvia sua mao por DM.")
+    async def uno_hand_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        player = _find_player(game, interaction.user.id) if game else None
+        if not game or not player:
+            await interaction.response.send_message("Voce nao esta em uma mesa de UNO neste canal.", ephemeral=True)
+            return
+        if await _send_hand(player, game):
+            await interaction.response.send_message("Mandei sua mao no privado.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nao consegui te mandar DM. Abra suas mensagens privadas para a Ayla.", ephemeral=True)
+
+    @uno_slash.command(name="mesa", description="Mostra o estado atual da mesa.")
+    async def uno_table_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game or not game.started:
+            await interaction.response.send_message("Nao tem partida de UNO em andamento neste canal.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=_table_embed(game))
+
+    @uno_slash.command(name="jogar", description="Joga uma carta da sua mao.")
+    @app_commands.describe(numero="Numero da carta na sua mao.", cor="Cor para coringa ou +4.")
+    async def uno_play_slash(interaction: discord.Interaction, numero: int, cor: str | None = None) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game or not game.started:
+            await interaction.response.send_message("Nao tem partida de UNO em andamento neste canal.", ephemeral=True)
+            return
+        if interaction.user.id != game.current_player.member.id:
+            await interaction.response.send_message(f"Agora e a vez de {game.current_player.member.mention}.", ephemeral=True)
+            return
+
+        normalized_color = _normalize_color(cor)
+        acting_player = game.current_player
+        ok, message, card = game.play(numero - 1, normalized_color)
+        if not ok:
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        await _send_hand(acting_player, game)
+        winner = game.winner()
+        if winner:
+            games.pop(interaction.channel.id, None)
+            await interaction.response.send_message(embed=_winner_embed(winner, card))
+            return
+
+        if len(acting_player.hand) == 1 and not acting_player.said_uno:
+            acting_player.hand.extend([game.draw_one(), game.draw_one()])
+            message += " Nao falou UNO com uma carta: comprou 2."
+            await _send_hand(acting_player, game)
+
+        await _send_hand(game.current_player, game)
+        await interaction.response.send_message(embed=_table_embed(game, message))
+
+    @uno_slash.command(name="comprar", description="Compra uma carta.")
+    async def uno_draw_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game or not game.started:
+            await interaction.response.send_message("Nao tem partida de UNO em andamento neste canal.", ephemeral=True)
+            return
+        if interaction.user.id != game.current_player.member.id:
+            await interaction.response.send_message(f"Agora e a vez de {game.current_player.member.mention}.", ephemeral=True)
+            return
+        game.draw_for_current()
+        await _send_hand(game.current_player, game)
+        await interaction.response.send_message(f"{interaction.user.mention} comprou uma carta. Se nao for jogar, use `/uno passar`.")
+
+    @uno_slash.command(name="passar", description="Passa a vez depois de comprar.")
+    async def uno_pass_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game or not game.started:
+            await interaction.response.send_message("Nao tem partida de UNO em andamento neste canal.", ephemeral=True)
+            return
+        if interaction.user.id != game.current_player.member.id:
+            await interaction.response.send_message(f"Agora e a vez de {game.current_player.member.mention}.", ephemeral=True)
+            return
+        if not game.awaiting_draw:
+            await interaction.response.send_message("Voce precisa comprar antes de passar.", ephemeral=True)
+            return
+        game.pass_turn()
+        await _send_hand(game.current_player, game)
+        await interaction.response.send_message(embed=_table_embed(game, "Vez passada."))
+
+    @uno_slash.command(name="uno", description="Declara UNO quando voce esta com uma carta.")
+    async def uno_call_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        player = _find_player(game, interaction.user.id) if game else None
+        if not game or not player:
+            await interaction.response.send_message("Voce nao esta nessa partida.", ephemeral=True)
+            return
+        if len(player.hand) != 1:
+            await interaction.response.send_message("Voce so pode falar UNO quando esta com uma carta.", ephemeral=True)
+            return
+        player.said_uno = True
+        await interaction.response.send_message(f"{interaction.user.mention} falou UNO.")
+
+    @uno_slash.command(name="cancelar", description="Cancela a mesa de UNO deste canal.")
+    async def uno_cancel_slash(interaction: discord.Interaction) -> None:
+        if not interaction.channel:
+            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
+            return
+        game = games.get(interaction.channel.id)
+        if not game:
+            await interaction.response.send_message("Nao tem mesa de UNO neste canal.", ephemeral=True)
+            return
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        can_cancel = interaction.user.id == game.host_id or bool(permissions and permissions.manage_guild)
+        if not can_cancel:
+            await interaction.response.send_message("Apenas quem criou a mesa ou alguem com permissao de gerenciar servidor pode cancelar.", ephemeral=True)
+            return
+        games.pop(interaction.channel.id, None)
+        await interaction.response.send_message("Mesa de UNO cancelada.")
+
+    bot.tree.add_command(uno_slash)
 
 
 async def _dm_all_hands(game: UnoGame) -> list[str]:

@@ -218,7 +218,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
             delta=amount if won else -amount,
         )
 
-    @bot.command(name="21", aliases=["blackjack", "bj"])
+    @bot.hybrid_command(name="21", aliases=["blackjack", "bj"], description="Joga 21 contra a Ayla com botoes de pedir/parar.")
     async def blackjack(ctx: commands.Context, amount: int) -> None:
         try:
             _validate_bet(economy, ctx.author.id, amount)

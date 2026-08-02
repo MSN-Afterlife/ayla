@@ -14,6 +14,7 @@ from bot.commands.music import setup_music_commands
 from bot.config import Settings
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
+from bot.services.site_api import SiteApiServer
 
 
 def create_bot(settings: Settings) -> commands.Bot:
@@ -24,6 +25,19 @@ def create_bot(settings: Settings) -> commands.Bot:
     bot._slash_synced = False
     bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)
+    site_api = SiteApiServer(settings) if settings.site_api_enabled else None
+
+    async def setup_hook() -> None:
+        if site_api:
+            await site_api.start()
+
+    async def close() -> None:
+        if site_api:
+            await site_api.stop()
+        await commands.Bot.close(bot)
+
+    bot.setup_hook = setup_hook
+    bot.close = close
 
     @bot.event
     async def on_ready() -> None:

@@ -26,6 +26,11 @@ class Settings:
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60
     chat_config_path: str = "data/chat_config.json"
+    site_api_enabled: bool = True
+    site_api_host: str = "0.0.0.0"
+    site_api_port: int = 8080
+    site_api_cors_origin: str = "*"
+    site_api_key: str | None = None
 
 
 def load_settings() -> Settings:
@@ -56,6 +61,11 @@ def load_settings() -> Settings:
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
         levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),
         chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
+        site_api_enabled=_load_bool("SITE_API_ENABLED", True),
+        site_api_host=os.getenv("SITE_API_HOST", "0.0.0.0"),
+        site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8080"))),
+        site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
+        site_api_key=os.getenv("SITE_API_KEY"),
     )
 
 
@@ -65,3 +75,10 @@ def _load_list(name: str, default: list[str]) -> list[str]:
         return default
 
     return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
+def _load_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "sim", "on"}

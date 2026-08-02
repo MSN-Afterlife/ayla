@@ -12,4 +12,6 @@ RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 COPY . .
 
+EXPOSE 8080
+
 CMD ["python", "main.py"]

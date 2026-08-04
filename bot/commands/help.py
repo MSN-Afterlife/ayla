@@ -147,6 +147,27 @@ HELP_CATEGORIES = {
         ],
         "color": 0xE74C3C,
     },
+    "admin": {
+        "label": "Admin",
+        "title": "Ajuda administrativa",
+        "description": "Comandos para moderacao, configuracao e manutencao do bot.",
+        "fields": [
+            ("`{prefix}statusgeral`", "Mostra diagnostico completo do bot. Aliases: `{prefix}lynstatus`, `{prefix}aylastatus`, `{prefix}botstatus`.", False),
+            ("`{prefix}addmoney @user 100`", "Adiciona ou remove winks de uma carteira.", False),
+            ("`{prefix}addxp @user 100`", "Adiciona XP local para um usuario.", False),
+            ("`{prefix}dailyconfig <url>`", "Configura o link usado pelo comando daily.", False),
+            ("`/chatconfig canal #canal`", "Define o canal fixo onde a Ayla conversa.", False),
+            ("`/chatconfig limpar`", "Remove o canal fixo de conversa.", False),
+            ("`{prefix}aviso #canal <mensagem>`", "Envia um aviso simples em embed.", False),
+            ("`{prefix}avisoayla #canal`", "Envia o aviso oficial de chegada da Ayla.", False),
+            ("`{prefix}avisojson #canal` + anexo", "Envia um embed a partir de JSON anexado.", False),
+            ("`{prefix}avisoimportar nome` + anexo", "Salva um modelo JSON em `bot/announcements`.", False),
+            ("`{prefix}avisomodelo #canal nome`", "Envia um modelo de aviso salvo.", False),
+            ("`{prefix}afetoajustar @user 30 10`", "Ajusta afeto e respeito da Ayla por alguem.", False),
+            ("`{prefix}afetolimpar @user`", "Reseta a memoria afetiva de um usuario.", False),
+        ],
+        "color": 0xE67E22,
+    },
 }
 
 
@@ -155,6 +176,11 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
     async def help_command(ctx: commands.Context) -> None:
         view = HelpView(settings.command_prefix)
         await ctx.send(embed=build_help_embed("inicio", settings.command_prefix), view=view)
+
+    @bot.command(name="helpadmin", aliases=["adminhelp", "ajudaadmin", "comandosadmin"])
+    @commands.has_permissions(manage_guild=True)
+    async def admin_help_command(ctx: commands.Context) -> None:
+        await ctx.send(embed=build_help_embed("admin", settings.command_prefix))
 
     @bot.tree.command(name="help", description="Abre o menu de ajuda do bot.")
     async def help_slash(interaction: discord.Interaction) -> None:
@@ -165,6 +191,16 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
         except discord.NotFound:
             if interaction.channel:
                 await interaction.channel.send(embed=build_help_embed("inicio", "/"), view=view)
+
+    @bot.tree.command(name="helpadmin", description="Abre a ajuda administrativa do bot.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def admin_help_slash(interaction: discord.Interaction) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(embed=build_help_embed("admin", "/"), ephemeral=True)
+        except discord.NotFound:
+            if interaction.channel:
+                await interaction.channel.send(embed=build_help_embed("admin", "/"))
 
 
 class HelpView(discord.ui.View):

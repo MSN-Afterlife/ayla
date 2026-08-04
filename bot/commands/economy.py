@@ -11,6 +11,8 @@ from bot.services.economy_images import build_bet_card
 
 
 DAILY_URL_SETTING = "daily_site_url"
+WINKS_GUILD_ID = 1472950966113276068
+WINKS_EMOJI_NAME = "winks"
 
 
 def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -22,16 +24,16 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         profile = economy.get_profile(target.id)
         embed = discord.Embed(title="Carteira da Ayla", color=0x7AA7FF)
         embed.set_author(name=target.display_name, icon_url=target.display_avatar.url)
-        embed.add_field(name="Saldo", value=_currency(profile.balance), inline=True)
+        embed.add_field(name="Saldo", value=_currency(profile.balance, bot), inline=True)
         embed.add_field(name="Daily streak", value=f"{profile.daily_streak} dia(s)", inline=True)
         await ctx.send(embed=embed)
 
-    @bot.hybrid_command(name="daily", aliases=["diario"], description="Abre o site para coletar suas luas diarias.")
+    @bot.hybrid_command(name="daily", aliases=["diario"], description="Abre o site para coletar seus winks diarios.")
     async def daily(ctx: commands.Context) -> None:
         daily_url = economy.get_setting(DAILY_URL_SETTING, settings.daily_site_url)
         embed = discord.Embed(
             title="Daily pelo site",
-            description=f"Resgate suas luas diarias pelo site. Valor base: {_currency(DAILY_AMOUNT)}.",
+            description=f"Resgate seus winks diarios pelo site. Valor base: {_currency(DAILY_AMOUNT, bot)}.",
             color=0x7AA7FF,
         )
         embed.add_field(name="Link", value=daily_url, inline=False)
@@ -61,13 +63,13 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
             await ctx.send(str(error))
             return
 
-        embed = discord.Embed(title="Luas adicionadas", color=0x7AA7FF)
+        embed = discord.Embed(title="Winks adicionados", color=0x7AA7FF)
         embed.add_field(name="Usuario", value=member.mention, inline=True)
-        embed.add_field(name="Valor", value=_currency(amount), inline=True)
-        embed.add_field(name="Saldo atual", value=_currency(profile.balance), inline=False)
+        embed.add_field(name="Valor", value=_currency(amount, bot), inline=True)
+        embed.add_field(name="Saldo atual", value=_currency(profile.balance, bot), inline=False)
         await ctx.send(embed=embed)
 
-    @bot.hybrid_command(name="pagar", aliases=["pay"], description="Transfere luas para outro usuario.")
+    @bot.hybrid_command(name="pagar", aliases=["pay"], description="Transfere winks para outro usuario.")
     async def pay(ctx: commands.Context, member: discord.Member, amount: int) -> None:
         try:
             sender, receiver = economy.transfer(ctx.author.id, member.id, amount)
@@ -78,9 +80,9 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         embed = discord.Embed(title="Transferencia concluida", color=0x7AA7FF)
         embed.add_field(name="De", value=ctx.author.mention, inline=True)
         embed.add_field(name="Para", value=member.mention, inline=True)
-        embed.add_field(name="Valor", value=_currency(amount), inline=True)
-        embed.add_field(name="Saldo de quem enviou", value=_currency(sender.balance), inline=True)
-        embed.add_field(name="Saldo de quem recebeu", value=_currency(receiver.balance), inline=True)
+        embed.add_field(name="Valor", value=_currency(amount, bot), inline=True)
+        embed.add_field(name="Saldo de quem enviou", value=_currency(sender.balance, bot), inline=True)
+        embed.add_field(name="Saldo de quem recebeu", value=_currency(receiver.balance, bot), inline=True)
         await ctx.send(embed=embed)
 
     @bot.hybrid_command(name="coinflip", aliases=["cf", "caracoroa"], description="Aposta cara ou coroa contra a Ayla.")
@@ -226,7 +228,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
             await ctx.send(str(error))
             return
 
-        view = BlackjackView(economy, ctx.author, amount)
+        view = BlackjackView(economy, ctx.bot, ctx.author, amount)
         await ctx.send(embed=view.embed(), view=view)
 
     @bot.hybrid_command(name="cartaalta", aliases=["war", "guerra"], description="Aposte na maior carta contra a Ayla.")
@@ -274,11 +276,11 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
 
         embed = discord.Embed(
             title="Desafio de aposta",
-            description=f"{ctx.author.mention} desafiou {member.mention} para uma aposta de {_currency_inline(amount)}.",
+            description=f"{ctx.author.mention} desafiou {member.mention} para uma aposta de {_currency_inline(amount, bot)}.",
             color=0xF1C40F,
         )
         embed.add_field(name="Jogo", value="Cara ou coroa automatico. Quem vencer leva o valor apostado do outro.", inline=False)
-        await ctx.send(embed=embed, view=UserBetView(economy, ctx.author, member, amount))
+        await ctx.send(embed=embed, view=UserBetView(economy, bot, ctx.author, member, amount))
 
 
 class DailyRedirectView(discord.ui.View):
@@ -288,9 +290,10 @@ class DailyRedirectView(discord.ui.View):
 
 
 class UserBetView(discord.ui.View):
-    def __init__(self, economy: EconomyService, challenger: discord.Member | discord.User, opponent: discord.Member | discord.User, amount: int) -> None:
+    def __init__(self, economy: EconomyService, bot: commands.Bot, challenger: discord.Member | discord.User, opponent: discord.Member | discord.User, amount: int) -> None:
         super().__init__(timeout=120)
         self._economy = economy
+        self._bot = bot
         self._challenger = challenger
         self._opponent = opponent
         self._amount = amount
@@ -312,7 +315,7 @@ class UserBetView(discord.ui.View):
         self._economy.add_balance(loser.id, -self._amount)
         embed = discord.Embed(
             title="Aposta finalizada",
-            description=f"{winner.mention} venceu {_currency_inline(self._amount)} de {loser.mention}.",
+            description=f"{winner.mention} venceu {_currency_inline(self._amount, self._bot)} de {loser.mention}.",
             color=0x2ECC71,
         )
         await interaction.response.edit_message(embed=embed, view=None)
@@ -326,9 +329,10 @@ class UserBetView(discord.ui.View):
 
 
 class BlackjackView(discord.ui.View):
-    def __init__(self, economy: EconomyService, player: discord.Member | discord.User, amount: int) -> None:
+    def __init__(self, economy: EconomyService, bot: commands.Bot, player: discord.Member | discord.User, amount: int) -> None:
         super().__init__(timeout=120)
         self._economy = economy
+        self._bot = bot
         self._player = player
         self._amount = amount
         self._deck = _new_deck()
@@ -346,11 +350,11 @@ class BlackjackView(discord.ui.View):
         embed.add_field(name="Sua mao", value=f"{_format_hand(self._player_hand)}\nTotal: `{player_total}`", inline=False)
         hidden = "" if reveal_dealer else " + ??"
         embed.add_field(name="Mao da Ayla", value=f"{_format_hand(dealer_cards)}{hidden}\nTotal visivel: `{dealer_total}`", inline=False)
-        embed.add_field(name="Aposta", value=_currency(self._amount), inline=True)
+        embed.add_field(name="Aposta", value=_currency(self._amount, self._bot), inline=True)
         if result:
             embed.add_field(name="Resultado", value=result, inline=True)
         if balance is not None:
-            embed.add_field(name="Saldo atual", value=_currency(balance), inline=True)
+            embed.add_field(name="Saldo atual", value=_currency(balance, self._bot), inline=True)
         return embed
 
     @discord.ui.button(label="Pedir", style=discord.ButtonStyle.primary)
@@ -380,7 +384,7 @@ class BlackjackView(discord.ui.View):
         elif player_total < dealer_total:
             await self._finish(interaction, "Derrota", -self._amount, "A Ayla venceu essa.")
         else:
-            await self._finish(interaction, "Empate", 0, "Ninguem perdeu luas.")
+            await self._finish(interaction, "Empate", 0, "Ninguem perdeu winks.")
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self._player.id:
@@ -519,12 +523,12 @@ async def _send_bet_result(
     delta: int | None = None,
 ) -> None:
     file = build_bet_card(title, details, values, won=won, amount=amount, balance=balance, delta=delta)
-    embed = _bet_embed(title, user, amount, won, details, balance, multiplier=multiplier)
+    embed = _bet_embed(title, user, amount, won, details, balance, bot=ctx.bot, multiplier=multiplier)
     embed.set_image(url="attachment://aposta.png")
     await ctx.send(embed=embed, file=file)
 
 
-def _bet_embed(title: str, user: discord.Member | discord.User, amount: int, won: bool, details: str, balance: int, multiplier: str | None = None) -> discord.Embed:
+def _bet_embed(title: str, user: discord.Member | discord.User, amount: int, won: bool, details: str, balance: int, bot: commands.Bot | None = None, multiplier: str | None = None) -> discord.Embed:
     embed = discord.Embed(
         title=title,
         description=details,
@@ -532,20 +536,32 @@ def _bet_embed(title: str, user: discord.Member | discord.User, amount: int, won
     )
     embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     embed.add_field(name="Resultado", value="Vitoria" if won else "Derrota", inline=True)
-    embed.add_field(name="Aposta", value=_currency(amount), inline=True)
+    embed.add_field(name="Aposta", value=_currency(amount, bot), inline=True)
     if multiplier:
         embed.add_field(name="Pagamento", value=multiplier, inline=True)
-    embed.add_field(name="Saldo atual", value=_currency(balance), inline=False)
+    embed.add_field(name="Saldo atual", value=_currency(balance, bot), inline=False)
     return embed
 
 
-def _currency(amount: int) -> str:
-    return f"`{amount}` {_currency_name(amount)}"
+def _currency(amount: int, bot: commands.Bot | None = None) -> str:
+    emoji = _currency_emoji(bot)
+    prefix = f"{emoji} " if emoji else ""
+    return f"{prefix}`{amount}` {_currency_name(amount)}"
 
 
-def _currency_inline(amount: int) -> str:
-    return f"`{amount}` {_currency_name(amount)}"
+def _currency_inline(amount: int, bot: commands.Bot | None = None) -> str:
+    return _currency(amount, bot)
 
 
 def _currency_name(amount: int) -> str:
-    return "lua" if abs(amount) == 1 else "luas"
+    return "wink" if abs(amount) == 1 else "winks"
+
+
+def _currency_emoji(bot: commands.Bot | None) -> str | None:
+    if bot is None:
+        return None
+    guild = bot.get_guild(WINKS_GUILD_ID)
+    if guild is None:
+        return None
+    emoji = discord.utils.get(guild.emojis, name=WINKS_EMOJI_NAME)
+    return str(emoji) if emoji else None

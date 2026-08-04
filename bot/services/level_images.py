@@ -47,7 +47,7 @@ async def build_profile_card(
 
     balance = economy.balance if economy else 0
     streak = economy.daily_streak if economy else 0
-    _detail_box(draw, 252, 412, "LUAS", str(balance))
+    _detail_box(draw, 252, 412, "WINKS", str(balance))
     _detail_box(draw, 472, 412, "DAILY", f"{streak} dia(s)")
     _detail_box(draw, 692, 412, "XP", str(profile.xp))
 

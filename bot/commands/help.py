@@ -118,14 +118,14 @@ HELP_CATEGORIES = {
     "economia": {
         "label": "Economia",
         "title": "Sistema de economia",
-        "description": "Luas persistentes com daily, transferencias e apostas.",
+        "description": "Winks persistentes com daily, transferencias e apostas.",
         "fields": [
             ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
             ("`{prefix}daily`", "Abre o link do site para resgatar o daily.", False),
             ("`{prefix}dailyconfig <url>`", "Administradores configuram o link do daily.", False),
-            ("`{prefix}pagar @user 100`", "Transfere luas para outra pessoa.", False),
+            ("`{prefix}pagar @user 100`", "Transfere winks para outra pessoa.", False),
             ("`{prefix}cf 500 cara`", "Aposta cara ou coroa contra a Ayla.", False),
-            ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com luas.", False),
+            ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com winks.", False),
             ("`{prefix}roleta 500 vermelho`", "Aposta em cor, par/impar ou numero 0-36.", False),
             ("`{prefix}highlow 500 maior`", "Aposta se a proxima carta sera maior ou menor.", False),
             ("`{prefix}21 500`", "Joga 21 contra a Ayla com botoes de pedir/parar.", False),

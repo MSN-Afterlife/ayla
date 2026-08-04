@@ -46,11 +46,11 @@ def build_bet_card(
     _center_text(draw, (692, 34, 850, 78), badge_text, label_font, (255, 255, 255))
 
     _draw_value_row(draw, values, value_font)
-    _metric(draw, 42, 278, "APOSTA", f"{amount} lua" if abs(amount) == 1 else f"{amount} luas", small_font, label_font)
-    _metric(draw, 284, 278, "SALDO", f"{balance} lua" if abs(balance) == 1 else f"{balance} luas", small_font, label_font)
+    _metric(draw, 42, 278, "APOSTA", _currency_text(amount), small_font, label_font)
+    _metric(draw, 284, 278, "SALDO", _currency_text(balance), small_font, label_font)
     delta = amount if delta is None else delta
     delta_prefix = "+" if delta > 0 else ""
-    _metric(draw, 526, 278, "GANHO/PERDA", delta_prefix + (f"{delta} lua" if abs(delta) == 1 else f"{delta} luas"), small_font, label_font)
+    _metric(draw, 526, 278, "GANHO/PERDA", delta_prefix + _currency_text(delta), small_font, label_font)
 
     return _file(image, filename)
 
@@ -107,6 +107,10 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, m
     while trimmed and draw.textlength(f"{trimmed}...", font=font) > max_width:
         trimmed = trimmed[:-1]
     return f"{trimmed}..."
+
+
+def _currency_text(amount: int) -> str:
+    return f"{amount} wink" if abs(amount) == 1 else f"{amount} winks"
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

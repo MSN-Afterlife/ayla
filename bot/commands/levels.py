@@ -6,6 +6,7 @@ from bot.config import Settings
 from bot.services.level_images import build_leaderboard_card
 from bot.services.level_images import build_level_card
 from bot.services.level_images import build_profile_card
+from bot.services.level_images import can_render_profile_background
 from bot.services.economy_service import EconomyService
 from bot.services.level_service import LevelProfile
 from bot.services.level_service import LevelService
@@ -30,6 +31,24 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         customization = level_service.get_profile_customization(target.id)
         file = await build_level_card(target, profile, f"Rank local - {ctx.guild.name}", ctx.guild)
         await ctx.send(file=file)
+
+    @bot.command(name="addxp")
+    @commands.has_permissions(administrator=True)
+    async def add_xp(ctx: commands.Context, member: discord.Member, amount: int) -> None:
+        if not ctx.guild:
+            await ctx.send("Esse comando so funciona dentro de um servidor.")
+            return
+
+        try:
+            _, guild_profile = level_service.add_xp(ctx.guild.id, member.id, member.display_name, amount)
+        except ValueError as error:
+            await ctx.send(str(error))
+            return
+
+        await ctx.send(
+            f"Adicionado `{amount}` XP para {member.mention}. "
+            f"XP local: `{guild_profile.xp}` | Level: `{guild_profile.level}` | Rank: `#{guild_profile.rank}`"
+        )
 
     @bot.tree.command(name="level", description="Mostra seu level e rank local.")
     @app_commands.describe(member="Usuario para consultar.")
@@ -96,7 +115,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
     @bot.command(name="perfilbgbuscar", aliases=["buscarperfilbg", "profilebgsearch"])
     async def search_profile_background(ctx: commands.Context, *, query: str) -> None:
         try:
-            urls = await media_search.search_images(query, limit=5)
+            urls = await _valid_background_urls(media_search, query)
         except MediaSearchError as error:
             await ctx.send(str(error))
             return
@@ -104,7 +123,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(
             "Escolha uma imagem para o background do perfil:",
             embed=_background_choice_embed(urls, 0),
-            view=ProfileBackgroundSearchView(level_service, ctx.author.id, urls),
+            view=ProfileBackgroundSearchView(level_service, economy_service, media_search, query, ctx.author, ctx.guild, urls),
         )
 
     @bot.command(name="perfilbglimpar", aliases=["limparperfilbg", "profilebgclear"])
@@ -139,8 +158,21 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
             await interaction.response.send_message("Envie uma URL ou anexe uma imagem.", ephemeral=True)
             return
 
-        level_service.set_profile_background(interaction.user.id, background_url)
-        await interaction.response.send_message("Background do seu perfil atualizado.", ephemeral=True)
+        if not await can_render_profile_background(background_url):
+            await interaction.response.send_message("Nao consegui carregar essa imagem. Tente outra URL ou envie como anexo.", ephemeral=True)
+            return
+
+        profile_data = level_service.get_guild_profile(interaction.guild.id, interaction.user.id, interaction.user.display_name) if interaction.guild else level_service.get_global_profile(interaction.user.id, interaction.user.display_name)
+        customization = level_service.get_profile_customization(interaction.user.id)
+        preview_customization = customization.__class__(background_url=background_url, background_mode=customization.background_mode, about=customization.about)
+        economy = economy_service.get_profile(interaction.user.id)
+        file = await build_profile_card(interaction.user, profile_data, "Previa do perfil", preview_customization, interaction.guild, economy)
+        await interaction.response.send_message(
+            "Veja como o perfil vai ficar antes de confirmar:",
+            file=file,
+            view=ProfileBackgroundConfirmView(level_service, interaction.user.id, background_url),
+            ephemeral=True,
+        )
 
     @profile_group.command(name="modo", description="Define como o background se encaixa no perfil.")
     @app_commands.describe(modo="cover corta preenchendo, contain mostra tudo, stretch estica.")
@@ -175,7 +207,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
     async def search_profile_background_slash(interaction: discord.Interaction, busca: str) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
-            urls = await media_search.search_images(busca, limit=5)
+            urls = await _valid_background_urls(media_search, busca)
         except MediaSearchError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return
@@ -183,7 +215,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.followup.send(
             "Escolha uma imagem para o background do perfil:",
             embed=_background_choice_embed(urls, 0),
-            view=ProfileBackgroundSearchView(level_service, interaction.user.id, urls),
+            view=ProfileBackgroundSearchView(level_service, economy_service, media_search, busca, interaction.user, interaction.guild, urls),
             ephemeral=True,
         )
 
@@ -234,12 +266,28 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
 
 class ProfileBackgroundSearchView(discord.ui.View):
-    def __init__(self, level_service: LevelService, user_id: int, urls: list[str]) -> None:
+    def __init__(
+        self,
+        level_service: LevelService,
+        economy_service: EconomyService,
+        media_search: MediaSearch,
+        query: str,
+        user: discord.Member | discord.User,
+        guild: discord.Guild | None,
+        urls: list[str],
+    ) -> None:
         super().__init__(timeout=180)
         self._level_service = level_service
-        self._user_id = user_id
+        self._economy_service = economy_service
+        self._media_search = media_search
+        self._query = query
+        self._user = user
+        self._user_id = user.id
+        self._guild = guild
         self._urls = urls
         self._index = 0
+        self._search_limit = 40
+        self._loading_more = False
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self._user_id:
@@ -247,39 +295,156 @@ class ProfileBackgroundSearchView(discord.ui.View):
             return False
         return True
 
+    @discord.ui.button(label="-5", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._guard(interaction):
+            return
+        await self._move(interaction, -5)
+
     @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._guard(interaction):
             return
-        self._index = (self._index - 1) % len(self._urls)
-        await interaction.response.edit_message(embed=_background_choice_embed(self._urls, self._index), view=self)
+        await self._move(interaction, -1)
 
-    @discord.ui.button(label="Escolher", style=discord.ButtonStyle.success)
-    async def choose(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    @discord.ui.button(label="Previa", style=discord.ButtonStyle.primary)
+    async def preview(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._guard(interaction):
             return
         url = self._urls[self._index]
-        self._level_service.set_profile_background(self._user_id, url)
-        embed = discord.Embed(title="Background atualizado", description=url, color=0x5865F2)
-        embed.set_image(url=url)
-        await interaction.response.edit_message(content="Background do seu perfil atualizado.", embed=embed, view=None)
+        await interaction.response.defer()
+        file = await self._preview_file(url)
+        await interaction.edit_original_response(
+            content="Confira a previa do perfil. Confirme apenas se estiver do jeito que voce quer.",
+            embed=None,
+            attachments=[file],
+            view=ProfileBackgroundConfirmView(self._level_service, self._user_id, url, self),
+        )
 
     @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._guard(interaction):
             return
-        self._index = (self._index + 1) % len(self._urls)
+        await self._move(interaction, 1)
+
+    @discord.ui.button(label="+5", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._guard(interaction):
+            return
+        await self._move(interaction, 5)
+
+    async def _move(self, interaction: discord.Interaction, amount: int) -> None:
+        target_index = self._index + amount
+        if target_index >= len(self._urls):
+            await interaction.response.defer()
+            loaded = await self._load_more()
+            if not loaded:
+                self._index = len(self._urls) - 1
+                await interaction.followup.send("Nao encontrei mais imagens validas por enquanto.", ephemeral=True)
+                await interaction.edit_original_response(embed=_background_choice_embed(self._urls, self._index), view=self)
+                return
+            self._index = min(target_index, len(self._urls) - 1)
+            await interaction.edit_original_response(embed=_background_choice_embed(self._urls, self._index), view=self)
+            return
+
+        if target_index < 0:
+            self._index = max(0, target_index)
+        else:
+            self._index = target_index
         await interaction.response.edit_message(embed=_background_choice_embed(self._urls, self._index), view=self)
+
+    async def _load_more(self) -> bool:
+        if self._loading_more:
+            return False
+
+        self._loading_more = True
+        try:
+            previous_count = len(self._urls)
+            self._search_limit += 40
+            urls = await _valid_background_urls(self._media_search, self._query, limit=self._search_limit, max_valid=previous_count + 25)
+            existing = set(self._urls)
+            self._urls.extend(url for url in urls if url not in existing)
+            return len(self._urls) > previous_count
+        finally:
+            self._loading_more = False
+
+    async def _preview_file(self, url: str) -> discord.File:
+        profile_data = (
+            self._level_service.get_guild_profile(self._guild.id, self._user.id, self._user.display_name)
+            if self._guild
+            else self._level_service.get_global_profile(self._user.id, self._user.display_name)
+        )
+        customization = self._level_service.get_profile_customization(self._user.id)
+        preview_customization = customization.__class__(background_url=url, background_mode=customization.background_mode, about=customization.about)
+        economy = self._economy_service.get_profile(self._user.id)
+        return await build_profile_card(self._user, profile_data, "Previa do perfil", preview_customization, self._guild, economy)
+
+
+class ProfileBackgroundConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        level_service: LevelService,
+        user_id: int,
+        url: str,
+        search_view: ProfileBackgroundSearchView | None = None,
+    ) -> None:
+        super().__init__(timeout=180)
+        self._level_service = level_service
+        self._user_id = user_id
+        self._url = url
+        self._search_view = search_view
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self._user_id:
+            await interaction.response.send_message("Essa confirmacao pertence a outra pessoa.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._guard(interaction):
+            return
+        self._level_service.set_profile_background(self._user_id, self._url)
+        await interaction.response.edit_message(content="Background do seu perfil atualizado.", attachments=[], view=None)
+
+    @discord.ui.button(label="Voltar", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._guard(interaction):
+            return
+        if not self._search_view:
+            await interaction.response.edit_message(content="Atualizacao cancelada.", attachments=[], view=None)
+            return
+        await interaction.response.edit_message(
+            content="Escolha uma imagem para o background do perfil:",
+            embed=_background_choice_embed(self._search_view._urls, self._search_view._index),
+            attachments=[],
+            view=self._search_view,
+        )
 
 
 def _background_choice_embed(urls: list[str], index: int) -> discord.Embed:
     embed = discord.Embed(
-        title=f"Imagem {index + 1}/{len(urls)}",
+        title=f"Imagem {index + 1}",
         description="Use os botoes para navegar e escolher.",
         color=0x5865F2,
     )
     embed.set_image(url=urls[index])
     return embed
+
+
+async def _valid_background_urls(media_search: MediaSearch, query: str, *, limit: int = 40, max_valid: int = 25) -> list[str]:
+    urls = await media_search.search_images(query, limit=limit)
+    valid_urls = []
+    for url in urls:
+        if await can_render_profile_background(url):
+            valid_urls.append(url)
+        if len(valid_urls) >= max_valid:
+            break
+
+    if not valid_urls:
+        raise MediaSearchError("Encontrei imagens, mas nenhuma carregou como background. Tente outra busca ou envie uma imagem por anexo.")
+
+    return valid_urls
 
 
 async def _resolve_leaderboard_users(

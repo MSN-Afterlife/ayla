@@ -53,7 +53,9 @@ class SiteApiServer:
         except (TypeError, ValueError):
             return web.json_response({"ok": False, "message": "discordUserId invalido."}, status=400)
 
-        profile, remaining = self._economy.claim_daily(user_id)
+        claim = self._economy.claim_daily(user_id)
+        profile = claim.profile
+        remaining = claim.remaining_seconds
         if remaining:
             return web.json_response(
                 {
@@ -67,13 +69,14 @@ class SiteApiServer:
             )
 
         return web.json_response(
-            {
-                "ok": True,
-                "message": "Daily resgatado com sucesso.",
-                "amount": DAILY_AMOUNT,
-                "balance": profile.balance,
-                "dailyStreak": profile.daily_streak,
-            }
+                {
+                    "ok": True,
+                    "message": "Daily resgatado com sucesso.",
+                    "amount": claim.amount or DAILY_AMOUNT,
+                    "bonus": claim.bonus,
+                    "balance": profile.balance,
+                    "dailyStreak": profile.daily_streak,
+                }
         )
 
     async def _options(self, request: web.Request) -> web.Response:

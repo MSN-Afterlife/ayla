@@ -1,6 +1,9 @@
+import re
+
 from bot.characters.loader import Character
 from bot.config import Settings
 from bot.memory.conversation_store import MessageEntry
+from bot.services.affection_service import AffectionProfile
 from bot.services.prompt_builder import build_prompt
 
 try:
@@ -29,20 +32,26 @@ class ChatEngine:
         self._settings = settings
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-    async def reply(self, history: list[MessageEntry], user_name: str, message: str) -> str:
+    async def reply(
+        self,
+        history: list[MessageEntry],
+        user_name: str,
+        message: str,
+        affection: AffectionProfile | None = None,
+    ) -> str:
         cleaned_message = message.strip()
         if not cleaned_message:
             cleaned_message = "oi"
 
-        prompt = build_prompt(self._character, history, user_name, cleaned_message)
+        prompt = build_prompt(self._character, history, user_name, cleaned_message, affection)
         try:
             response = await self._client.chat.completions.create(
                 model=self._settings.openai_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.95,
+                temperature=1.05,
                 max_tokens=220,
                 presence_penalty=0.4,
-                frequency_penalty=0.3,
+                frequency_penalty=0.55,
             )
         except RateLimitError as error:
             if getattr(error, "code", None) == "insufficient_quota":
@@ -53,4 +62,11 @@ class ChatEngine:
             raise ChatEngineError("A API da OpenAI retornou erro agora. Tente novamente daqui a pouco.") from error
 
         content = response.choices[0].message.content
-        return content.strip() if content else "Nao sei nem o que te responder agora."
+        return _sanitize_reply(content) if content else "Nao sei nem o que te responder agora."
+
+
+def _sanitize_reply(content: str) -> str:
+    cleaned = content.strip()
+    cleaned = re.sub(r"^(?:Ayla|Lyn)\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bLyn\b", "Ayla", cleaned)
+    return cleaned.strip() or "Nao sei nem o que te responder agora."

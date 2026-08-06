@@ -1,12 +1,14 @@
 import discord
 from discord.ext import commands
 
+from bot.config import Settings
 from bot.services.music_player import MAX_PLAYLIST_TRACKS
 from bot.services.music_player import FILTERS
 from bot.services.music_player import MusicError
 from bot.services.music_player import MusicService
 from bot.services.music_player import RepeatMode
 from bot.services.music_player import Track
+from bot.services.music_player import build_now_playing_embed
 from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
 
@@ -21,8 +23,8 @@ async def _send(ctx: commands.Context, message: str) -> None:
             await ctx.channel.send(message)
 
 
-def setup_music_commands(bot: commands.Bot) -> None:
-    music = MusicService(bot)
+def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
+    music = MusicService(bot, settings)
     lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")
@@ -34,11 +36,15 @@ def setup_music_commands(bot: commands.Bot) -> None:
             await _send(ctx, "Entre em um canal de voz primeiro.")
             return
 
-        await ctx.defer()
+        if ctx.interaction:
+            await ctx.defer(ephemeral=True)
+        else:
+            await ctx.defer()
         try:
             voice_client = await _connect_or_move(ctx)
             tracks = await music.resolve_tracks(query, ctx.author.display_name)
             player = music.player_for(ctx.guild.id)
+            player.set_now_playing_view_factory(lambda player: MusicNowPlayingView(music, lyrics_service, player))
             position = player.add_many(tracks, ctx.channel)
             await player.start_if_idle(voice_client)
         except MusicError as error:
@@ -47,11 +53,13 @@ def setup_music_commands(bot: commands.Bot) -> None:
 
         if len(tracks) == 1:
             if position > 1:
-                await ctx.send(f"Adicionado a fila: **{tracks[0].title}** (`#{position}`)")
+                await ctx.send(embed=_queued_embed(tracks[0], position))
+            elif ctx.interaction:
+                await ctx.send("Musica iniciada.", ephemeral=True)
             return
 
         limited = " " if len(tracks) < MAX_PLAYLIST_TRACKS else f" Limitei em {MAX_PLAYLIST_TRACKS} faixas."
-        await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila.{limited}")
+        await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila a partir da posicao `#{position}`.{limited}")
 
     @bot.hybrid_command(name="pause", aliases=["pa"], description="Pausa a musica atual.")
     async def pause(ctx: commands.Context) -> None:
@@ -109,7 +117,8 @@ def setup_music_commands(bot: commands.Bot) -> None:
 
         upcoming = player.queue_snapshot()
         if upcoming:
-            lines.extend(_format_queue(upcoming))
+            start = 2 if player.current else 1
+            lines.extend(_format_queue(upcoming, start=start))
 
         await _send(ctx, "\n".join(lines) if lines else "A fila esta vazia.")
 
@@ -125,14 +134,7 @@ def setup_music_commands(bot: commands.Bot) -> None:
             await _send(ctx, "Nao tem nenhuma musica tocando agora.")
             return
 
-        duration = _format_track_time(player.current_position(), current.duration)
-        await _send(
-            ctx,
-            f"Tocando agora: **{current.title}**\n"
-            f"Tempo: `{duration}` | Volume: `{player.volume_percent}%` | Repeat: `{player.repeat.value}` | Filtro: `{player.filter_name}`\n"
-            f"Pedido por: `{current.requested_by}`\n"
-            f"{current.webpage_url}",
-        )
+        await ctx.send(embed=build_now_playing_embed(player), view=MusicNowPlayingView(music, lyrics_service, player))
 
     @bot.hybrid_command(name="volume", aliases=["v", "vol"], description="Ajusta o volume entre 0 e 200.")
     async def volume(ctx: commands.Context, percent: int | None = None) -> None:
@@ -311,12 +313,29 @@ async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
     return voice_client
 
 
-def _format_queue(tracks: list[Track]) -> list[str]:
+def _format_queue(tracks: list[Track], *, start: int = 1) -> list[str]:
     visible_tracks = tracks[:10]
-    lines = [f"{index}. **{track.title}** - pedido por `{track.requested_by}`" for index, track in enumerate(visible_tracks, 1)]
+    lines = [f"{index}. **{track.title}** - pedido por `{track.requested_by}`" for index, track in enumerate(visible_tracks, start)]
     if len(tracks) > len(visible_tracks):
         lines.append(f"...e mais {len(tracks) - len(visible_tracks)} musica(s).")
     return lines
+
+
+def _queued_embed(track: Track, position: int) -> discord.Embed:
+    title = "Preparando musica" if position == 1 else "Musica adicionada a fila"
+    embed = discord.Embed(
+        title=title,
+        description=f"**[{track.title}]({track.webpage_url})**",
+        color=0x1DB954,
+    )
+    embed.add_field(name="Posicao", value=f"`#{position}`", inline=True)
+    if track.duration:
+        embed.add_field(name="Duracao", value=f"`{_format_duration(track.duration)}`", inline=True)
+    if track.artist:
+        embed.add_field(name="Artista", value=track.artist, inline=True)
+    if track.thumbnail_url:
+        embed.set_thumbnail(url=track.thumbnail_url)
+    return embed
 
 
 def _format_track_time(position: int, duration: int | None) -> str:
@@ -382,3 +401,146 @@ def _lyrics_pages(lyrics: str) -> list[str]:
         pages.append(current)
 
     return pages or ["Letra indisponivel."]
+
+
+class MusicNowPlayingView(discord.ui.View):
+    def __init__(self, music: MusicService, lyrics_service: LyricsService, player) -> None:
+        super().__init__(timeout=300)
+        self._music = music
+        self._lyrics_service = lyrics_service
+        self._player = player
+
+    @discord.ui.button(label="Pausar", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if not voice_client or not voice_client.is_playing():
+            await interaction.response.send_message("Nao tem musica tocando agora.", ephemeral=True)
+            return
+        voice_client.pause()
+        await interaction.response.send_message("Musica pausada.", ephemeral=True)
+
+    @discord.ui.button(label="Continuar", emoji="▶️", style=discord.ButtonStyle.success, row=0)
+    async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if not voice_client or not voice_client.is_paused():
+            await interaction.response.send_message("Nao tem musica pausada.", ephemeral=True)
+            return
+        voice_client.resume()
+        await interaction.response.send_message("Musica retomada.", ephemeral=True)
+
+    @discord.ui.button(label="Pular", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if not interaction.guild or not voice_client:
+            await interaction.response.send_message("Nao estou tocando nada neste servidor.", ephemeral=True)
+            return
+        try:
+            await self._music.player_for(interaction.guild.id).skip(voice_client)
+        except MusicError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_message("Musica pulada.", ephemeral=True)
+
+    @discord.ui.button(label="Parar", emoji="⏹️", style=discord.ButtonStyle.danger, row=0)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if not interaction.guild or not voice_client:
+            await interaction.response.send_message("Nao estou em um canal de voz.", ephemeral=True)
+            return
+        await self._music.player_for(interaction.guild.id).stop(voice_client)
+        await interaction.response.send_message("Fila encerrada e desconectei do canal de voz.", ephemeral=True)
+
+    @discord.ui.button(label="-10s", emoji="⏪", style=discord.ButtonStyle.secondary, row=1)
+    async def rewind_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._seek_from_button(interaction, -10)
+
+    @discord.ui.button(label="+10s", emoji="⏩", style=discord.ButtonStyle.secondary, row=1)
+    async def forward_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._seek_from_button(interaction, 10)
+
+    @discord.ui.button(label="Vol -", emoji="🔉", style=discord.ButtonStyle.secondary, row=1)
+    async def volume_down_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._volume_from_button(interaction, -10)
+
+    @discord.ui.button(label="Vol +", emoji="🔊", style=discord.ButtonStyle.secondary, row=1)
+    async def volume_up_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._volume_from_button(interaction, 10)
+
+    @discord.ui.button(label="Fila", emoji="📜", style=discord.ButtonStyle.secondary, row=2)
+    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Esse controle funciona dentro de servidores.", ephemeral=True)
+            return
+        player = self._music.player_for(interaction.guild.id)
+        lines = []
+        if player.current:
+            lines.append(f"1. **{player.current.title}** `{_format_duration(player.current_position())}`")
+        upcoming = player.queue_snapshot()
+        if upcoming:
+            lines.extend(_format_queue(upcoming, start=2 if player.current else 1))
+        await interaction.response.send_message("\n".join(lines) if lines else "A fila esta vazia.", ephemeral=True)
+
+    @discord.ui.button(label="Shuffle", emoji="🔀", style=discord.ButtonStyle.secondary, row=2)
+    async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Esse controle funciona dentro de servidores.", ephemeral=True)
+            return
+        total = self._music.player_for(interaction.guild.id).shuffle()
+        await interaction.response.send_message(f"Fila embaralhada com `{total}` musica(s).", ephemeral=True)
+
+    @discord.ui.button(label="Repeat", emoji="🔁", style=discord.ButtonStyle.secondary, row=2)
+    async def repeat_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Esse controle funciona dentro de servidores.", ephemeral=True)
+            return
+        player = self._music.player_for(interaction.guild.id)
+        next_mode = {
+            RepeatMode.OFF: RepeatMode.ONE,
+            RepeatMode.ONE: RepeatMode.ALL,
+            RepeatMode.ALL: RepeatMode.OFF,
+        }[player.repeat]
+        player.set_repeat(next_mode)
+        await interaction.response.send_message(f"Repeat definido como `{next_mode.value}`.", ephemeral=True)
+
+    @discord.ui.button(label="Lyrics", emoji="🎤", style=discord.ButtonStyle.primary, row=2)
+    async def lyrics_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        track = self._player.current
+        if not track:
+            await interaction.followup.send("Nao tem musica tocando agora.")
+            return
+        try:
+            result = await self._lyrics_service.find_for_track(track)
+        except LyricsError as error:
+            await interaction.followup.send(str(error))
+            return
+
+        pages = _lyrics_pages(result.lyrics)
+        await interaction.followup.send(
+            embed=_lyrics_embed(result.title, result.artist, pages, 0),
+            view=LyricsView(result.title, result.artist, pages),
+        )
+
+    async def _seek_from_button(self, interaction: discord.Interaction, seconds: int) -> None:
+        voice_client = interaction.guild.voice_client if interaction.guild else None
+        if not interaction.guild or not voice_client:
+            await interaction.response.send_message("Nao estou tocando nada neste servidor.", ephemeral=True)
+            return
+        try:
+            position = await self._music.player_for(interaction.guild.id).seek_relative(voice_client, seconds)
+        except MusicError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_message(f"Tempo ajustado para `{_format_duration(position)}`.", ephemeral=True)
+
+    async def _volume_from_button(self, interaction: discord.Interaction, delta: int) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("Esse controle funciona dentro de servidores.", ephemeral=True)
+            return
+        player = self._music.player_for(interaction.guild.id)
+        try:
+            value = player.set_volume(player.volume_percent + delta)
+        except MusicError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.send_message(f"Volume ajustado para `{value}%`.", ephemeral=True)

@@ -4,6 +4,8 @@ from discord.ext import commands
 from discord.utils import utcnow
 
 from bot.commands.basic import setup_basic_commands
+from bot.commands.affection import setup_affection_commands
+from bot.commands.announcements import setup_announcement_commands
 from bot.commands.chat_config import setup_chat_config_commands
 from bot.commands.economy import setup_economy_commands
 from bot.commands.help import setup_help_command
@@ -11,6 +13,7 @@ from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
 from bot.commands.music import setup_music_commands
+from bot.commands.uno import setup_uno_commands
 from bot.config import Settings
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
@@ -52,12 +55,15 @@ def create_bot(settings: Settings) -> commands.Bot:
         print(f"Bot conectado como {bot.user}")
 
     setup_basic_commands(bot)
+    setup_affection_commands(bot, settings)
+    setup_announcement_commands(bot)
     setup_media_commands(bot, settings)
-    setup_music_commands(bot)
+    setup_music_commands(bot, settings)
     setup_interaction_commands(bot, settings)
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)
     setup_economy_commands(bot, settings)
+    setup_uno_commands(bot)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
     return bot

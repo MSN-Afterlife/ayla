@@ -3,6 +3,7 @@ import random
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from time import monotonic
 from typing import Callable
 from urllib.parse import urlparse
@@ -10,6 +11,8 @@ from urllib.parse import urlparse
 import aiohttp
 import discord
 import yt_dlp
+
+from bot.config import Settings
 
 
 MAX_PLAYLIST_TRACKS = 50
@@ -29,7 +32,6 @@ YTDL_OPTIONS = {
     "noplaylist": False,
     "ignoreerrors": True,
     "extract_flat": False,
-    "js_runtimes": {"node": {}},
 }
 
 FFMPEG_RECONNECT_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -54,6 +56,7 @@ class Track:
     duration: int | None = None
     artist: str | None = None
     album: str | None = None
+    thumbnail_url: str | None = None
 
 
 class GuildMusicPlayer:
@@ -66,6 +69,7 @@ class GuildMusicPlayer:
         self._current_seek: int = 0
         self._source: discord.PCMVolumeTransformer | None = None
         self._text_channel: discord.abc.Messageable | None = None
+        self._now_playing_view_factory: Callable[["GuildMusicPlayer"], discord.ui.View] | None = None
         self._volume = DEFAULT_VOLUME
         self._repeat = RepeatMode.OFF
         self._filter_name = "none"
@@ -97,8 +101,15 @@ class GuildMusicPlayer:
 
     def add_many(self, tracks: list[Track], text_channel: discord.abc.Messageable) -> int:
         self._text_channel = text_channel
+        first_position = self.queue_size(include_current=True) + 1
         self._queue.extend(tracks)
-        return len(self._queue)
+        return first_position
+
+    def set_now_playing_view_factory(self, factory: Callable[["GuildMusicPlayer"], discord.ui.View]) -> None:
+        self._now_playing_view_factory = factory
+
+    def queue_size(self, *, include_current: bool = False) -> int:
+        return len(self._queue) + (1 if include_current and self._current else 0)
 
     async def start_if_idle(self, voice_client: discord.VoiceClient) -> None:
         if not voice_client.is_playing() and not voice_client.is_paused():
@@ -204,7 +215,8 @@ class GuildMusicPlayer:
         self._play_current(voice_client)
 
         if self._text_channel:
-            await self._text_channel.send(f"Tocando agora: **{self._current.title}**")
+            view = self._now_playing_view_factory(self) if self._now_playing_view_factory and self._current else None
+            await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
 
     def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0) -> None:
         if not self._current:
@@ -247,8 +259,9 @@ class GuildMusicPlayer:
 
 
 class MusicService:
-    def __init__(self, bot) -> None:
+    def __init__(self, bot, settings: Settings) -> None:
         self._bot = bot
+        self._settings = settings
         self._players: dict[int, GuildMusicPlayer] = {}
 
     def player_for(self, guild_id: int) -> GuildMusicPlayer:
@@ -258,21 +271,63 @@ class MusicService:
 
     async def resolve_tracks(self, query: str, requested_by: str) -> list[Track]:
         normalized_query = await self._normalize_query(query)
-        info = await asyncio.to_thread(self._extract_info, normalized_query)
+        info = await asyncio.to_thread(self._extract_best_info, normalized_query)
         entries = self._entries_from_info(info)
         if not entries:
             raise MusicError("Nao encontrei nenhum resultado para essa busca.")
 
-        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:MAX_PLAYLIST_TRACKS]]
+        limit = MAX_PLAYLIST_TRACKS if _is_url(normalized_query) else 1
+        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:limit]]
+
+    def _extract_best_info(self, query: str) -> dict:
+        if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
+            return self._extract_info(query)
+
+        errors: list[str] = []
+        for candidate in (f"ytsearch5:{query}", f"scsearch5:{query}", query):
+            try:
+                info = self._extract_info(candidate)
+            except MusicError as error:
+                errors.append(str(error))
+                continue
+
+            entries = self._entries_from_info(info)
+            if entries:
+                return entries[0]
+
+        detail = "; ".join(errors[-2:])
+        raise MusicError(f"Nao encontrei musica nas fontes disponiveis. {detail}")
 
     def _extract_info(self, query: str) -> dict:
         try:
-            with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ytdl:
-                return ytdl.extract_info(query, download=False)
+            with yt_dlp.YoutubeDL(self._ytdl_options()) as ytdl:
+                info = ytdl.extract_info(query, download=False)
         except Exception as error:
-            raise MusicError(f"Nao consegui carregar essa musica: {error}") from error
+            raise MusicError(_friendly_ytdl_error(error)) from error
 
-    def _entries_from_info(self, info: dict) -> list[dict]:
+        if info is None:
+            raise MusicError("Nao consegui carregar essa musica. O YouTube pode ter bloqueado temporariamente a extracao; tente de novo mais tarde ou use outro link/fonte.")
+
+        return info
+
+    def _ytdl_options(self) -> dict:
+        options = dict(YTDL_OPTIONS)
+        js_path = self._settings.youtube_js_runtime_path
+        if js_path:
+            options["js_runtimes"] = {"node": {"path": js_path}}
+        else:
+            options["js_runtimes"] = {"node": {}}
+        options["remote_components"] = ["ejs:npm"]
+
+        cookies_path = self._settings.youtube_cookies_path
+        if cookies_path and Path(cookies_path).exists():
+            options["cookiefile"] = cookies_path
+
+        return options
+
+    def _entries_from_info(self, info: dict | None) -> list[dict]:
+        if not info:
+            return []
         if "entries" not in info:
             return [info]
         return [entry for entry in info["entries"] if entry and entry.get("url")]
@@ -290,6 +345,7 @@ class MusicService:
             duration=info.get("duration"),
             artist=info.get("artist") or info.get("creator") or info.get("uploader"),
             album=info.get("album"),
+            thumbnail_url=info.get("thumbnail"),
         )
 
     async def _normalize_query(self, query: str) -> str:
@@ -330,3 +386,52 @@ class MusicService:
 def _is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _friendly_ytdl_error(error: Exception) -> str:
+    message = str(error)
+    normalized = message.lower()
+    if "too many requests" in normalized or "http error 429" in normalized:
+        return "O YouTube limitou temporariamente as requisicoes do bot (HTTP 429). Tente outra fonte, aguarde um pouco ou configure cookies do YouTube no bot."
+    if "sign in to confirm" in normalized or "not a bot" in normalized or "cookies" in normalized:
+        return "O YouTube pediu verificacao anti-bot. Configure `YOUTUBE_COOKIES_PATH` com um arquivo cookies.txt exportado de uma conta do YouTube, ou use SoundCloud/outro link."
+    return f"Nao consegui carregar essa musica: {message}"
+
+
+def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False) -> discord.Embed:
+    track = player.current
+    title = "Tocando agora" if automatic else "Now playing"
+    embed = discord.Embed(title=title, color=0x1DB954)
+    if not track:
+        embed.description = "Nao tem nenhuma musica tocando agora."
+        return embed
+
+    duration = _format_track_time(player.current_position(), track.duration)
+    embed.description = f"**[{track.title}]({track.webpage_url})**"
+    if track.artist:
+        embed.add_field(name="Artista", value=track.artist, inline=True)
+    if track.album:
+        embed.add_field(name="Album", value=track.album, inline=True)
+    embed.add_field(name="Tempo", value=f"`{duration}`", inline=True)
+    embed.add_field(name="Volume", value=f"`{player.volume_percent}%`", inline=True)
+    embed.add_field(name="Repeat", value=f"`{player.repeat.value}`", inline=True)
+    embed.add_field(name="Filtro", value=f"`{player.filter_name}`", inline=True)
+    embed.add_field(name="Pedido por", value=f"`{track.requested_by}`", inline=True)
+    if track.thumbnail_url:
+        embed.set_thumbnail(url=track.thumbnail_url)
+    embed.set_footer(text=f"{player.queue_size()} musica(s) aguardando na fila")
+    return embed
+
+
+def _format_track_time(position: int, duration: int | None) -> str:
+    if duration is None:
+        return _format_duration(position)
+    return f"{_format_duration(position)} / {_format_duration(duration)}"
+
+
+def _format_duration(seconds: int) -> str:
+    minutes, remaining_seconds = divmod(max(0, seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{remaining_seconds:02d}"
+    return f"{minutes}:{remaining_seconds:02d}"

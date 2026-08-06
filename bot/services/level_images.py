@@ -5,6 +5,9 @@ import discord
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
+from PIL import ImageOps
+from PIL import ImageSequence
+from PIL import UnidentifiedImageError
 
 from bot.services.level_service import LevelProfile
 from bot.services.level_service import ProfileCustomization
@@ -44,7 +47,7 @@ async def build_profile_card(
 
     balance = economy.balance if economy else 0
     streak = economy.daily_streak if economy else 0
-    _detail_box(draw, 252, 412, "MOEDAS", str(balance))
+    _detail_box(draw, 252, 412, "WINKS", str(balance))
     _detail_box(draw, 472, 412, "DAILY", f"{streak} dia(s)")
     _detail_box(draw, 692, 412, "XP", str(profile.xp))
 
@@ -54,6 +57,10 @@ async def build_profile_card(
     draw.text((72, 540), _fit_text(draw, about, font_about, 820), fill=(245, 248, 255), font=font_about)
 
     return _file(image, "profile-card.png")
+
+
+async def can_render_profile_background(url: str) -> bool:
+    return await _remote_image(url) is not None
 
 
 async def build_level_card(
@@ -95,42 +102,55 @@ async def build_leaderboard_card(
     guild: discord.Guild | None,
     users: dict[int, discord.Member | discord.User] | None = None,
 ) -> discord.File:
-    height = 170 + max(len(profiles), 1) * ROW_HEIGHT
-    image = _background(WIDTH, height)
+    height = 210 + max(len(profiles), 1) * ROW_HEIGHT
+    image = _aero_background(WIDTH, height)
     draw = ImageDraw.Draw(image)
-    font_title = _font(42, bold=True)
+    font_title = _font(46, bold=True)
     font_scope = _font(22)
     font_name = _font(26, bold=True)
-    font_meta = _font(20)
+    font_meta = _font(19)
     font_rank = _font(30, bold=True)
 
-    draw.text((48, 36), title, fill=(250, 252, 255), font=font_title)
-    draw.text((50, 88), scope, fill=(170, 190, 225), font=font_scope)
+    draw.rounded_rectangle((34, 26, WIDTH - 34, 178), radius=30, fill=(255, 255, 255, 122), outline=(255, 255, 255, 170), width=2)
+    icon_url = guild.icon.replace(format="png", size=160).url if guild and guild.icon else None
+    icon = await _avatar_image(icon_url, 94, fallback=scope)
+    image.paste(icon, (58, 54), icon)
+
+    draw.text((176, 48), title, fill=(18, 62, 92), font=font_title)
+    draw.text((180, 102), scope, fill=(42, 101, 132), font=font_scope)
+
+    total_messages = sum(profile.message_count for profile in profiles)
+    total_xp = sum(profile.xp for profile in profiles)
+    _aero_metric(draw, 610, 58, "MEMBROS", str(len(profiles)))
+    _aero_metric(draw, 740, 58, "MENSAGENS", str(total_messages))
+    _aero_metric(draw, 870, 58, "XP", str(total_xp))
 
     if not profiles:
-        draw.text((50, 170), "Ainda nao tem ninguem nesse ranking.", fill=(235, 238, 245), font=font_name)
+        draw.text((50, 220), "Ainda nao tem ninguem nesse ranking.", fill=(18, 62, 92), font=font_name)
         return _file(image, "leaderboard.png")
 
     for index, profile in enumerate(profiles):
-        y = 140 + index * ROW_HEIGHT
+        y = 198 + index * ROW_HEIGHT
         member = users.get(profile.user_id) if users else guild.get_member(profile.user_id) if guild else None
         name = member.display_name if member else profile.user_name
 
-        accent = (255, 207, 86) if index == 0 else (112, 180, 255) if index == 1 else (148, 232, 180)
-        draw.rounded_rectangle((42, y, WIDTH - 42, y + 74), radius=18, fill=(20, 27, 43), outline=(48, 62, 92), width=1)
-        draw.rounded_rectangle((42, y, 52, y + 74), radius=5, fill=accent)
+        accent = (255, 205, 79) if index == 0 else (62, 173, 232) if index == 1 else (100, 214, 162)
+        row_fill = (255, 255, 255, 168) if index % 2 == 0 else (235, 255, 250, 152)
+        draw.rounded_rectangle((42, y, WIDTH - 42, y + 76), radius=20, fill=row_fill, outline=(255, 255, 255, 210), width=2)
+        draw.rounded_rectangle((42, y, 54, y + 76), radius=6, fill=accent)
         draw.text((72, y + 20), f"#{profile.rank}", fill=accent, font=font_rank)
 
         avatar_url = _avatar_url(member, 128) if member else None
         avatar = await _avatar_image(avatar_url, 58, fallback=name)
         image.paste(avatar, (150, y + 8), avatar)
 
-        draw.text((226, y + 11), _fit_text(draw, name, font_name, 430), fill=(250, 252, 255), font=font_name)
-        draw.text((226, y + 43), f"Level {profile.level}  |  {profile.xp} XP", fill=(170, 190, 225), font=font_meta)
+        draw.text((226, y + 10), _fit_text(draw, name, font_name, 330), fill=(18, 62, 92), font=font_name)
+        draw.text((226, y + 43), f"Level {profile.level}  |  {profile.xp} XP  |  {profile.message_count} mensagens", fill=(42, 101, 132), font=font_meta)
 
         progress = max(profile.xp - profile.current_level_xp, 0)
         needed = max(profile.next_level_xp - profile.current_level_xp, 1)
-        _progress(draw, 690, y + 29, 210, 12, min(progress / needed, 1))
+        _progress(draw, 688, y + 24, 210, 14, min(progress / needed, 1))
+        draw.text((688, y + 44), f"{progress}/{needed} XP", fill=(42, 101, 132), font=_font(15, bold=True))
 
     return _file(image, "leaderboard.png")
 
@@ -144,6 +164,25 @@ def _background(width: int, height: int) -> Image.Image:
 
     draw.ellipse((width - 280, -160, width + 120, 240), fill=(30, 62, 112))
     draw.ellipse((-140, height - 220, 240, height + 150), fill=(32, 86, 76))
+    return image
+
+
+def _aero_background(width: int, height: int) -> Image.Image:
+    image = Image.new("RGB", (width, height), (166, 222, 244))
+    draw = ImageDraw.Draw(image, "RGBA")
+    for y in range(height):
+        ratio = y / max(height - 1, 1)
+        r = int(129 + 72 * ratio)
+        g = int(212 + 36 * ratio)
+        b = int(242 - 20 * ratio)
+        draw.line((0, y, width, y), fill=(r, g, b, 255))
+
+    draw.ellipse((-180, -130, 360, 310), fill=(255, 255, 255, 76))
+    draw.ellipse((width - 310, -90, width + 170, 330), fill=(126, 231, 185, 86))
+    draw.ellipse((80, height - 260, 520, height + 110), fill=(255, 255, 255, 62))
+    draw.ellipse((width - 460, height - 300, width + 90, height + 130), fill=(91, 190, 238, 84))
+    draw.arc((-80, 62, width + 80, height + 260), start=205, end=335, fill=(255, 255, 255, 95), width=7)
+    draw.arc((-120, 120, width + 160, height + 340), start=205, end=335, fill=(70, 179, 219, 72), width=4)
     return image
 
 
@@ -189,12 +228,24 @@ async def _remote_image(url: str | None) -> Image.Image | None:
         return None
 
     try:
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 AylaBot/1.0",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=10) as response:
                 if response.status != 200:
                     return None
-                return Image.open(BytesIO(await response.read())).convert("RGB")
-    except Exception:
+                if response.content_length and response.content_length > 8 * 1024 * 1024:
+                    return None
+                raw = await response.read()
+                if len(raw) > 8 * 1024 * 1024:
+                    return None
+                image = Image.open(BytesIO(raw))
+                image = ImageSequence.Iterator(image).__next__()
+                image = ImageOps.exif_transpose(image)
+                return image.convert("RGB")
+    except (OSError, UnidentifiedImageError, aiohttp.ClientError):
         return None
 
 
@@ -252,6 +303,12 @@ def _detail_box(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, value: st
     draw.rounded_rectangle((x, y, x + 190, y + 62), radius=14, fill=(18, 25, 40, 172), outline=(70, 90, 125))
     draw.text((x + 16, y + 10), label, fill=(146, 164, 198), font=_font(15, bold=True))
     draw.text((x + 16, y + 30), _fit_text(draw, value, _font(24, bold=True), 150), fill=(250, 252, 255), font=_font(24, bold=True))
+
+
+def _aero_metric(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, value: str) -> None:
+    draw.rounded_rectangle((x, y, x + 104, y + 70), radius=16, fill=(255, 255, 255, 145), outline=(255, 255, 255, 220), width=2)
+    draw.text((x + 12, y + 10), label, fill=(42, 101, 132), font=_font(12, bold=True))
+    draw.text((x + 12, y + 30), _fit_text(draw, value, _font(23, bold=True), 82), fill=(18, 62, 92), font=_font(23, bold=True))
 
 
 def _progress(draw: ImageDraw.ImageDraw, x: int, y: int, width: int, height: int, percent: float) -> None:

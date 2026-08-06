@@ -34,6 +34,20 @@ HELP_CATEGORIES = {
         ],
         "color": 0x3498DB,
     },
+    "avisos": {
+        "label": "Avisos",
+        "title": "Comandos de avisos",
+        "description": "Comandos administrativos para anuncios no servidor.",
+        "fields": [
+            ("`{prefix}avisoayla`", "Envia o aviso oficial de chegada da Ayla no canal atual.", False),
+            ("`{prefix}avisoayla #canal`", "Envia o aviso oficial em um canal especifico.", False),
+            ("`{prefix}aviso #canal <mensagem>`", "Envia um aviso personalizado em embed.", False),
+            ("`{prefix}avisojson #canal` + anexo", "Envia um embed personalizado a partir de um JSON.", False),
+            ("`{prefix}avisoimportar nome` + anexo", "Salva um modelo JSON para reutilizar depois.", False),
+            ("`{prefix}avisomodelo #canal nome`", "Envia um modelo salvo em `bot/announcements`.", False),
+        ],
+        "color": 0x9B59B6,
+    },
     "midia": {
         "label": "Midia",
         "title": "Comandos de midia",
@@ -74,6 +88,18 @@ HELP_CATEGORIES = {
         ],
         "color": 0xFF69B4,
     },
+    "ayla": {
+        "label": "Ayla",
+        "title": "Memoria e personalidade",
+        "description": "Comandos para acompanhar a relacao da Ayla com os usuarios.",
+        "fields": [
+            ("`{prefix}afeto`", "Mostra como a Ayla esta se dando com voce.", False),
+            ("`{prefix}afeto @user`", "Mostra a memoria afetiva da Ayla sobre alguem.", False),
+            ("`{prefix}afetoajustar @user 30 10`", "Administradores ajustam afeto e respeito manualmente.", False),
+            ("`{prefix}afetolimpar @user`", "Administradores resetam a memoria afetiva de alguem.", False),
+        ],
+        "color": 0x3BA7FF,
+    },
     "level": {
         "label": "Level",
         "title": "Sistema de level",
@@ -92,13 +118,55 @@ HELP_CATEGORIES = {
     "economia": {
         "label": "Economia",
         "title": "Sistema de economia",
-        "description": "Moedas persistentes preparadas para integracao futura com site.",
+        "description": "Winks persistentes com daily, transferencias e apostas.",
         "fields": [
             ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
-            ("`{prefix}daily`", "Coleta moedas diarias com bonus de streak.", False),
-            ("`{prefix}pagar @user 100`", "Transfere moedas para outra pessoa.", False),
+            ("`{prefix}daily`", "Abre o link do site para resgatar o daily.", False),
+            ("`{prefix}dailyconfig <url>`", "Administradores configuram o link do daily.", False),
+            ("`{prefix}pagar @user 100`", "Transfere winks para outra pessoa.", False),
+            ("`{prefix}cf 500 cara`", "Aposta cara ou coroa contra a Ayla.", False),
+            ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com winks.", False),
+            ("`{prefix}roleta 500 vermelho`", "Aposta em cor, par/impar ou numero 0-36.", False),
+            ("`{prefix}highlow 500 maior`", "Aposta se a proxima carta sera maior ou menor.", False),
+            ("`{prefix}21 500`", "Joga 21 contra a Ayla com botoes de pedir/parar.", False),
+            ("`{prefix}cartaalta 500`", "Maior carta vence contra a Ayla.", False),
+            ("`{prefix}apostar @user 500`", "Desafia outro usuario para uma aposta.", False),
         ],
         "color": 0x2ECC71,
+    },
+    "uno": {
+        "label": "UNO",
+        "title": "UNO da Ayla",
+        "description": "Mesa de UNO no canal com cartas enviadas por mensagem privada.",
+        "fields": [
+            ("`{prefix}uno criar` / `{prefix}uno entrar`", "Cria uma mesa e permite 2+ jogadores entrarem.", False),
+            ("`{prefix}uno iniciar`", "Inicia a partida e envia a mao de cada jogador no privado.", False),
+            ("`{prefix}uno jogar 3 azul`", "Joga a carta numero 3; cor e obrigatoria em coringa e +4.", False),
+            ("`{prefix}uno comprar` / `{prefix}uno passar`", "Compra uma carta e passa a vez se nao jogar.", False),
+            ("`{prefix}uno mao` / `{prefix}uno mesa` / `{prefix}uno uno`", "Reenvia sua mao, mostra a mesa ou declara UNO.", False),
+        ],
+        "color": 0xE74C3C,
+    },
+    "admin": {
+        "label": "Admin",
+        "title": "Ajuda administrativa",
+        "description": "Comandos para moderacao, configuracao e manutencao do bot.",
+        "fields": [
+            ("`{prefix}statusgeral`", "Mostra diagnostico completo do bot. Aliases: `{prefix}lynstatus`, `{prefix}aylastatus`, `{prefix}botstatus`.", False),
+            ("`{prefix}addmoney @user 100`", "Adiciona ou remove winks de uma carteira.", False),
+            ("`{prefix}addxp @user 100`", "Adiciona XP local para um usuario.", False),
+            ("`{prefix}dailyconfig <url>`", "Configura o link usado pelo comando daily.", False),
+            ("`/chatconfig canal #canal`", "Define o canal fixo onde a Ayla conversa.", False),
+            ("`/chatconfig limpar`", "Remove o canal fixo de conversa.", False),
+            ("`{prefix}aviso #canal <mensagem>`", "Envia um aviso simples em embed.", False),
+            ("`{prefix}avisoayla #canal`", "Envia o aviso oficial de chegada da Ayla.", False),
+            ("`{prefix}avisojson #canal` + anexo", "Envia um embed a partir de JSON anexado.", False),
+            ("`{prefix}avisoimportar nome` + anexo", "Salva um modelo JSON em `bot/announcements`.", False),
+            ("`{prefix}avisomodelo #canal nome`", "Envia um modelo de aviso salvo.", False),
+            ("`{prefix}afetoajustar @user 30 10`", "Ajusta afeto e respeito da Ayla por alguem.", False),
+            ("`{prefix}afetolimpar @user`", "Reseta a memoria afetiva de um usuario.", False),
+        ],
+        "color": 0xE67E22,
     },
 }
 
@@ -109,6 +177,11 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
         view = HelpView(settings.command_prefix)
         await ctx.send(embed=build_help_embed("inicio", settings.command_prefix), view=view)
 
+    @bot.command(name="helpadmin", aliases=["adminhelp", "ajudaadmin", "comandosadmin"])
+    @commands.has_permissions(manage_guild=True)
+    async def admin_help_command(ctx: commands.Context) -> None:
+        await ctx.send(embed=build_help_embed("admin", settings.command_prefix))
+
     @bot.tree.command(name="help", description="Abre o menu de ajuda do bot.")
     async def help_slash(interaction: discord.Interaction) -> None:
         view = HelpView("/")
@@ -118,6 +191,16 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
         except discord.NotFound:
             if interaction.channel:
                 await interaction.channel.send(embed=build_help_embed("inicio", "/"), view=view)
+
+    @bot.tree.command(name="helpadmin", description="Abre a ajuda administrativa do bot.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def admin_help_slash(interaction: discord.Interaction) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(embed=build_help_embed("admin", "/"), ephemeral=True)
+        except discord.NotFound:
+            if interaction.channel:
+                await interaction.channel.send(embed=build_help_embed("admin", "/"))
 
 
 class HelpView(discord.ui.View):

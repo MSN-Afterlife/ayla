@@ -11,6 +11,7 @@ from bot.services.economy_images import build_bet_card
 
 
 DAILY_URL_SETTING = "daily_site_url"
+DAILY_DIRECT_CLAIM_SETTING = "daily_direct_claim_enabled"
 WINKS_GUILD_ID = 1472950966113276068
 WINKS_EMOJI_NAME = "winks"
 
@@ -28,8 +29,34 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         embed.add_field(name="Daily streak", value=f"{profile.daily_streak} dia(s)", inline=True)
         await ctx.send(embed=embed)
 
-    @bot.hybrid_command(name="daily", aliases=["diario"], description="Abre o site para coletar seus winks diarios.")
+    @bot.hybrid_command(name="daily", aliases=["diario"], description="Coleta seus winks diarios ou abre o site configurado.")
     async def daily(ctx: commands.Context) -> None:
+        if _get_daily_direct_claim_enabled(economy, settings):
+            claim = economy.claim_daily(ctx.author.id)
+            profile = claim.profile
+            if claim.remaining_seconds:
+                embed = discord.Embed(
+                    title="Daily ja resgatado",
+                    description=f"Voce ja pegou o daily hoje. Tente de novo em {_format_remaining(claim.remaining_seconds)}.",
+                    color=0xF1C40F,
+                )
+                embed.add_field(name="Saldo atual", value=_currency(profile.balance, bot), inline=True)
+                embed.add_field(name="Daily streak", value=f"{profile.daily_streak} dia(s)", inline=True)
+                await ctx.send(embed=embed)
+                return
+
+            embed = discord.Embed(
+                title="Daily resgatado",
+                description=f"Voce recebeu {_currency(claim.amount or DAILY_AMOUNT, bot)}.",
+                color=0x2ECC71,
+            )
+            if claim.bonus:
+                embed.add_field(name="Bonus de streak", value=_currency(claim.bonus, bot), inline=True)
+            embed.add_field(name="Saldo atual", value=_currency(profile.balance, bot), inline=True)
+            embed.add_field(name="Daily streak", value=f"{profile.daily_streak} dia(s)", inline=True)
+            await ctx.send(embed=embed)
+            return
+
         daily_url = economy.get_setting(DAILY_URL_SETTING, settings.daily_site_url)
         embed = discord.Embed(
             title="Daily pelo site",
@@ -53,6 +80,26 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
 
         economy.set_setting(DAILY_URL_SETTING, url)
         await ctx.send(f"Link do daily atualizado para: {url}")
+
+    @bot.hybrid_command(name="dailybot", aliases=["dailymodo", "dailyinterruptor"], description="Liga ou desliga o resgate direto do daily pelo Discord.")
+    @commands.has_permissions(manage_guild=True)
+    async def daily_bot(ctx: commands.Context, enabled: str | None = None) -> None:
+        if enabled is None:
+            current = _get_daily_direct_claim_enabled(economy, settings)
+            mode = "direto pelo `/daily`" if current else "redirecionando para o site"
+            await ctx.send(f"Modo atual do daily: **{mode}**. Use `{settings.command_prefix}dailybot true` ou `{settings.command_prefix}dailybot false`.")
+            return
+
+        parsed = _parse_bool(enabled)
+        if parsed is None:
+            await ctx.send("Use `true` para resgatar direto pelo `/daily` ou `false` para voltar a direcionar para o site.")
+            return
+
+        economy.set_setting(DAILY_DIRECT_CLAIM_SETTING, "true" if parsed else "false")
+        if parsed:
+            await ctx.send("Daily direto ativado. Agora os usuarios conseguem resgatar com `/daily`, sem passar pelo site.")
+        else:
+            await ctx.send("Daily direto desativado. Agora `/daily` volta a direcionar para o site.")
 
     @bot.command(name="addmoney")
     @commands.has_permissions(administrator=True)
@@ -437,6 +484,28 @@ def _validate_bet(economy: EconomyService, user_id: int, amount: int) -> None:
         raise ValueError(f"A aposta maxima por rodada e {_currency_inline(100000)}.")
     if not economy.can_afford(user_id, amount):
         raise ValueError("Saldo insuficiente para essa aposta.")
+
+
+def _get_daily_direct_claim_enabled(economy: EconomyService, settings: Settings) -> bool:
+    default = "true" if settings.daily_direct_claim_enabled else "false"
+    return _parse_bool(economy.get_setting(DAILY_DIRECT_CLAIM_SETTING, default)) is True
+
+
+def _parse_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "sim", "s", "on", "ligado", "ativado"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "nao", "não", "off", "desligado", "desativado"}:
+        return False
+    return None
+
+
+def _format_remaining(seconds: int) -> str:
+    hours, remainder = divmod(seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    return f"{hours}h {minutes}m"
 
 
 def _normalize_coin_choice(choice: str) -> str | None:

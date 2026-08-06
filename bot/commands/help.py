@@ -121,8 +121,9 @@ HELP_CATEGORIES = {
         "description": "Winks persistentes com daily, transferencias e apostas.",
         "fields": [
             ("`{prefix}saldo`", "Mostra seu saldo e streak do daily.", False),
-            ("`{prefix}daily`", "Abre o link do site para resgatar o daily.", False),
+            ("`{prefix}daily`", "Resgata o daily direto ou abre o link do site, conforme configurado.", False),
             ("`{prefix}dailyconfig <url>`", "Administradores configuram o link do daily.", False),
+            ("`{prefix}dailybot true/false`", "Administradores ligam ou desligam o resgate direto pelo Discord.", False),
             ("`{prefix}pagar @user 100`", "Transfere winks para outra pessoa.", False),
             ("`{prefix}cf 500 cara`", "Aposta cara ou coroa contra a Ayla.", False),
             ("`{prefix}dado 500 6` / `{prefix}slots 500`", "Jogos de cassino com winks.", False),
@@ -156,6 +157,7 @@ HELP_CATEGORIES = {
             ("`{prefix}addmoney @user 100`", "Adiciona ou remove winks de uma carteira.", False),
             ("`{prefix}addxp @user 100`", "Adiciona XP local para um usuario.", False),
             ("`{prefix}dailyconfig <url>`", "Configura o link usado pelo comando daily.", False),
+            ("`{prefix}dailybot true/false`", "Alterna entre resgate direto pelo Discord e redirecionamento para o site.", False),
             ("`/chatconfig canal #canal`", "Define o canal fixo onde a Ayla conversa.", False),
             ("`/chatconfig limpar`", "Remove o canal fixo de conversa.", False),
             ("`{prefix}aviso #canal <mensagem>`", "Envia um aviso simples em embed.", False),

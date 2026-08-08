@@ -35,6 +35,9 @@ class Settings:
     daily_direct_claim_enabled: bool = False
     youtube_cookies_path: str | None = None
     youtube_js_runtime_path: str = "node"
+    authentik_url: str | None = None
+    authentik_token: str | None = None
+    authentik_authdev_group: str | None = None
 
 
 def load_settings() -> Settings:
@@ -74,6 +77,9 @@ def load_settings() -> Settings:
         daily_direct_claim_enabled=_load_bool("DAILY_DIRECT_CLAIM_ENABLED", False),
         youtube_cookies_path=os.getenv("YOUTUBE_COOKIES_PATH"),
         youtube_js_runtime_path=os.getenv("YOUTUBE_JS_RUNTIME_PATH", "node"),
+        authentik_url=os.getenv("AUTHENTIK_URL"),
+        authentik_token=os.getenv("AUTHENTIK_TOKEN"),
+        authentik_authdev_group=os.getenv("AUTHENTIK_AUTHDEV_GROUP"),
     )
 
 

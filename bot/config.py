@@ -21,7 +21,7 @@ class Settings:
     image_provider_order: list[str] | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
-    levels_database_path: str = "data/levels.sqlite3
+    levels_database_path: str = "data/levels.sqlite3"
     levels_xp_min: int = 15
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60

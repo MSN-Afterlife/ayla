@@ -26,6 +26,7 @@ class Settings:
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60
     chat_config_path: str = "data/chat_config.json"
+    presence_config_path: str = "data/presence_config.json"
     site_api_enabled: bool = True
     site_api_host: str = "0.0.0.0"
     site_api_port: int = 8090
@@ -68,6 +69,7 @@ def load_settings() -> Settings:
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
         levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),
         chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
+        presence_config_path=os.getenv("PRESENCE_CONFIG_PATH", "data/presence_config.json"),
         site_api_enabled=_load_bool("SITE_API_ENABLED", True),
         site_api_host=os.getenv("SITE_API_HOST", "0.0.0.0"),
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),

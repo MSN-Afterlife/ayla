@@ -14,8 +14,11 @@ from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
 from bot.commands.music import setup_music_commands
+from bot.commands.presence import setup_presence_commands
+from bot.commands.presence import start_presence_rotation
 from bot.commands.uno import setup_uno_commands
 from bot.config import Settings
+from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
 from bot.services.site_api import SiteApiServer
@@ -29,6 +32,7 @@ class AylaBot(commands.Bot):
     async def setup_hook(self) -> None:
         if self._site_api:
             await self._site_api.start()
+        self.loop.create_task(start_presence_rotation(self))
 
     async def close(self) -> None:
         if self._site_api:
@@ -66,8 +70,10 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_chat_config_commands(bot, chat_config)
     setup_economy_commands(bot, settings)
     setup_uno_commands(bot)
+    setup_presence_commands(bot, settings)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
+    setup_command_debug(bot)
     return bot
 
 

@@ -14,7 +14,6 @@ from bot.services.presence_preview import build_presence_preview
 from bot.services.presence_preview import build_presence_order_preview
 from bot.services.presence_preview import parse_presence_text
 from bot.services.presence_preview import build_status_choice_preview
-from bot.services.presence_preview import can_render_presence_image
 
 
 STATUS_CHOICES = [
@@ -402,8 +401,6 @@ def _build_confirmation_embed(title: str, entry: PresenceEntry, *, extra: str | 
     embed.add_field(name="Tipo", value=f"`{entry.activity_type}`", inline=True)
     embed.add_field(name="Emoji", value=entry.emoji or "`nenhum`", inline=True)
     embed.add_field(name="Texto", value=entry.text or "`sem atividade`", inline=False)
-    if entry.image_url:
-        embed.add_field(name="Imagem", value=f"`{entry.image_mode}` | {entry.image_url}", inline=False)
     embed.set_image(url="attachment://presence-preview.png")
     return embed
 
@@ -414,7 +411,7 @@ def _build_order_confirmation_embed(title: str, entries: list[PresenceEntry], de
         description=f"{description}\nConfira a imagem antes de salvar a nova ordem.",
         color=0x5865F2,
     )
-    lines = [f"`{index}` {entry.status} | {entry.activity_type} | {entry.emoji or ''} {entry.text or 'sem atividade'}{' | img' if entry.image_url else ''}".strip() for index, entry in enumerate(entries, start=1)]
+    lines = [f"`{index}` {entry.status} | {entry.activity_type} | {entry.emoji or ''} {entry.text or 'sem atividade'}".strip() for index, entry in enumerate(entries, start=1)]
     embed.add_field(name="Nova ordem", value="\n".join(lines)[:1024], inline=False)
     embed.set_image(url="attachment://presence-order-preview.png")
     return embed
@@ -496,16 +493,13 @@ async def _send_entry_preview(
     *,
     index: int | None = None,
     emoji: str | None = None,
-    image_url: str | None = None,
-    image_mode: str = "cover",
 ) -> None:
     try:
         cleaned_text, parsed_emoji = parse_presence_text(text)
         selected_emoji = emoji.strip() if emoji and emoji.strip() else parsed_emoji
         if activity_type not in {"custom", "personalizado"}:
             selected_emoji = None
-        selected_image_url = image_url if activity_type in {"playing", "listening", "watching", "competing"} else None
-        entry = PresenceEntry(status=status, activity_type=activity_type, text=cleaned_text, emoji=selected_emoji, image_url=selected_image_url, image_mode=image_mode)
+        entry = PresenceEntry(status=status, activity_type=activity_type, text=cleaned_text, emoji=selected_emoji)
         build_presence(entry)
     except ValueError as error:
         await _send_response(target, str(error), ephemeral=True)
@@ -529,8 +523,6 @@ async def _capture_presence_message(
     activity_type: str,
     *,
     index: int | None = None,
-    image_url: str | None = None,
-    image_mode: str = "cover",
 ) -> None:
     if not interaction.channel:
         await interaction.response.send_message("Use esse fluxo dentro de um canal.", ephemeral=True)
@@ -563,7 +555,7 @@ async def _capture_presence_message(
     except discord.HTTPException:
         pass
 
-    await _send_entry_preview(interaction, bot, store, action, status, activity_type, text, index=index, emoji=emoji, image_url=image_url, image_mode=image_mode)
+    await _send_entry_preview(interaction, bot, store, action, status, activity_type, text, index=index, emoji=emoji)
 
 
 async def _send_response(target, *args, ephemeral: bool = False, **kwargs) -> None:
@@ -657,10 +649,9 @@ class PresenceImageSelect(discord.ui.Select):
         options = []
         for index, entry in enumerate(config.entries[:25], start=1):
             marker = " ativo" if index == config.active_index + 1 else ""
-            image = " img" if entry.image_url else ""
             options.append(
                 discord.SelectOption(
-                    label=f"{index}. {entry.activity_type}{marker}{image}"[:100],
+                    label=f"{index}. {entry.activity_type}{marker}"[:100],
                     value=str(index),
                     description=(entry.text or "sem atividade")[:100],
                 )
@@ -1064,81 +1055,6 @@ class PresenceConfirmView(discord.ui.View):
             self._entry.status,
             self._entry.activity_type,
             index=self._index,
-            image_url=self._entry.image_url,
-            image_mode=self._entry.image_mode,
-        )
-
-    @discord.ui.button(label="Adicionar foto", style=discord.ButtonStyle.secondary)
-    async def add_image(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not _is_admin(interaction):
-            await interaction.response.send_message("So admins podem alterar essa confirmacao.", ephemeral=True)
-            return
-        if not self._entry or self._entry.activity_type in {"none", "custom"}:
-            await interaction.response.send_message("Imagem de atividade so faz sentido em jogando/ouvindo/assistindo/competindo.", ephemeral=True)
-            return
-        if not interaction.channel:
-            await interaction.response.send_message("Use esse botao dentro de um canal.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        await interaction.followup.send("Envie uma URL de imagem ou anexe uma imagem no chat. Vou testar antes de aplicar.", ephemeral=True)
-
-        def check(message: discord.Message) -> bool:
-            return message.author.id == interaction.user.id and message.channel.id == interaction.channel.id
-
-        try:
-            message = await self._bot.wait_for("message", check=check, timeout=120)
-        except asyncio.TimeoutError:
-            await interaction.followup.send("Tempo esgotado para capturar a imagem.", ephemeral=True)
-            return
-
-        image_url = _image_url_from_message(message)
-        if not image_url:
-            await interaction.followup.send("Nao encontrei URL ou anexo de imagem nessa mensagem.", ephemeral=True)
-            return
-        if not await can_render_presence_image(image_url):
-            await interaction.followup.send("Nao consegui carregar essa imagem. Tente outra URL ou anexo.", ephemeral=True)
-            return
-
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            pass
-
-        self._entry = _entry_with_image(self._entry, image_url, self._entry.image_mode)
-        file = await build_presence_preview(self._bot.user, self._entry)
-        await interaction.edit_original_response(
-            embed=_build_confirmation_embed("Confirmar status", self._entry, extra="Foto adicionada. Escolha o enquadramento antes de confirmar."),
-            attachments=[file],
-            view=self,
-        )
-
-    @discord.ui.button(label="Cover", style=discord.ButtonStyle.secondary, row=1)
-    async def image_cover(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._set_image_mode(interaction, "cover")
-
-    @discord.ui.button(label="Contain", style=discord.ButtonStyle.secondary, row=1)
-    async def image_contain(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._set_image_mode(interaction, "contain")
-
-    @discord.ui.button(label="Stretch", style=discord.ButtonStyle.secondary, row=1)
-    async def image_stretch(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._set_image_mode(interaction, "stretch")
-
-    async def _set_image_mode(self, interaction: discord.Interaction, mode: str) -> None:
-        if not _is_admin(interaction):
-            await interaction.response.send_message("So admins podem alterar essa confirmacao.", ephemeral=True)
-            return
-        if not self._entry or not self._entry.image_url:
-            await interaction.response.send_message("Adicione uma foto antes de mudar o enquadramento.", ephemeral=True)
-            return
-        self._entry = _entry_with_image(self._entry, self._entry.image_url, mode)
-        await interaction.response.defer()
-        file = await build_presence_preview(self._bot.user, self._entry)
-        await interaction.edit_original_response(
-            embed=_build_confirmation_embed("Confirmar status", self._entry, extra=f"Previa da foto em modo `{mode}`."),
-            attachments=[file],
-            view=self,
         )
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
@@ -1149,10 +1065,10 @@ class PresenceConfirmView(discord.ui.View):
 
         try:
             if self._action == "add" and self._entry:
-                config = self._store.add_entry(self._entry.status, self._entry.activity_type, self._entry.text, self._entry.emoji, self._entry.image_url, self._entry.image_mode)
+                config = self._store.add_entry(self._entry.status, self._entry.activity_type, self._entry.text, self._entry.emoji)
                 title = "Status adicionado"
             elif self._action == "set" and self._entry and self._index:
-                config = self._store.update_entry(self._index, self._entry.status, self._entry.activity_type, self._entry.text, self._entry.emoji, self._entry.image_url, self._entry.image_mode)
+                config = self._store.update_entry(self._index, self._entry.status, self._entry.activity_type, self._entry.text, self._entry.emoji)
                 title = "Status editado"
             elif self._action == "use" and self._index:
                 config = self._store.set_active(self._index)
@@ -1185,25 +1101,3 @@ class PresenceConfirmView(discord.ui.View):
 def _is_admin(interaction: discord.Interaction) -> bool:
     permissions = getattr(interaction.user, "guild_permissions", None)
     return bool(permissions and permissions.administrator)
-
-
-def _image_url_from_message(message: discord.Message) -> str | None:
-    for attachment in message.attachments:
-        content_type = attachment.content_type or ""
-        if content_type.startswith("image/"):
-            return attachment.url
-    for part in message.content.split():
-        if part.startswith(("http://", "https://")):
-            return part.strip("<>")
-    return None
-
-
-def _entry_with_image(entry: PresenceEntry, image_url: str | None, image_mode: str) -> PresenceEntry:
-    return PresenceEntry(
-        status=entry.status,
-        activity_type=entry.activity_type,
-        text=entry.text,
-        emoji=entry.emoji,
-        image_url=image_url,
-        image_mode=image_mode,
-    )

@@ -16,8 +16,6 @@ class PresenceEntry:
     activity_type: str = "custom"
     text: str = "faz sol hoje | a!help"
     emoji: str | None = None
-    image_url: str | None = None
-    image_mode: str = "cover"
 
 
 @dataclass(frozen=True)
@@ -50,8 +48,6 @@ class PresenceConfigStore:
                 activity_type=_normalize_activity_type(item.get("activity_type", "custom")),
                 text=str(item.get("text", "")).strip(),
                 emoji=item.get("emoji"),
-                image_url=item.get("image_url"),
-                image_mode=_normalize_image_mode(item.get("image_mode", "cover")),
             )
             for item in raw.get("entries", [])
             if isinstance(item, dict)
@@ -101,8 +97,8 @@ class PresenceConfigStore:
         self.save(updated)
         return updated
 
-    def add_entry(self, status: str, activity_type: str, text: str, emoji: str | None = None, image_url: str | None = None, image_mode: str = "cover") -> PresenceConfig:
-        entry = PresenceEntry(status=_normalize_status(status), activity_type=_normalize_activity_type(activity_type), text=text.strip(), emoji=emoji, image_url=image_url, image_mode=_normalize_image_mode(image_mode))
+    def add_entry(self, status: str, activity_type: str, text: str, emoji: str | None = None) -> PresenceConfig:
+        entry = PresenceEntry(status=_normalize_status(status), activity_type=_normalize_activity_type(activity_type), text=text.strip(), emoji=emoji)
         if entry.activity_type != "none" and not entry.text:
             raise ValueError("Informe o texto da atividade/status.")
         config = self.get()
@@ -115,11 +111,11 @@ class PresenceConfigStore:
         self.save(updated)
         return updated
 
-    def update_entry(self, index: int, status: str, activity_type: str, text: str, emoji: str | None = None, image_url: str | None = None, image_mode: str = "cover") -> PresenceConfig:
+    def update_entry(self, index: int, status: str, activity_type: str, text: str, emoji: str | None = None) -> PresenceConfig:
         config = self.get()
         if index < 1 or index > len(config.entries):
             raise ValueError("Indice invalido.")
-        entry = PresenceEntry(status=_normalize_status(status), activity_type=_normalize_activity_type(activity_type), text=text.strip(), emoji=emoji, image_url=image_url, image_mode=_normalize_image_mode(image_mode))
+        entry = PresenceEntry(status=_normalize_status(status), activity_type=_normalize_activity_type(activity_type), text=text.strip(), emoji=emoji)
         entries = list(config.entries)
         entries[index - 1] = entry
         updated = PresenceConfig(mode=config.mode, interval_seconds=config.interval_seconds, active_index=min(config.active_index, len(entries) - 1), entries=tuple(entries))
@@ -184,27 +180,19 @@ def build_presence(entry: PresenceEntry) -> tuple[discord.Status, discord.BaseAc
     if activity_type == "custom":
         emoji = discord.PartialEmoji.from_str(entry.emoji) if entry.emoji else None
         return status, discord.CustomActivity(name=entry.text, emoji=emoji)
-    assets = _activity_assets(entry)
     if activity_type == "listening":
-        return status, discord.Activity(type=discord.ActivityType.listening, name=entry.text, assets=assets)
+        return status, discord.Activity(type=discord.ActivityType.listening, name=entry.text)
     if activity_type == "watching":
-        return status, discord.Activity(type=discord.ActivityType.watching, name=entry.text, assets=assets)
+        return status, discord.Activity(type=discord.ActivityType.watching, name=entry.text)
     if activity_type == "competing":
-        return status, discord.Activity(type=discord.ActivityType.competing, name=entry.text, assets=assets)
-    return status, discord.Activity(type=discord.ActivityType.playing, name=entry.text, assets=assets)
+        return status, discord.Activity(type=discord.ActivityType.competing, name=entry.text)
+    return status, discord.Game(name=entry.text)
 
 
 def format_entry(index: int, entry: PresenceEntry, *, active: bool = False) -> str:
     marker = " <- ativo" if active else ""
     emoji = f"{entry.emoji} " if entry.emoji else ""
-    image = " | img" if entry.image_url else ""
-    return f"`{index}` {entry.status} | {entry.activity_type} | {emoji}{entry.text or 'sem atividade'}{image}{marker}"
-
-
-def _activity_assets(entry: PresenceEntry) -> dict[str, str]:
-    if not entry.image_url:
-        return {}
-    return {"large_image": entry.image_url, "large_text": entry.text or "Ayla"}
+    return f"`{index}` {entry.status} | {entry.activity_type} | {emoji}{entry.text or 'sem atividade'}{marker}"
 
 
 def _normalize_status(status: str) -> str:
@@ -235,13 +223,6 @@ def _normalize_activity_type(activity_type: str) -> str:
     value = aliases.get(value, value)
     if value not in {"playing", "listening", "watching", "competing", "custom", "none"}:
         raise ValueError("Tipo invalido. Use playing/jogando, listening/ouvindo, watching/assistindo, competing/competindo, custom/personalizado ou none/nenhum.")
-    return value
-
-
-def _normalize_image_mode(mode: str) -> str:
-    value = str(mode).lower()
-    if value not in {"cover", "contain", "stretch"}:
-        return "cover"
     return value
 
 

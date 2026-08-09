@@ -112,7 +112,7 @@ async def build_leaderboard_card(
     font_rank = _font(30, bold=True)
 
     draw.rounded_rectangle((34, 26, WIDTH - 34, 178), radius=30, fill=(255, 255, 255, 122), outline=(255, 255, 255, 170), width=2)
-    icon_url = guild.icon.replace(format="png", size=160).url if guild and guild.icon else None
+    icon_url = guild.icon.replace(format="png", size=128).url if guild and guild.icon else None
     icon = await _avatar_image(icon_url, 94, fallback=scope)
     image.paste(icon, (58, 54), icon)
 
@@ -216,7 +216,7 @@ async def _draw_guild_badge(
     x = 52
     y = 28
 
-    icon_url = guild.icon.replace(format="png", size=96).url if guild and guild.icon else None
+    icon_url = guild.icon.replace(format="png", size=128).url if guild and guild.icon else None
     icon = await _avatar_image(icon_url, 42, fallback=text)
     image.paste(icon, (x, y), icon)
     draw.text((x + 54, y + 1), _fit_text(draw, text, font, 360), fill=(250, 252, 255), font=font)

@@ -13,6 +13,27 @@ from bot.services.presence_service import format_entry
 from bot.services.presence_preview import build_presence_preview
 from bot.services.presence_preview import build_presence_order_preview
 from bot.services.presence_preview import parse_presence_text
+from bot.services.presence_preview import build_status_choice_preview
+
+
+STATUS_CHOICES = [
+    app_commands.Choice(name="Online", value="online"),
+    app_commands.Choice(name="Ausente", value="idle"),
+    app_commands.Choice(name="Nao perturbe", value="dnd"),
+    app_commands.Choice(name="Invisivel", value="invisible"),
+]
+ACTIVITY_CHOICES = [
+    app_commands.Choice(name="Status personalizado", value="custom"),
+    app_commands.Choice(name="Jogando", value="playing"),
+    app_commands.Choice(name="Ouvindo", value="listening"),
+    app_commands.Choice(name="Assistindo", value="watching"),
+    app_commands.Choice(name="Competindo", value="competing"),
+    app_commands.Choice(name="Sem atividade", value="none"),
+]
+MODE_CHOICES = [
+    app_commands.Choice(name="Fixo", value="single"),
+    app_commands.Choice(name="Alternando", value="rotate"),
+]
 
 
 def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -166,8 +187,12 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
     @slash_group.command(name="painel", description="Abre o painel visual para configurar o status da Ayla.")
     @app_commands.default_permissions(administrator=True)
     async def presence_panel(interaction: discord.Interaction) -> None:
+        config = store.get()
+        entry = config.entries[config.active_index]
+        file = await build_presence_preview(bot.user, entry)
         await interaction.response.send_message(
-            embed=_build_presence_embed(store.get(), title="Painel de presenca da Ayla"),
+            embed=_build_presence_embed(config, title="Painel de presenca da Ayla"),
+            file=file,
             view=PresencePanelView(bot, store),
             ephemeral=True,
         )
@@ -179,7 +204,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @slash_group.command(name="modo", description="Define se a Ayla usa um status fixo ou alterna entre os salvos.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.choices(modo=[app_commands.Choice(name="single", value="single"), app_commands.Choice(name="rotate", value="rotate")])
+    @app_commands.choices(modo=MODE_CHOICES)
     async def presence_mode_slash(interaction: discord.Interaction, modo: app_commands.Choice[str]) -> None:
         config = store.set_mode(modo.value)
         await apply_presence(bot)
@@ -197,15 +222,32 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @slash_group.command(name="adicionar", description="Mostra previa e confirma um novo status.")
     @app_commands.default_permissions(administrator=True)
-    async def presence_add_slash(interaction: discord.Interaction, status: str, tipo: str, texto: str) -> None:
+    @app_commands.describe(status="Estado padrao da Ayla.", tipo="Tipo exibido no perfil: personalizado, jogando, ouvindo etc.", texto="Texto da presenca. Pode comecar com emoji customizado.")
+    @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
+    async def presence_add_slash(interaction: discord.Interaction, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, bot, store, "add", status, tipo, texto)
+        await _send_entry_preview(interaction, bot, store, "add", status.value, tipo.value, texto)
+
+    @slash_group.command(name="atividade", description="Cria uma atividade da Ayla com opcoes prontas e previa.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(tipo="Como o Discord vai mostrar a atividade.", texto="Texto da atividade.", status="Estado padrao da Ayla.")
+    @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
+    async def presence_activity_slash(
+        interaction: discord.Interaction,
+        tipo: app_commands.Choice[str],
+        texto: str,
+        status: app_commands.Choice[str] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await _send_entry_preview(interaction, bot, store, "add", status.value if status else "online", tipo.value, texto)
 
     @slash_group.command(name="editar", description="Mostra previa e confirma a edicao de um status salvo.")
     @app_commands.default_permissions(administrator=True)
-    async def presence_edit_slash(interaction: discord.Interaction, indice: int, status: str, tipo: str, texto: str) -> None:
+    @app_commands.describe(indice="Numero do status salvo que sera editado.", status="Estado padrao da Ayla.", tipo="Tipo exibido no perfil.", texto="Texto da presenca.")
+    @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
+    async def presence_edit_slash(interaction: discord.Interaction, indice: int, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, bot, store, "set", status, tipo, texto, index=indice)
+        await _send_entry_preview(interaction, bot, store, "set", status.value, tipo.value, texto, index=indice)
 
     @slash_group.command(name="usar", description="Mostra uma previa e confirma o status ativo.")
     @app_commands.default_permissions(administrator=True)
@@ -446,15 +488,30 @@ async def _send_response(target, *args, ephemeral: bool = False, **kwargs) -> No
     await target.send(*args, **kwargs)
 
 
+async def _edit_panel(interaction: discord.Interaction, bot: commands.Bot, store: PresenceConfigStore) -> None:
+    config = store.get()
+    file = await build_presence_preview(bot.user, config.entries[config.active_index])
+    await interaction.response.edit_message(
+        embed=_build_presence_embed(config, title="Painel de presenca da Ayla"),
+        attachments=[file],
+        view=PresencePanelView(bot, store),
+    )
+
+
 class PresencePanelView(discord.ui.View):
     def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
         super().__init__(timeout=300)
         self._bot = bot
         self._store = store
 
-    @discord.ui.button(label="Adicionar", style=discord.ButtonStyle.success)
-    async def add(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PresenceEntryModal(self._bot, self._store, "add"))
+    @discord.ui.button(label="Criar status", style=discord.ButtonStyle.success)
+    async def create(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="Criar status da Ayla",
+            description="Escolha o que voce quer configurar.",
+            color=0x5865F2,
+        )
+        await interaction.response.edit_message(embed=embed, attachments=[], view=PresenceCreateTypeView(self._bot, self._store))
 
     @discord.ui.button(label="Editar", style=discord.ButtonStyle.primary)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -477,7 +534,151 @@ class PresencePanelView(discord.ui.View):
 
     @discord.ui.button(label="Atualizar", style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.edit_message(embed=_build_presence_embed(self._store.get(), title="Painel de presenca da Ayla"), view=self)
+        config = self._store.get()
+        file = await build_presence_preview(self._bot.user, config.entries[config.active_index])
+        await interaction.response.edit_message(embed=_build_presence_embed(config, title="Painel de presenca da Ayla"), attachments=[file], view=self)
+
+
+class PresenceCreateTypeView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
+        super().__init__(timeout=300)
+        self._bot = bot
+        self._store = store
+
+    @discord.ui.button(label="Status padrao", style=discord.ButtonStyle.primary)
+    async def standard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        file = await build_status_choice_preview(self._bot.user)
+        embed = discord.Embed(
+            title="Status padrao",
+            description="Escolha pela bolinha de status do Discord.",
+            color=0x5865F2,
+        )
+        embed.set_image(url="attachment://status-choice-preview.png")
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=PresenceStandardStatusView(self._bot, self._store))
+
+    @discord.ui.button(label="Status personalizado", style=discord.ButtonStyle.primary)
+    async def custom(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="Status personalizado", description="Escolha primeiro a bolinha de status.", color=0x5865F2),
+            attachments=[],
+            view=PresenceStatusForTextView(self._bot, self._store, "custom"),
+        )
+
+    @discord.ui.button(label="Atividade", style=discord.ButtonStyle.primary)
+    async def activity(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="Atividade", description="Escolha como a atividade deve aparecer.", color=0x5865F2),
+            attachments=[],
+            view=PresenceActivityTypeView(self._bot, self._store),
+        )
+
+    @discord.ui.button(label="Voltar", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await _edit_panel(interaction, self._bot, self._store)
+
+
+class PresenceStandardStatusView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
+        super().__init__(timeout=300)
+        self._bot = bot
+        self._store = store
+
+    async def _choose(self, interaction: discord.Interaction, status: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await _send_entry_preview(interaction, self._bot, self._store, "add", status, "none", "")
+
+    @discord.ui.button(label="Online", style=discord.ButtonStyle.success)
+    async def online(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "online")
+
+    @discord.ui.button(label="Ausente", style=discord.ButtonStyle.secondary)
+    async def idle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "idle")
+
+    @discord.ui.button(label="Nao perturbe", style=discord.ButtonStyle.danger)
+    async def dnd(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "dnd")
+
+    @discord.ui.button(label="Invisivel", style=discord.ButtonStyle.secondary)
+    async def invisible(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "invisible")
+
+    @discord.ui.button(label="Voltar", style=discord.ButtonStyle.secondary, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(embed=discord.Embed(title="Criar status da Ayla", description="Escolha o que voce quer configurar.", color=0x5865F2), attachments=[], view=PresenceCreateTypeView(self._bot, self._store))
+
+
+class PresenceStatusForTextView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore, activity_type: str) -> None:
+        super().__init__(timeout=300)
+        self._bot = bot
+        self._store = store
+        self._activity_type = activity_type
+
+    async def _modal(self, interaction: discord.Interaction, status: str) -> None:
+        await interaction.response.send_modal(PresenceTextModal(self._bot, self._store, "add", status, self._activity_type))
+
+    @discord.ui.button(label="Online", style=discord.ButtonStyle.success)
+    async def online(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._modal(interaction, "online")
+
+    @discord.ui.button(label="Ausente", style=discord.ButtonStyle.secondary)
+    async def idle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._modal(interaction, "idle")
+
+    @discord.ui.button(label="Nao perturbe", style=discord.ButtonStyle.danger)
+    async def dnd(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._modal(interaction, "dnd")
+
+    @discord.ui.button(label="Invisivel", style=discord.ButtonStyle.secondary)
+    async def invisible(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._modal(interaction, "invisible")
+
+
+class PresenceActivityTypeView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
+        super().__init__(timeout=300)
+        self._bot = bot
+        self._store = store
+
+    async def _choose(self, interaction: discord.Interaction, activity_type: str) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(title=f"Atividade: {activity_type}", description="Agora escolha a bolinha de status.", color=0x5865F2),
+            attachments=[],
+            view=PresenceStatusForTextView(self._bot, self._store, activity_type),
+        )
+
+    @discord.ui.button(label="Jogando", style=discord.ButtonStyle.primary)
+    async def playing(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "playing")
+
+    @discord.ui.button(label="Ouvindo", style=discord.ButtonStyle.primary)
+    async def listening(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "listening")
+
+    @discord.ui.button(label="Assistindo", style=discord.ButtonStyle.primary)
+    async def watching(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "watching")
+
+    @discord.ui.button(label="Competindo", style=discord.ButtonStyle.primary)
+    async def competing(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._choose(interaction, "competing")
+
+
+class PresenceTextModal(discord.ui.Modal):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore, action: str, status: str, activity_type: str) -> None:
+        super().__init__(title="Texto do status")
+        self._bot = bot
+        self._store = store
+        self._action = action
+        self._status = status
+        self._activity_type = activity_type
+        self.text = discord.ui.TextInput(label="Texto", style=discord.TextStyle.paragraph, placeholder="Ex: <:emoji:123> faz sol hoje | a!help", max_length=120)
+        self.add_item(self.text)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await _send_entry_preview(interaction, self._bot, self._store, self._action, self._status, self._activity_type, str(self.text.value))
 
 
 class PresenceEntryModal(discord.ui.Modal):

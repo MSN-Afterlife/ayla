@@ -12,8 +12,8 @@ from PIL import UnidentifiedImageError
 from bot.services.presence_service import PresenceEntry
 
 
-WIDTH = 900
-HEIGHT = 420
+WIDTH = 760
+HEIGHT = 560
 CUSTOM_EMOJI_RE = re.compile(r"<a?:([A-Za-z0-9_]+):(\d+)>")
 
 
@@ -21,48 +21,51 @@ async def build_presence_preview(bot_user: discord.ClientUser | discord.User | N
     image = Image.new("RGB", (WIDTH, HEIGHT), (49, 51, 56))
     draw = ImageDraw.Draw(image, "RGBA")
 
-    draw.rounded_rectangle((28, 28, WIDTH - 28, HEIGHT - 28), radius=26, fill=(43, 45, 49))
-    draw.rectangle((28, 28, WIDTH - 28, 150), fill=(88, 101, 242))
-    draw.rounded_rectangle((28, 28, WIDTH - 28, HEIGHT - 28), radius=26, outline=(30, 31, 34), width=2)
+    _draw_profile_shell(draw, HEIGHT)
 
     avatar_url = bot_user.display_avatar.replace(format="png", size=256).url if bot_user else None
     avatar = await _remote_image(avatar_url)
     if avatar is None:
         avatar = _fallback_avatar("A")
-    avatar = _circle(avatar.resize((132, 132)))
-    image.paste(avatar, (64, 86), avatar)
+    avatar = _circle(avatar.resize((138, 138)))
+    image.paste(avatar, (58, 118), avatar)
 
     status_color = _status_color(entry.status)
-    draw.ellipse((164, 184, 200, 220), fill=(43, 45, 49))
-    draw.ellipse((170, 190, 194, 214), fill=status_color)
+    draw.ellipse((158, 214, 202, 258), fill=(43, 45, 49))
+    draw.ellipse((166, 222, 194, 250), fill=status_color)
 
     display_name = bot_user.display_name if bot_user else "Ayla"
     username = str(bot_user) if bot_user else "ayla"
-    draw.text((64, 246), display_name, fill=(242, 243, 245), font=_font(34, bold=True))
-    draw.text((64, 288), username, fill=(181, 186, 193), font=_font(21))
+    draw.text((58, 282), display_name, fill=(242, 243, 245), font=_font(36, bold=True))
+    draw.text((58, 326), username, fill=(181, 186, 193), font=_font(21))
 
-    draw.rounded_rectangle((352, 184, 820, 312), radius=12, fill=(35, 36, 40))
-    draw.text((382, 208), "ATIVIDADE", fill=(181, 186, 193), font=_font(15, bold=True))
+    status_label = _status_label(entry.status)
+    draw.rounded_rectangle((58, 365, 260, 401), radius=18, fill=(30, 31, 34))
+    draw.ellipse((76, 376, 92, 392), fill=status_color)
+    draw.text((104, 371), status_label, fill=(219, 222, 225), font=_font(19, bold=True))
+
+    draw.rounded_rectangle((320, 260, WIDTH - 58, 430), radius=14, fill=(35, 36, 40))
+    draw.text((350, 288), "COMO VAI APARECER", fill=(181, 186, 193), font=_font(15, bold=True))
     label = _activity_label(entry.activity_type)
-    draw.text((382, 235), label, fill=(242, 243, 245), font=_font(25, bold=True))
+    draw.text((350, 316), label, fill=(242, 243, 245), font=_font(28, bold=True))
 
-    x = 382
+    x = 350
     custom_emoji = entry.emoji or _first_custom_emoji(entry.text)
     if custom_emoji:
         emoji_image = await _custom_emoji_image(custom_emoji)
         if emoji_image:
             emoji_image = emoji_image.resize((34, 34))
-            image.paste(emoji_image, (x, 274), emoji_image)
+            image.paste(emoji_image, (x, 366), emoji_image)
             x += 44
         else:
-            draw.text((x, 276), custom_emoji, fill=(219, 222, 225), font=_font(22))
+            draw.text((x, 368), custom_emoji, fill=(219, 222, 225), font=_font(22))
             x += min(160, int(draw.textlength(custom_emoji, font=_font(22))) + 10)
 
     text = _strip_custom_emoji(entry.text) if entry.emoji else entry.text
-    draw.text((x, 276), _fit_text(draw, text or "sem atividade", _font(22), 820 - x), fill=(219, 222, 225), font=_font(22))
+    draw.text((x, 368), _fit_text(draw, text or "sem atividade", _font(23), WIDTH - x - 86), fill=(219, 222, 225), font=_font(23))
 
-    draw.rounded_rectangle((64, 334, 820, 364), radius=15, fill=(30, 31, 34))
-    draw.text((82, 340), f"Status: {entry.status}   Tipo: {entry.activity_type}", fill=(181, 186, 193), font=_font(17))
+    draw.rounded_rectangle((58, 462, WIDTH - 58, 505), radius=16, fill=(30, 31, 34))
+    draw.text((82, 473), f"Estado: {status_label}   Atividade: {label}", fill=(181, 186, 193), font=_font(18))
 
     buffer = BytesIO()
     image.save(buffer, format="PNG")
@@ -104,7 +107,7 @@ async def build_presence_order_preview(
         draw.ellipse((176, y + 54, 188, y + 66), fill=_status_color(entry.status))
 
         label = _activity_label(entry.activity_type)
-        draw.text((210, y + 13), f"{entry.status} | {label}", fill=(242, 243, 245), font=_font(20, bold=True))
+        draw.text((210, y + 13), f"{_status_label(entry.status)} | {label}", fill=(242, 243, 245), font=_font(20, bold=True))
 
         x = 210
         emoji = entry.emoji or _first_custom_emoji(entry.text)
@@ -127,6 +130,44 @@ async def build_presence_order_preview(
     image.save(buffer, format="PNG")
     buffer.seek(0)
     return discord.File(buffer, filename="presence-order-preview.png")
+
+
+async def build_status_choice_preview(bot_user: discord.ClientUser | discord.User | None) -> discord.File:
+    entries = [
+        PresenceEntry(status="online", activity_type="none", text=""),
+        PresenceEntry(status="idle", activity_type="none", text=""),
+        PresenceEntry(status="dnd", activity_type="none", text=""),
+        PresenceEntry(status="invisible", activity_type="none", text=""),
+    ]
+    height = 470
+    image = Image.new("RGB", (WIDTH, height), (49, 51, 56))
+    draw = ImageDraw.Draw(image, "RGBA")
+    _draw_profile_shell(draw, height)
+
+    avatar_url = bot_user.display_avatar.replace(format="png", size=128).url if bot_user else None
+    avatar = await _remote_image(avatar_url)
+    if avatar is None:
+        avatar = _fallback_avatar("A")
+    avatar = _circle(avatar.resize((70, 70)))
+    name = bot_user.display_name if bot_user else "Ayla"
+
+    draw.text((58, 224), "Escolha um status padrao", fill=(242, 243, 245), font=_font(30, bold=True))
+    draw.text((58, 264), "A bolinha ao lado do avatar mostra como o Discord vai exibir.", fill=(181, 186, 193), font=_font(18))
+
+    for index, entry in enumerate(entries):
+        x = 58 + (index % 2) * 330
+        y = 318 + (index // 2) * 80
+        draw.rounded_rectangle((x, y, x + 292, y + 58), radius=16, fill=(35, 36, 40), outline=(63, 66, 72), width=2)
+        image.paste(avatar.resize((42, 42)), (x + 16, y + 8), avatar.resize((42, 42)))
+        draw.ellipse((x + 45, y + 38, x + 65, y + 58), fill=(35, 36, 40))
+        draw.ellipse((x + 49, y + 42, x + 61, y + 54), fill=_status_color(entry.status))
+        draw.text((x + 78, y + 17), name, fill=(242, 243, 245), font=_font(18, bold=True))
+        draw.text((x + 190, y + 17), _status_label(entry.status), fill=(181, 186, 193), font=_font(16))
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    return discord.File(buffer, filename="status-choice-preview.png")
 
 
 def parse_presence_text(text: str) -> tuple[str, str | None]:
@@ -186,13 +227,45 @@ def _fallback_avatar(initial: str) -> Image.Image:
     return image
 
 
+def _draw_profile_shell(draw: ImageDraw.ImageDraw, height: int) -> None:
+    draw.rounded_rectangle((28, 28, WIDTH - 28, height - 28), radius=26, fill=(43, 45, 49))
+    for y in range(34, 206):
+        ratio = (y - 34) / 172
+        r = int(72 + 40 * ratio)
+        g = int(84 + 28 * ratio)
+        b = int(196 + 38 * ratio)
+        draw.line((34, y, WIDTH - 34, y), fill=(r, g, b, 255))
+    draw.rounded_rectangle((28, 28, WIDTH - 28, height - 28), radius=26, outline=(30, 31, 34), width=2)
+    draw.rectangle((34, 176, WIDTH - 34, 206), fill=(43, 45, 49))
+
+
 def _status_color(status: str) -> tuple[int, int, int]:
+    status = _normalize_status(status)
     return {
         "online": (35, 165, 90),
         "idle": (240, 178, 50),
         "dnd": (242, 63, 66),
         "invisible": (128, 132, 142),
     }.get(status, (35, 165, 90))
+
+
+def _status_label(status: str) -> str:
+    return {
+        "online": "Online",
+        "idle": "Ausente",
+        "dnd": "Nao perturbe",
+        "invisible": "Invisivel",
+    }.get(_normalize_status(status), status)
+
+
+def _normalize_status(status: str) -> str:
+    return {
+        "ausente": "idle",
+        "ocupado": "dnd",
+        "naoperturbe": "dnd",
+        "nao-perturbe": "dnd",
+        "invisivel": "invisible",
+    }.get(str(status).lower(), str(status).lower())
 
 
 def _activity_label(activity_type: str) -> str:

@@ -159,6 +159,7 @@ HELP_CATEGORIES = {
             ("`{prefix}dailyconfig <url>`", "Configura o link usado pelo comando daily.", False),
             ("`{prefix}dailybot true/false`", "Alterna entre resgate direto pelo Discord e redirecionamento para o site.", False),
             ("`/statusayla painel`", "Abre o painel com botoes para adicionar, editar, usar e ordenar status.", False),
+            ("`/statusayla atividade`", "Atalho slash com opcoes prontas para criar Jogando/Ouvindo/Assistindo/etc.", False),
             ("`{prefix}statusayla`", "Mostra a configuracao persistente de presenca da Ayla.", False),
             ("`{prefix}statusayla add online custom faz sol hoje | a!help`", "Mostra uma previa em imagem e pede confirmacao antes de adicionar.", False),
             ("`{prefix}statusayla add dnd jogando sua mae na cama`", "Mostra uma previa em imagem para atividade normal.", False),

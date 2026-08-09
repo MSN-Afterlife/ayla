@@ -46,11 +46,23 @@ async def build_presence_preview(bot_user: discord.ClientUser | discord.User | N
     draw.text((104, 371), status_label, fill=(219, 222, 225), font=_font(19, bold=True))
 
     draw.rounded_rectangle((320, 260, WIDTH - 58, 430), radius=14, fill=(35, 36, 40))
-    draw.text((350, 288), "COMO VAI APARECER", fill=(181, 186, 193), font=_font(15, bold=True))
-    label = _activity_label(entry.activity_type)
-    draw.text((350, 316), label, fill=(242, 243, 245), font=_font(28, bold=True))
+    activity_image = await _activity_image(entry.image_url, entry.image_mode, 112, 112)
+    if activity_image:
+        image.paste(activity_image, (350, 294), activity_image)
+        text_x = 482
+    else:
+        draw.rounded_rectangle((350, 294, 462, 406), radius=16, fill=(47, 49, 54), outline=(78, 80, 88), width=2)
+        question = "?"
+        question_font = _font(64, bold=True)
+        box = draw.textbbox((0, 0), question, font=question_font)
+        draw.text((406 - (box[2] - box[0]) / 2, 350 - (box[3] - box[1]) / 2 - 8), question, fill=(181, 186, 193), font=question_font)
+        text_x = 482
 
-    x = 350
+    draw.text((text_x, 288), "COMO VAI APARECER", fill=(181, 186, 193), font=_font(15, bold=True))
+    label = _activity_label(entry.activity_type)
+    draw.text((text_x, 316), label, fill=(242, 243, 245), font=_font(28, bold=True))
+
+    x = text_x
     custom_emoji = entry.emoji or _first_custom_emoji(entry.text)
     if custom_emoji:
         emoji_image = await _custom_emoji_image(custom_emoji)
@@ -201,6 +213,50 @@ async def _remote_image(url: str | None) -> Image.Image | None:
         return image.convert("RGBA")
     except (OSError, UnidentifiedImageError, aiohttp.ClientError):
         return None
+
+
+async def can_render_presence_image(url: str) -> bool:
+    return await _remote_image(url) is not None
+
+
+async def _activity_image(url: str | None, mode: str, width: int, height: int) -> Image.Image | None:
+    image = await _remote_image(url)
+    if image is None:
+        return None
+    if mode == "contain":
+        fitted = _contain(image, width, height)
+    elif mode == "stretch":
+        fitted = image.resize((width, height))
+    else:
+        fitted = _cover(image, width, height)
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=16, fill=255)
+    fitted = fitted.convert("RGBA")
+    fitted.putalpha(mask)
+    return fitted
+
+
+def _cover(image: Image.Image, width: int, height: int) -> Image.Image:
+    image_ratio = image.width / image.height
+    target_ratio = width / height
+    if image_ratio > target_ratio:
+        new_height = height
+        new_width = round(height * image_ratio)
+    else:
+        new_width = width
+        new_height = round(width / image_ratio)
+    resized = image.resize((new_width, new_height))
+    left = max((new_width - width) // 2, 0)
+    top = max((new_height - height) // 2, 0)
+    return resized.crop((left, top, left + width, top + height))
+
+
+def _contain(image: Image.Image, width: int, height: int) -> Image.Image:
+    canvas = Image.new("RGBA", (width, height), (30, 31, 34, 255))
+    copy = image.copy()
+    copy.thumbnail((width, height))
+    canvas.paste(copy, ((width - copy.width) // 2, (height - copy.height) // 2), copy if copy.mode == "RGBA" else None)
+    return canvas
 
 
 def _first_custom_emoji(text: str) -> str | None:

@@ -1,6 +1,7 @@
 import random
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
@@ -14,6 +15,19 @@ DAILY_URL_SETTING = "daily_site_url"
 DAILY_DIRECT_CLAIM_SETTING = "daily_direct_claim_enabled"
 WINKS_GUILD_ID = 1472950966113276068
 WINKS_EMOJI_NAME = "winks"
+BOOLEAN_CHOICES = [
+    app_commands.Choice(name="Ativar", value="true"),
+    app_commands.Choice(name="Desativar", value="false"),
+]
+COIN_CHOICES = [
+    app_commands.Choice(name="Cara", value="cara"),
+    app_commands.Choice(name="Coroa", value="coroa"),
+]
+DICE_CHOICES = [app_commands.Choice(name=str(number), value=number) for number in range(1, 7)]
+HIGHLOW_CHOICES = [
+    app_commands.Choice(name="Maior", value="maior"),
+    app_commands.Choice(name="Menor", value="menor"),
+]
 
 
 def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -83,6 +97,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @bot.hybrid_command(name="dailybot", aliases=["dailymodo", "dailyinterruptor"], description="Liga ou desliga o resgate direto do daily pelo Discord.")
     @commands.has_permissions(manage_guild=True)
+    @app_commands.choices(enabled=BOOLEAN_CHOICES)
     async def daily_bot(ctx: commands.Context, enabled: str | None = None) -> None:
         if enabled is None:
             current = _get_daily_direct_claim_enabled(economy, settings)
@@ -133,6 +148,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=embed)
 
     @bot.hybrid_command(name="coinflip", aliases=["cf", "caracoroa"], description="Aposta cara ou coroa contra a Ayla.")
+    @app_commands.choices(choice=COIN_CHOICES)
     async def coinflip(ctx: commands.Context, amount: int, choice: str) -> None:
         normalized = _normalize_coin_choice(choice)
         if not normalized:
@@ -161,6 +177,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
     @bot.hybrid_command(name="dado", aliases=["dice"], description="Aposta em um numero de 1 a 6.")
+    @app_commands.choices(number=DICE_CHOICES)
     async def dice(ctx: commands.Context, amount: int, number: int) -> None:
         if number < 1 or number > 6:
             await ctx.send("Escolha um numero entre 1 e 6.")
@@ -236,6 +253,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send_bet_result(ctx, "Roleta", ctx.author, amount, won, f"Caiu `{number}` ({color}). Sua aposta: `{choice}`.", profile.balance, [choice.upper(), str(number)], delta=payout if won else -amount)
 
     @bot.hybrid_command(name="highlow", aliases=["maioroumenor", "hl"], description="Aposte se a proxima carta sera maior ou menor.")
+    @app_commands.choices(choice=HIGHLOW_CHOICES)
     async def highlow(ctx: commands.Context, amount: int, choice: str) -> None:
         normalized = _normalize_highlow_choice(choice)
         if not normalized:

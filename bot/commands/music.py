@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
@@ -11,6 +12,14 @@ from bot.services.music_player import Track
 from bot.services.music_player import build_now_playing_embed
 from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
+
+
+REPEAT_CHOICES = [
+    app_commands.Choice(name="Desligado", value="off"),
+    app_commands.Choice(name="Uma musica", value="one"),
+    app_commands.Choice(name="Fila inteira", value="all"),
+]
+FILTER_CHOICES = [app_commands.Choice(name=name, value=name) for name in FILTERS]
 
 
 async def _send(ctx: commands.Context, message: str) -> None:
@@ -156,6 +165,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send(ctx, f"Volume ajustado para `{value}%`.")
 
     @bot.hybrid_command(name="repeat", aliases=["rep", "loop"], description="Define repeticao: off, one ou all.")
+    @app_commands.choices(mode=REPEAT_CHOICES)
     async def repeat(ctx: commands.Context, mode: str = "off") -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")
@@ -258,6 +268,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send(ctx, f"Voltei para `{_format_duration(position)}`.")
 
     @bot.hybrid_command(name="filter", aliases=["flt", "filtro"], description="Aplica filtro: none, bassboost, nightcore, vaporwave ou soft.")
+    @app_commands.choices(name=FILTER_CHOICES)
     async def filter_command(ctx: commands.Context, name: str = "none") -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")

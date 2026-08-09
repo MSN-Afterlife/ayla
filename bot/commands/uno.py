@@ -25,6 +25,12 @@ COLOR_ALIASES = {
 VALUES = [str(number) for number in range(10)] + ["bloqueio", "reverso", "+2"]
 ACTION_VALUES = {"bloqueio", "reverso", "+2"}
 WILD_VALUES = {"coringa", "+4"}
+UNO_COLOR_CHOICES = [
+    app_commands.Choice(name="Vermelho", value="vermelho"),
+    app_commands.Choice(name="Azul", value="azul"),
+    app_commands.Choice(name="Verde", value="verde"),
+    app_commands.Choice(name="Amarelo", value="amarelo"),
+]
 
 
 @dataclass(frozen=True)
@@ -403,6 +409,7 @@ def setup_uno_commands(bot: commands.Bot) -> None:
 
     @uno_slash.command(name="jogar", description="Joga uma carta da sua mao.")
     @app_commands.describe(numero="Numero da carta na sua mao.", cor="Cor para coringa ou +4.")
+    @app_commands.choices(cor=UNO_COLOR_CHOICES)
     async def uno_play_slash(interaction: discord.Interaction, numero: int, cor: str | None = None) -> None:
         if not interaction.channel:
             await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)

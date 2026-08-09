@@ -19,6 +19,13 @@ class Settings:
     google_search_api_key: str | None = None
     google_search_engine_id: str | None = None
     image_provider_order: list[str] | None = None
+    pexels_api_key: str | None = None
+    pixabay_api_key: str | None = None
+    unsplash_access_key: str | None = None
+    flickr_api_key: str | None = None
+    wallhaven_api_key: str | None = None
+    brave_search_api_key: str | None = None
+    serpapi_api_key: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
     levels_database_path: str = "data/levels.sqlite3"
@@ -61,7 +68,17 @@ def load_settings() -> Settings:
         youtube_api_key=os.getenv("YOUTUBE_API_KEY"),
         google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
         google_search_engine_id=os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
-        image_provider_order=_load_list("IMAGE_PROVIDER_ORDER", ["ddgs", "google"]),
+        image_provider_order=_load_list(
+            "IMAGE_PROVIDER_ORDER",
+            ["ddgs", "google", "openverse", "wallhaven", "wikimedia", "pexels", "pixabay", "unsplash", "flickr", "brave", "serpapi"],
+        ),
+        pexels_api_key=os.getenv("PEXELS_API_KEY"),
+        pixabay_api_key=os.getenv("PIXABAY_API_KEY"),
+        unsplash_access_key=os.getenv("UNSPLASH_ACCESS_KEY"),
+        flickr_api_key=os.getenv("FLICKR_API_KEY"),
+        wallhaven_api_key=os.getenv("WALLHAVEN_API_KEY"),
+        brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY"),
+        serpapi_api_key=os.getenv("SERPAPI_API_KEY"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),

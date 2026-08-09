@@ -53,6 +53,13 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
     async def list_presence(ctx: commands.Context) -> None:
         await ctx.send(embed=_build_presence_embed(store.get()))
 
+    @presence_group.command(name="imagem", aliases=["img", "preview"])
+    @commands.has_permissions(administrator=True)
+    async def list_presence_image(ctx: commands.Context) -> None:
+        config = store.get()
+        file = await build_presence_order_preview(bot.user, config.entries, config.active_index, "Status salvos da Ayla")
+        await ctx.send(embed=_build_presence_embed(config, title="Status salvos da Ayla"), file=file, view=PresenceImageListView(bot, store))
+
     @presence_group.command(name="modo", aliases=["mode"])
     @commands.has_permissions(administrator=True)
     async def set_mode(ctx: commands.Context, mode: str) -> None:
@@ -202,6 +209,14 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
     @app_commands.default_permissions(administrator=True)
     async def presence_list_slash(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=_build_presence_embed(store.get()), ephemeral=True)
+
+    @slash_group.command(name="imagem", description="Lista os status salvos da Ayla como imagem.")
+    @app_commands.default_permissions(administrator=True)
+    async def presence_image_slash(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        config = store.get()
+        file = await build_presence_order_preview(bot.user, config.entries, config.active_index, "Status salvos da Ayla")
+        await interaction.followup.send(embed=_build_presence_embed(config, title="Status salvos da Ayla"), file=file, view=PresenceImageListView(bot, store), ephemeral=True)
 
     @slash_group.command(name="modo", description="Define se a Ayla usa um status fixo ou alterna entre os salvos.")
     @app_commands.default_permissions(administrator=True)
@@ -614,6 +629,59 @@ class PresencePanelView(discord.ui.View):
         config = self._store.get()
         file = await build_presence_preview(self._bot.user, config.entries[config.active_index])
         await interaction.response.edit_message(embed=_build_presence_embed(config, title="Painel de presenca da Ayla"), attachments=[file], view=self)
+
+
+class PresenceImageListView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
+        super().__init__(timeout=300)
+        self._bot = bot
+        self._store = store
+        self.add_item(PresenceImageSelect(bot, store))
+
+    @discord.ui.button(label="Voltar para lista", style=discord.ButtonStyle.secondary)
+    async def back_to_list(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        config = self._store.get()
+        file = await build_presence_order_preview(self._bot.user, config.entries, config.active_index, "Status salvos da Ayla")
+        await interaction.response.edit_message(
+            embed=_build_presence_embed(config, title="Status salvos da Ayla"),
+            attachments=[file],
+            view=PresenceImageListView(self._bot, self._store),
+        )
+
+
+class PresenceImageSelect(discord.ui.Select):
+    def __init__(self, bot: commands.Bot, store: PresenceConfigStore) -> None:
+        self._bot = bot
+        self._store = store
+        config = store.get()
+        options = []
+        for index, entry in enumerate(config.entries[:25], start=1):
+            marker = " ativo" if index == config.active_index + 1 else ""
+            image = " img" if entry.image_url else ""
+            options.append(
+                discord.SelectOption(
+                    label=f"{index}. {entry.activity_type}{marker}{image}"[:100],
+                    value=str(index),
+                    description=(entry.text or "sem atividade")[:100],
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="Nenhum status salvo", value="0", description="Nao ha status para visualizar."))
+        super().__init__(placeholder="Escolha um status para ver a previa individual", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        index = int(self.values[0])
+        config = self._store.get()
+        if index < 1 or index > len(config.entries):
+            await interaction.response.send_message("Status invalido.", ephemeral=True)
+            return
+        entry = config.entries[index - 1]
+        file = await build_presence_preview(self._bot.user, entry)
+        await interaction.response.edit_message(
+            embed=_build_confirmation_embed("Previa individual", entry, extra=f"Status `{index}` salvo na Ayla."),
+            attachments=[file],
+            view=PresenceImageListView(self._bot, self._store),
+        )
 
 
 class PresenceCreateTypeView(discord.ui.View):

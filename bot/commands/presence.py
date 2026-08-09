@@ -222,32 +222,49 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @slash_group.command(name="adicionar", description="Mostra previa e confirma um novo status.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(status="Estado padrao da Ayla.", tipo="Tipo exibido no perfil: personalizado, jogando, ouvindo etc.", texto="Texto da presenca. Pode comecar com emoji customizado.")
+    @app_commands.describe(
+        status="Estado padrao da Ayla.",
+        tipo="Tipo exibido no perfil: personalizado, jogando, ouvindo etc.",
+        texto="Texto da presenca.",
+        emoji="Emoji opcional para status personalizado. Ex: 🌙 ou <:nome:123>.",
+    )
     @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
-    async def presence_add_slash(interaction: discord.Interaction, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str) -> None:
+    async def presence_add_slash(interaction: discord.Interaction, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str, emoji: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, bot, store, "add", status.value, tipo.value, texto)
+        await _send_entry_preview(interaction, bot, store, "add", status.value, tipo.value, texto, emoji=emoji)
 
     @slash_group.command(name="atividade", description="Cria uma atividade da Ayla com opcoes prontas e previa.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(tipo="Como o Discord vai mostrar a atividade.", texto="Texto da atividade.", status="Estado padrao da Ayla.")
+    @app_commands.describe(
+        tipo="Como o Discord vai mostrar a atividade.",
+        texto="Texto da atividade.",
+        status="Estado padrao da Ayla.",
+        emoji="Emoji opcional para status personalizado. So aparece no tipo personalizado.",
+    )
     @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
     async def presence_activity_slash(
         interaction: discord.Interaction,
         tipo: app_commands.Choice[str],
         texto: str,
         status: app_commands.Choice[str] | None = None,
+        emoji: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, bot, store, "add", status.value if status else "online", tipo.value, texto)
+        await _send_entry_preview(interaction, bot, store, "add", status.value if status else "online", tipo.value, texto, emoji=emoji)
 
     @slash_group.command(name="editar", description="Mostra previa e confirma a edicao de um status salvo.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(indice="Numero do status salvo que sera editado.", status="Estado padrao da Ayla.", tipo="Tipo exibido no perfil.", texto="Texto da presenca.")
+    @app_commands.describe(
+        indice="Numero do status salvo que sera editado.",
+        status="Estado padrao da Ayla.",
+        tipo="Tipo exibido no perfil.",
+        texto="Texto da presenca.",
+        emoji="Emoji opcional para status personalizado. Ex: 🌙 ou <:nome:123>.",
+    )
     @app_commands.choices(status=STATUS_CHOICES, tipo=ACTIVITY_CHOICES)
-    async def presence_edit_slash(interaction: discord.Interaction, indice: int, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str) -> None:
+    async def presence_edit_slash(interaction: discord.Interaction, indice: int, status: app_commands.Choice[str], tipo: app_commands.Choice[str], texto: str, emoji: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, bot, store, "set", status.value, tipo.value, texto, index=indice)
+        await _send_entry_preview(interaction, bot, store, "set", status.value, tipo.value, texto, index=indice, emoji=emoji)
 
     @slash_group.command(name="usar", description="Mostra uma previa e confirma o status ativo.")
     @app_commands.default_permissions(administrator=True)
@@ -460,10 +477,14 @@ async def _send_entry_preview(
     text: str,
     *,
     index: int | None = None,
+    emoji: str | None = None,
 ) -> None:
     try:
-        cleaned_text, emoji = parse_presence_text(text)
-        entry = PresenceEntry(status=status, activity_type=activity_type, text=cleaned_text, emoji=emoji)
+        cleaned_text, parsed_emoji = parse_presence_text(text)
+        selected_emoji = emoji.strip() if emoji and emoji.strip() else parsed_emoji
+        if activity_type not in {"custom", "personalizado"}:
+            selected_emoji = None
+        entry = PresenceEntry(status=status, activity_type=activity_type, text=cleaned_text, emoji=selected_emoji)
         build_presence(entry)
     except ValueError as error:
         await _send_response(target, str(error), ephemeral=True)
@@ -559,7 +580,7 @@ class PresenceCreateTypeView(discord.ui.View):
     @discord.ui.button(label="Status personalizado", style=discord.ButtonStyle.primary)
     async def custom(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
-            embed=discord.Embed(title="Status personalizado", description="Escolha primeiro a bolinha de status.", color=0x5865F2),
+            embed=discord.Embed(title="Status personalizado", description="Escolha a bolinha de status. Depois voce pode capturar o texto direto do chat na confirmacao.", color=0x5865F2),
             attachments=[],
             view=PresenceStatusForTextView(self._bot, self._store, "custom"),
         )
@@ -673,12 +694,23 @@ class PresenceTextModal(discord.ui.Modal):
         self._action = action
         self._status = status
         self._activity_type = activity_type
-        self.text = discord.ui.TextInput(label="Texto", style=discord.TextStyle.paragraph, placeholder="Ex: <:emoji:123> faz sol hoje | a!help", max_length=120)
+        self.text = discord.ui.TextInput(label="Texto", style=discord.TextStyle.paragraph, placeholder="Ex: faz sol hoje | a!help", max_length=120)
+        self.emoji = discord.ui.TextInput(label="Emoji opcional", required=False, placeholder="Ex: 🌙 ou <:nome:123>", max_length=80)
         self.add_item(self.text)
+        self.add_item(self.emoji)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        await _send_entry_preview(interaction, self._bot, self._store, self._action, self._status, self._activity_type, str(self.text.value))
+        await _send_entry_preview(
+            interaction,
+            self._bot,
+            self._store,
+            self._action,
+            self._status,
+            self._activity_type,
+            str(self.text.value),
+            emoji=str(self.emoji.value),
+        )
 
 
 class PresenceEntryModal(discord.ui.Modal):
@@ -690,12 +722,14 @@ class PresenceEntryModal(discord.ui.Modal):
         self.index = discord.ui.TextInput(label="Indice para editar", required=action == "set", placeholder="Ex: 1")
         self.status = discord.ui.TextInput(label="Status", default="online", placeholder="online, idle, dnd, invisible", max_length=20)
         self.kind = discord.ui.TextInput(label="Tipo", default="custom", placeholder="custom, jogando, ouvindo, assistindo...", max_length=20)
-        self.text = discord.ui.TextInput(label="Texto / emoji", style=discord.TextStyle.paragraph, placeholder="Ex: <:emoji:123> faz sol hoje | a!help", max_length=120)
+        self.text = discord.ui.TextInput(label="Texto", style=discord.TextStyle.paragraph, placeholder="Ex: faz sol hoje | a!help", max_length=120)
+        self.emoji = discord.ui.TextInput(label="Emoji opcional", required=False, placeholder="Ex: 🌙 ou <:nome:123>", max_length=80)
         if action == "set":
             self.add_item(self.index)
         self.add_item(self.status)
         self.add_item(self.kind)
         self.add_item(self.text)
+        self.add_item(self.emoji)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -704,7 +738,17 @@ class PresenceEntryModal(discord.ui.Modal):
         except ValueError:
             await interaction.followup.send("Indice invalido.", ephemeral=True)
             return
-        await _send_entry_preview(interaction, self._bot, self._store, self._action, str(self.status.value), str(self.kind.value), str(self.text.value), index=index)
+        await _send_entry_preview(
+            interaction,
+            self._bot,
+            self._store,
+            self._action,
+            str(self.status.value),
+            str(self.kind.value),
+            str(self.text.value),
+            index=index,
+            emoji=str(self.emoji.value),
+        )
 
 
 class PresenceIndexModal(discord.ui.Modal):
@@ -765,6 +809,56 @@ class PresenceConfirmView(discord.ui.View):
         self._source = source
         self._target = target
         self._order = order
+
+    @discord.ui.button(label="Capturar status", style=discord.ButtonStyle.primary)
+    async def capture_status(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not _is_admin(interaction):
+            await interaction.response.send_message("So admins podem alterar essa confirmacao.", ephemeral=True)
+            return
+        if not self._entry or self._entry.activity_type != "custom":
+            await interaction.response.send_message("Captura direta so funciona em status personalizado.", ephemeral=True)
+            return
+        if not interaction.channel:
+            await interaction.response.send_message("Use esse botao dentro de um canal.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await interaction.followup.send(
+            "Envie a mensagem completa do status no chat agora. Ex: `🌙 oi | a!help` ou um emoji custom seguido do texto.",
+            ephemeral=True,
+        )
+
+        def check(message: discord.Message) -> bool:
+            return message.author.id == interaction.user.id and message.channel.id == interaction.channel.id
+
+        try:
+            message = await self._bot.wait_for("message", check=check, timeout=45)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("Tempo esgotado para capturar emoji.", ephemeral=True)
+            return
+
+        text, emoji = parse_presence_text(message.content)
+        if not text:
+            await interaction.followup.send("Nao encontrei texto para o status nessa mensagem.", ephemeral=True)
+            return
+
+        self._entry = PresenceEntry(
+            status=self._entry.status,
+            activity_type=self._entry.activity_type,
+            text=text,
+            emoji=emoji,
+        )
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+        file = await build_presence_preview(self._bot.user, self._entry)
+        await interaction.edit_original_response(
+            embed=_build_confirmation_embed("Confirmar status", self._entry, extra="Status capturado do chat."),
+            attachments=[file],
+            view=self,
+        )
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

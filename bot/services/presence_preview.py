@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from io import BytesIO
 
 import aiohttp
@@ -171,8 +172,8 @@ async def build_status_choice_preview(bot_user: discord.ClientUser | discord.Use
 
 
 def parse_presence_text(text: str) -> tuple[str, str | None]:
-    emoji = _first_custom_emoji(text)
-    cleaned = _strip_custom_emoji(text).strip() if emoji else text.strip()
+    emoji = _first_presence_emoji(text)
+    cleaned = _strip_presence_emoji(text, emoji).strip() if emoji else text.strip()
     return cleaned, emoji
 
 
@@ -209,6 +210,37 @@ def _first_custom_emoji(text: str) -> str | None:
 
 def _strip_custom_emoji(text: str) -> str:
     return CUSTOM_EMOJI_RE.sub("", text, count=1).strip()
+
+
+def _first_presence_emoji(text: str) -> str | None:
+    custom = _first_custom_emoji(text)
+    if custom:
+        return custom
+
+    token = text.strip().split(maxsplit=1)[0] if text.strip() else ""
+    if token and _looks_like_unicode_emoji(token):
+        return token
+    return None
+
+
+def _strip_presence_emoji(text: str, emoji: str | None) -> str:
+    if not emoji:
+        return text.strip()
+    if CUSTOM_EMOJI_RE.fullmatch(emoji):
+        return _strip_custom_emoji(text)
+    stripped = text.strip()
+    if stripped.startswith(emoji):
+        return stripped[len(emoji) :].strip()
+    return stripped
+
+
+def _looks_like_unicode_emoji(value: str) -> bool:
+    if len(value) > 12:
+        return False
+    return any(
+        unicodedata.category(character) in {"So", "Sk"} or character in {"\ufe0f", "\u200d"}
+        for character in value
+    )
 
 
 def _circle(image: Image.Image) -> Image.Image:

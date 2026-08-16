@@ -69,6 +69,9 @@ class SiteApiServer:
                     "balance": profile.balance,
                     "dailyStreak": profile.daily_streak,
                     "remainingSeconds": remaining,
+                    # Preview do valor do daily; o bloqueio nao altera o saldo.
+                    "amount": claim.amount or DAILY_AMOUNT,
+                    "bonus": claim.bonus,
                 },
                 status=200,
             )

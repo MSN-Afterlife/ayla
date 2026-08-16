@@ -61,7 +61,18 @@ class EconomyService:
             profile = self.get_profile(user_id)
             same_day = profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today
             if same_day and not bypass_cooldown:
-                return DailyClaim(profile, _seconds_until_next_local_midnight(now))
+                # O daily continua bloqueado, mas o site precisa conseguir exibir
+                # quanto o usuario receberia. Este e apenas um preview: nenhum
+                # dado da economia e alterado neste caminho.
+                streak = max(profile.daily_streak, 1)
+                bonus = min(streak * 100, 1000)
+                amount = DAILY_AMOUNT + bonus
+                return DailyClaim(
+                    profile,
+                    _seconds_until_next_local_midnight(now),
+                    amount,
+                    bonus,
+                )
 
             yesterday = today - timedelta(days=1)
             if same_day:

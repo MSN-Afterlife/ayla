@@ -54,16 +54,21 @@ class EconomyService:
             last_daily_at=int(row["last_daily_at"]) if row["last_daily_at"] is not None else None,
         )
 
-    def claim_daily(self, user_id: int) -> DailyClaim:
+    def claim_daily(self, user_id: int, *, bypass_cooldown: bool = False) -> DailyClaim:
         now = int(time.time())
         today = _local_date(now)
         with closing(self._connect()) as connection:
             profile = self.get_profile(user_id)
-            if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today:
+            same_day = profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today
+            if same_day and not bypass_cooldown:
                 return DailyClaim(profile, _seconds_until_next_local_midnight(now))
 
             yesterday = today - timedelta(days=1)
-            streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
+            if same_day:
+                # Repeated admin tests do not inflate the streak; they only bypass the lockout.
+                streak = max(profile.daily_streak, 1)
+            else:
+                streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
             bonus = min(streak * 100, 1000)
             amount = DAILY_AMOUNT + bonus
             connection.execute(

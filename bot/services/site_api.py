@@ -53,7 +53,12 @@ class SiteApiServer:
         except (TypeError, ValueError):
             return web.json_response({"ok": False, "message": "discordUserId invalido."}, status=400)
 
-        claim = self._economy.claim_daily(user_id)
+        bypass_cooldown = (
+            payload.get("bypassCooldown") is True
+            and payload.get("source") == "site"
+            and bool(self._settings.site_api_key)
+        )
+        claim = self._economy.claim_daily(user_id, bypass_cooldown=bypass_cooldown)
         profile = claim.profile
         remaining = claim.remaining_seconds
         if remaining:

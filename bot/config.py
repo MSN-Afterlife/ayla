@@ -46,6 +46,7 @@ class Settings:
     authentik_url: str | None = None
     authentik_token: str | None = None
     authentik_authdev_group: str | None = None
+    ayla_caotica_url: str | None = None
 
 
 def load_settings() -> Settings:
@@ -99,6 +100,7 @@ def load_settings() -> Settings:
         authentik_url=os.getenv("AUTHENTIK_URL"),
         authentik_token=os.getenv("AUTHENTIK_TOKEN"),
         authentik_authdev_group=os.getenv("AUTHENTIK_AUTHDEV_GROUP"),
+        ayla_caotica_url=os.getenv("AYLACAOTICAURL"),
     )
 
 

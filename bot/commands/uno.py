@@ -5,6 +5,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.config import Settings
+from bot.services.uno_images import UnoImageBuilder
+
 
 COLORS = {
     "vermelho": 0xE74C3C,
@@ -25,6 +28,24 @@ COLOR_ALIASES = {
 VALUES = [str(number) for number in range(10)] + ["bloqueio", "reverso", "+2"]
 ACTION_VALUES = {"bloqueio", "reverso", "+2"}
 WILD_VALUES = {"coringa", "+4"}
+CHAOS_VALUES = {"?", "?+8", "?+99", "?mao", "?troca", "?personagem"}
+CHAOS_DECK_VALUES = ["?", "?", "?+8", "?+8", "?+99", "?mao", "?troca", "?personagem"]
+CHAOS_DECK_SIZE = 500
+CHAOS_CHARACTERS = {
+    "godzilla": {"name": "Godzilla", "effects": ["rampage", "roar", "stomp", "atomic", "tailwind"]},
+    "kraken": {"name": "Kraken", "effects": ["tentacles", "drown", "gift", "tide", "steal"]},
+    "dragao": {"name": "Dragao", "effects": ["fire", "hoard", "flight", "scales", "burn"]},
+    "mothra": {"name": "Mothra", "effects": ["dust", "blessing", "flutter", "heal", "swarm"]},
+    "minotauro": {"name": "Minotauro", "effects": ["charge", "labyrinth", "axe", "rage", "guard"]},
+    "medusa": {"name": "Medusa", "effects": ["petrify", "gaze", "snakes", "curse", "mirror"]},
+    "yeti": {"name": "Yeti", "effects": ["blizzard", "snowball", "warmth", "freeze", "avalanche"]},
+    "fenix": {"name": "Fenix", "effects": ["rebirth", "flames", "ashes", "sun", "spark"]},
+    "cthulhu": {"name": "Cthulhu", "effects": ["madness", "whispers", "void", "dream", "tentacles"]},
+    "king_kong": {"name": "King Kong", "effects": ["smash", "roar", "climb", "protect", "throw"]},
+    "slime": {"name": "Slime Mutante", "effects": ["split", "absorb", "bounce", "melt", "clone"]},
+    "robo_caos": {"name": "Robo Caos", "effects": ["hack", "laser", "repair", "overload", "shuffle"]},
+    "ayla_caotica": {"name": "Ayla Caotica", "effects": ["roulette", "favor", "prank", "glitch", "gift"]},
+}
 UNO_COLOR_CHOICES = [
     app_commands.Choice(name="Vermelho", value="vermelho"),
     app_commands.Choice(name="Azul", value="azul"),
@@ -42,8 +63,12 @@ class UnoCard:
     def is_wild(self) -> bool:
         return self.value in WILD_VALUES
 
+    @property
+    def is_chaos(self) -> bool:
+        return self.value in CHAOS_VALUES
+
     def label(self) -> str:
-        if self.is_wild:
+        if self.is_wild or self.is_chaos:
             return self.value.upper()
         return f"{self.color} {self.value}"
 
@@ -56,17 +81,33 @@ class UnoPlayer:
 
 
 class UnoGame:
-    def __init__(self, channel_id: int, host: discord.Member | discord.User) -> None:
+    def __init__(
+        self,
+        channel_id: int,
+        host: discord.Member | discord.User,
+        ruleset: str = "normal",
+        ayla_caotica_url: str | None = None,
+    ) -> None:
         self.channel_id = channel_id
         self.host_id = host.id
+        self.ruleset = ruleset
+        self.ayla_caotica_url = ayla_caotica_url
         self.players = [UnoPlayer(host)]
-        self.deck = _new_uno_deck()
+        self.deck = _new_uno_deck(chaos=self.is_chaos)
         self.discard: list[UnoCard] = []
         self.current_color: str | None = None
         self.turn_index = 0
         self.direction = 1
         self.started = False
         self.awaiting_draw = False
+        self.last_character: str | None = None
+        self.last_character_url: str | None = None
+        self.last_character_effect: str | None = None
+        self.last_character_target: str | None = None
+
+    @property
+    def is_chaos(self) -> bool:
+        return self.ruleset == "caos"
 
     @property
     def current_player(self) -> UnoPlayer:
@@ -89,7 +130,7 @@ class UnoGame:
                 player.hand.append(self.draw_one())
 
         top = self.draw_one()
-        while top.is_wild or top.value in ACTION_VALUES:
+        while top.is_wild or top.is_chaos or top.value in ACTION_VALUES:
             self.deck.insert(0, top)
             random.shuffle(self.deck)
             top = self.draw_one()
@@ -98,17 +139,22 @@ class UnoGame:
         self.current_color = top.color
         self.started = True
 
-    def draw_one(self) -> UnoCard:
+    def draw_one(self) -> UnoCard | None:
         if not self.deck:
-            top = self.discard.pop()
-            self.deck = self.discard
-            self.discard = [top]
-            random.shuffle(self.deck)
+            if self.is_chaos:
+                return None
+            if len(self.discard) > 1:
+                top = self.discard.pop()
+                self.deck = self.discard
+                self.discard = [top]
+                random.shuffle(self.deck)
+            else:
+                self.deck = _new_uno_deck()
         return self.deck.pop()
 
     def can_play(self, card: UnoCard) -> bool:
         top = self.top_card
-        return card.is_wild or card.color == self.current_color or card.value == top.value
+        return card.is_wild or card.is_chaos or card.color == self.current_color or card.value == top.value
 
     def play(self, hand_index: int, color: str | None) -> tuple[bool, str, UnoCard | None]:
         if hand_index < 0 or hand_index >= len(self.current_player.hand):
@@ -124,11 +170,17 @@ class UnoGame:
 
         self.current_player.hand.pop(hand_index)
         self.discard.append(card)
-        self.current_color = color if card.is_wild else card.color
+        self.current_color = color if card.is_wild else (card.color or self.current_color)
         self.awaiting_draw = False
+        self.last_character = None
+        self.last_character_url = None
+        self.last_character_effect = None
+        self.last_character_target = None
         return True, self.apply_card_effect(card), card
 
     def apply_card_effect(self, card: UnoCard) -> str:
+        if card.is_chaos:
+            return self.apply_chaos_effect(card)
         if card.value == "reverso":
             self.direction *= -1
             if len(self.players) == 2:
@@ -141,17 +193,191 @@ class UnoGame:
             return f"{skipped} foi bloqueado."
         if card.value == "+2":
             target = self.next_player()
-            target.hand.extend([self.draw_one(), self.draw_one()])
+            self._draw_many(target, 2)
             self.advance(2)
             return f"{target.member.display_name} comprou 2 cartas e perdeu a vez."
         if card.value == "+4":
             target = self.next_player()
-            target.hand.extend([self.draw_one(), self.draw_one(), self.draw_one(), self.draw_one()])
+            self._draw_many(target, 4)
             self.advance(2)
             return f"{target.member.display_name} comprou 4 cartas e perdeu a vez."
 
         self.advance()
         return "Carta jogada."
+
+    def apply_chaos_effect(self, card: UnoCard) -> str:
+        if card.value == "?+8":
+            target = self.next_player()
+            drawn = self._draw_many(target, 8)
+            self.advance(2)
+            return f"{target.member.display_name} caiu no caos e comprou +{drawn} cartas."
+        if card.value == "?+99":
+            target = self.next_player()
+            drawn = self._draw_many(target, 99)
+            self.advance(2)
+            if drawn == 0:
+                return f"{target.member.display_name} escapou do +99: o baralho Caos estava vazio."
+            return f"{target.member.display_name} foi esmagado pelo caos e comprou +{drawn} cartas."
+        if card.value == "?mao":
+            changed = max(1, len(self.current_player.hand) * 2 // 3)
+            for index in random.sample(range(len(self.current_player.hand)), min(changed, len(self.current_player.hand))):
+                self.current_player.hand[index] = UnoCard(None, random.choice(["+4", "?+8", "?+99"]))
+            self.advance()
+            return f"A mao de {self.current_player.member.display_name} virou uma mao coringa: {changed} carta(s) foram corrompidas."
+        if card.value == "?troca":
+            target = self._random_other_player()
+            if target:
+                self.current_player.hand, target.hand = target.hand, self.current_player.hand
+                self.advance()
+                return f"Troca maluca: {self.current_player.member.display_name} trocou de mao com {target.member.display_name}."
+        if card.value == "?personagem":
+            message, steps = self._character_event_v2()
+            self.advance(steps)
+            return message
+
+        event = random.choice(["compra", "troca", "mao", "personagem", "cor"])
+        if event == "compra":
+            target = self._random_other_player()
+            amount = random.choice([2, 4, 8, 13])
+            if target:
+                self._draw_many(target, amount)
+                self.advance(2)
+                return f"Evento aleatorio: {target.member.display_name} comprou +{amount} cartas."
+        elif event == "troca":
+            target = self._random_other_player()
+            if target:
+                self.current_player.hand, target.hand = target.hand, self.current_player.hand
+                self.advance()
+                return f"Evento aleatorio: {self.current_player.member.display_name} trocou de mao com {target.member.display_name}."
+        elif event == "mao":
+            amount = max(1, len(self.current_player.hand) // 2)
+            for index in random.sample(range(len(self.current_player.hand)), min(amount, len(self.current_player.hand))):
+                self.current_player.hand[index] = UnoCard(None, random.choice(["+4", "?+8", "?+99"]))
+            self.advance()
+            return f"Evento aleatorio: {amount} carta(s) da mao foram transformadas em cartas especiais."
+        elif event == "personagem":
+            message, steps = self._character_event_v2()
+            self.advance(steps)
+            return message
+        else:
+            self.current_color = random.choice(list(COLORS))
+            self.advance()
+            return f"Evento aleatorio: a cor do caos agora e {self.current_color}."
+
+        self.advance()
+        return "O caos tentou agir, mas tropeçou no proprio baralho."
+
+    def _draw_many(self, player: UnoPlayer, amount: int) -> int:
+        cards = [self.draw_one() for _ in range(amount)]
+        cards = [card for card in cards if card is not None]
+        player.hand.extend(cards)
+        return len(cards)
+
+    def _random_other_player(self) -> UnoPlayer | None:
+        others = [player for player in self.players if player is not self.current_player]
+        return random.choice(others) if others else None
+
+    def _character_event(self) -> str:
+        character = random.choice(["Godzilla", "A Bruxa do Baralho", "O Ladrao de Cartas", "Ayla Caotica"])
+        target = self._random_other_player()
+        if not target:
+            return f"{character} apareceu, mas nao encontrou ninguem para atormentar."
+        if character == "Godzilla":
+            self._draw_many(target, 50)
+            return f"Godzilla apareceu e atacou {target.member.display_name}: +50 cartas!"
+        if character == "A Bruxa do Baralho":
+            self._draw_many(target, 6)
+            return f"A Bruxa do Baralho amaldiçoou {target.member.display_name}: +6 cartas!"
+        if character == "O Ladrao de Cartas":
+            if target.hand:
+                self.current_player.hand.append(target.hand.pop(random.randrange(len(target.hand))))
+            return f"O Ladrao de Cartas roubou uma carta de {target.member.display_name}."
+        self.current_player.hand, target.hand = target.hand, self.current_player.hand
+        return f"Ayla Caotica trocou as maos de {self.current_player.member.display_name} e {target.member.display_name}."
+
+    def _character_event_v2(self) -> tuple[str, int]:
+        key = random.choice(list(CHAOS_CHARACTERS))
+        character = CHAOS_CHARACTERS[key]
+        self.last_character = key
+        self.last_character_url = self.ayla_caotica_url if key == "ayla_caotica" else None
+        effect = random.choice(character["effects"])
+        target = self._random_other_player()
+        self.last_character_effect = effect
+        self.last_character_target = target.member.display_name if target else None
+        if not target:
+            return f"{character['name']} apareceu, mas nao encontrou ninguem para atormentar.", 1
+        return self._apply_character_effect(character["name"], effect, target)
+
+    def _apply_character_effect(self, character: str, effect: str, target: UnoPlayer) -> tuple[str, int]:
+        actor = self.current_player.member.display_name
+        victim = target.member.display_name
+        if effect in {"rampage", "tentacles", "fire", "smash"}:
+            amount = {"rampage": 50, "tentacles": 12, "fire": 10, "smash": 15}[effect]
+            self._draw_many(target, amount)
+            return f"{character} usou {effect}: {victim} comprou +{amount} cartas e perdeu a vez.", 2
+        if effect in {"roar", "drown", "burn", "charge", "avalanche", "overload"}:
+            amount = {"roar": 5, "drown": 7, "burn": 6, "charge": 9, "avalanche": 12, "overload": 20}[effect]
+            self._draw_many(target, amount)
+            return f"{character} atacou {victim} com {effect}: +{amount} cartas.", 1
+        if effect in {"stomp", "petrify", "freeze", "hack"}:
+            self.current_color = random.choice(list(COLORS))
+            return f"{character} alterou a cor para {self.current_color} e travou a jogada de {victim}.", 2
+        if effect in {"atomic", "laser", "gaze", "void", "axe"}:
+            self._transform_hand(target, max(2, len(target.hand) // 2))
+            return f"{character} deformou a mao de {victim} em cartas de caos.", 1
+        if effect in {"tailwind", "flight", "flutter", "climb", "bounce", "spark", "sun"}:
+            self.current_player.hand.extend(self._draw_many_list(3))
+            return f"{character} beneficiou {actor}: voce ganhou 3 cartas extras para preparar a proxima jogada.", 0
+        if effect in {"gift", "blessing", "heal", "protect", "repair", "favor"}:
+            self._remove_random_cards(self.current_player, min(3, len(self.current_player.hand)))
+            return f"{character} protegeu {actor} e removeu ate 3 cartas ruins da sua mao.", 1
+        if effect in {"tide", "blizzard"}:
+            self.current_color = random.choice(list(COLORS))
+            self._draw_many(target, 3)
+            return f"{character} mudou a cor para {self.current_color} e atingiu {victim} com +3 cartas.", 1
+        if effect in {"hoard", "snowball", "flames"}:
+            amount = {"hoard": 5, "snowball": 2, "flames": 7}[effect]
+            self._draw_many(target, amount)
+            self.current_player.hand.extend(self._draw_many_list(2))
+            return f"{character} criou {effect}: {victim} compra +{amount} e {actor} ganha 2 cartas.", 1
+        if effect in {"scales", "guard", "rage", "rebirth", "ashes", "dream", "clone", "split"}:
+            self._remove_random_cards(self.current_player, min(2, len(self.current_player.hand)))
+            self.current_player.hand.extend(self._draw_many_list(4))
+            return f"{character} ativou {effect}: {actor} perdeu cartas ruins e recebeu 4 novas.", 1
+        if effect in {"melt", "absorb"}:
+            self._transform_hand(target, min(5, len(target.hand)))
+            self._draw_many(target, 2)
+            return f"{character} derreteu a mao de {victim} e deixou 2 cartas de caos no lugar.", 1
+        if effect in {"steal", "hoard", "absorb", "throw", "prank"}:
+            if target.hand:
+                self.current_player.hand.append(target.hand.pop(random.randrange(len(target.hand))))
+            self._draw_many(target, 3)
+            return f"{character} roubou uma carta de {victim} e deixou +3 cartas no lugar.", 1
+        if effect in {"dust", "swarm", "snakes", "whispers", "madness", "curse", "melt"}:
+            self._draw_many(target, 4)
+            self.direction *= -1
+            return f"{character} espalhou {effect}: {victim} compra 4 e a ordem foi invertida.", 1
+        if effect in {"labyrinth", "mirror", "shuffle", "glitch", "roulette"}:
+            random.shuffle(target.hand)
+            self.current_color = random.choice(list(COLORS))
+            return f"{character} embaralhou a mao de {victim} e mudou a cor para {self.current_color}.", 1
+        self._transform_hand(self.current_player, min(4, len(self.current_player.hand)))
+        self.current_player.hand.extend(self._draw_many_list(2))
+        return f"{character} fortaleceu {actor}: ganhou 2 cartas e recebeu cartas especiais.", 1
+
+    def _draw_many_list(self, amount: int) -> list[UnoCard]:
+        return [card for card in (self.draw_one() for _ in range(amount)) if card is not None]
+
+    def _transform_hand(self, player: UnoPlayer, amount: int) -> None:
+        if not player.hand:
+            return
+        indices = random.sample(range(len(player.hand)), min(amount, len(player.hand)))
+        for index in indices:
+            player.hand[index] = UnoCard(None, random.choice(["+4", "?+8", "?+99"]))
+
+    def _remove_random_cards(self, player: UnoPlayer, amount: int) -> None:
+        for _ in range(min(amount, len(player.hand))):
+            player.hand.pop(random.randrange(len(player.hand)))
 
     def next_player(self) -> UnoPlayer:
         return self.players[(self.turn_index + self.direction) % len(self.players)]
@@ -160,9 +386,10 @@ class UnoGame:
         self.turn_index = (self.turn_index + self.direction * steps) % len(self.players)
         self.current_player.said_uno = False
 
-    def draw_for_current(self) -> UnoCard:
+    def draw_for_current(self) -> UnoCard | None:
         card = self.draw_one()
-        self.current_player.hand.append(card)
+        if card is not None:
+            self.current_player.hand.append(card)
         self.awaiting_draw = True
         return card
 
@@ -174,8 +401,35 @@ class UnoGame:
         return next((player for player in self.players if not player.hand), None)
 
 
-def setup_uno_commands(bot: commands.Bot) -> None:
+class UnoRulesView(discord.ui.View):
+    def __init__(self, game: UnoGame) -> None:
+        super().__init__(timeout=300)
+        self.game = game
+
+    async def _set_rules(self, interaction: discord.Interaction, ruleset: str) -> None:
+        if interaction.user.id != self.game.host_id:
+            await interaction.response.send_message("So quem criou a mesa pode escolher as regras.", ephemeral=True)
+            return
+        if self.game.started:
+            await interaction.response.send_message("A partida ja foi iniciada.", ephemeral=True)
+            return
+        self.game.ruleset = ruleset
+        self.game.deck = _new_uno_deck(chaos=self.game.is_chaos)
+        await interaction.response.edit_message(content=_rules_prompt(self.game), view=self)
+
+    @discord.ui.button(label="UNO normal", style=discord.ButtonStyle.primary)
+    async def normal(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set_rules(interaction, "normal")
+
+    @discord.ui.button(label="UNO Caos", style=discord.ButtonStyle.danger)
+    async def chaos(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set_rules(interaction, "caos")
+
+
+def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> None:
     games: dict[int, UnoGame] = {}
+    images = UnoImageBuilder()
+    ayla_caotica_url = settings.ayla_caotica_url if settings else None
     uno_slash = app_commands.Group(name="uno", description="Joga UNO da Ayla com 2+ jogadores.")
 
     @bot.group(name="uno", invoke_without_command=True)
@@ -194,8 +448,8 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             await ctx.send("Ja existe uma mesa de UNO neste canal.")
             return
 
-        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author)
-        await ctx.send(f"Mesa de UNO criada por {ctx.author.mention}. Use `a!uno entrar` para participar.")
+        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, ayla_caotica_url=ayla_caotica_url)
+        await ctx.send(_rules_prompt(games[ctx.channel.id]), view=UnoRulesView(games[ctx.channel.id]))
 
     @uno.command(name="entrar")
     async def uno_join(ctx: commands.Context) -> None:
@@ -222,10 +476,10 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
 
         game.start()
+        setattr(game, "_images", images)
         failed = await _dm_all_hands(game)
-        embed = _table_embed(game, "Partida iniciada.")
         message = "Nao consegui mandar DM para: " + ", ".join(failed) if failed else None
-        await ctx.send(content=message, embed=embed)
+        await ctx.send(content=message, embed=_table_embed(game, f"Partida iniciada no modo {game.ruleset.upper()}."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno.command(name="mao")
     async def uno_hand(ctx: commands.Context) -> None:
@@ -245,7 +499,7 @@ def setup_uno_commands(bot: commands.Bot) -> None:
         if not game or not game.started:
             await ctx.send("Nao tem partida de UNO em andamento neste canal.")
             return
-        await ctx.send(embed=_table_embed(game))
+        await ctx.send(embed=_table_embed(game), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno.command(name="jogar")
     async def uno_play(ctx: commands.Context, card_number: int, color: str | None = None) -> None:
@@ -272,12 +526,22 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
 
         if len(acting_player.hand) == 1 and not acting_player.said_uno:
-            acting_player.hand.extend([game.draw_one(), game.draw_one()])
+            game._draw_many(acting_player, 2)
             message += " Nao falou UNO com uma carta: comprou 2."
             await _send_hand(acting_player, game)
 
         await _send_hand(game.current_player, game)
-        await ctx.send(embed=_table_embed(game, message))
+        await ctx.send(
+            embed=_table_embed(game, message),
+            file=await images.build_table_image(
+                game.top_card,
+                current_color=game.current_color,
+                character=game.last_character if game.is_chaos else None,
+                character_url=game.last_character_url if game.is_chaos else None,
+                character_effect=game.last_character_effect if game.is_chaos else None,
+                character_target=game.last_character_target if game.is_chaos else None,
+            ),
+        )
 
     @uno.command(name="comprar")
     async def uno_draw(ctx: commands.Context) -> None:
@@ -290,7 +554,10 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
         card = game.draw_for_current()
         await _send_hand(game.current_player, game)
-        await ctx.send(f"{ctx.author.mention} comprou uma carta. Se nao for jogar, use `a!uno passar`.")
+        if card is None:
+            await ctx.send(f"{ctx.author.mention} tentou comprar, mas o baralho Caos esta vazio. Use `a!uno passar`.")
+        else:
+            await ctx.send(f"{ctx.author.mention} comprou uma carta. Se nao for jogar, use `a!uno passar`.")
 
     @uno.command(name="passar")
     async def uno_pass(ctx: commands.Context) -> None:
@@ -306,7 +573,7 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
         game.pass_turn()
         await _send_hand(game.current_player, game)
-        await ctx.send(embed=_table_embed(game, "Vez passada."))
+        await ctx.send(embed=_table_embed(game, "Vez passada."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno.command(name="uno")
     async def uno_call(ctx: commands.Context) -> None:
@@ -343,8 +610,9 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             await interaction.response.send_message("Ja existe uma mesa de UNO neste canal.", ephemeral=True)
             return
 
-        games[interaction.channel.id] = UnoGame(interaction.channel.id, interaction.user)
-        await interaction.response.send_message(f"Mesa de UNO criada por {interaction.user.mention}. Use `/uno entrar` para participar.")
+        game = UnoGame(interaction.channel.id, interaction.user, ayla_caotica_url=ayla_caotica_url)
+        games[interaction.channel.id] = game
+        await interaction.response.send_message(_rules_prompt(game), view=UnoRulesView(game))
 
     @uno_slash.command(name="entrar", description="Entra na mesa de UNO deste canal.")
     async def uno_join_slash(interaction: discord.Interaction) -> None:
@@ -377,9 +645,10 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
 
         game.start()
+        setattr(game, "_images", images)
         failed = await _dm_all_hands(game)
         message = "Nao consegui mandar DM para: " + ", ".join(failed) if failed else None
-        await interaction.response.send_message(content=message, embed=_table_embed(game, "Partida iniciada."))
+        await interaction.response.send_message(content=message, embed=_table_embed(game, f"Partida iniciada no modo {game.ruleset.upper()}."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno_slash.command(name="mao", description="Reenvia sua mao por DM.")
     async def uno_hand_slash(interaction: discord.Interaction) -> None:
@@ -405,7 +674,7 @@ def setup_uno_commands(bot: commands.Bot) -> None:
         if not game or not game.started:
             await interaction.response.send_message("Nao tem partida de UNO em andamento neste canal.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=_table_embed(game))
+        await interaction.response.send_message(embed=_table_embed(game), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno_slash.command(name="jogar", description="Joga uma carta da sua mao.")
     @app_commands.describe(numero="Numero da carta na sua mao.", cor="Cor para coringa ou +4.")
@@ -437,12 +706,22 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
 
         if len(acting_player.hand) == 1 and not acting_player.said_uno:
-            acting_player.hand.extend([game.draw_one(), game.draw_one()])
+            game._draw_many(acting_player, 2)
             message += " Nao falou UNO com uma carta: comprou 2."
             await _send_hand(acting_player, game)
 
         await _send_hand(game.current_player, game)
-        await interaction.response.send_message(embed=_table_embed(game, message))
+        await interaction.response.send_message(
+            embed=_table_embed(game, message),
+            file=await images.build_table_image(
+                game.top_card,
+                current_color=game.current_color,
+                character=game.last_character if game.is_chaos else None,
+                character_url=game.last_character_url if game.is_chaos else None,
+                character_effect=game.last_character_effect if game.is_chaos else None,
+                character_target=game.last_character_target if game.is_chaos else None,
+            ),
+        )
 
     @uno_slash.command(name="comprar", description="Compra uma carta.")
     async def uno_draw_slash(interaction: discord.Interaction) -> None:
@@ -456,9 +735,12 @@ def setup_uno_commands(bot: commands.Bot) -> None:
         if interaction.user.id != game.current_player.member.id:
             await interaction.response.send_message(f"Agora e a vez de {game.current_player.member.mention}.", ephemeral=True)
             return
-        game.draw_for_current()
+        card = game.draw_for_current()
         await _send_hand(game.current_player, game)
-        await interaction.response.send_message(f"{interaction.user.mention} comprou uma carta. Se nao for jogar, use `/uno passar`.")
+        if card is None:
+            await interaction.response.send_message(f"{interaction.user.mention} tentou comprar, mas o baralho Caos esta vazio. Use `/uno passar`.")
+        else:
+            await interaction.response.send_message(f"{interaction.user.mention} comprou uma carta. Se nao for jogar, use `/uno passar`.")
 
     @uno_slash.command(name="passar", description="Passa a vez depois de comprar.")
     async def uno_pass_slash(interaction: discord.Interaction) -> None:
@@ -477,7 +759,7 @@ def setup_uno_commands(bot: commands.Bot) -> None:
             return
         game.pass_turn()
         await _send_hand(game.current_player, game)
-        await interaction.response.send_message(embed=_table_embed(game, "Vez passada."))
+        await interaction.response.send_message(embed=_table_embed(game, "Vez passada."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
     @uno_slash.command(name="uno", description="Declara UNO quando voce esta com uma carta.")
     async def uno_call_slash(interaction: discord.Interaction) -> None:
@@ -524,14 +806,19 @@ async def _dm_all_hands(game: UnoGame) -> list[str]:
 
 
 async def _send_hand(player: UnoPlayer, game: UnoGame) -> bool:
-    lines = [f"Topo: {_top_label(game)} | Vez: {game.current_player.member.display_name}", ""]
-    lines.extend(f"`{index}.` {card.label()}" for index, card in enumerate(player.hand, start=1))
-    lines.append("")
-    lines.append("Jogue no canal: `a!uno jogar <numero> [cor]`. Para coringa/+4, informe a cor.")
     try:
-        await player.member.send("\n".join(lines))
+        builder = getattr(game, "_images")
+        await player.member.send(
+            content=(
+                f"Topo: {_top_label(game)} | Vez: {game.current_player.member.display_name}\n"
+                f"Modo: {game.ruleset.upper()}. Jogue no canal: `a!uno jogar <numero> [cor]`. Para coringa/+4, informe a cor."
+            ),
+            file=await builder.build_hand_image(player.hand, current_color=game.current_color, top_card=game.top_card),
+        )
         return True
     except discord.HTTPException:
+        return False
+    except AttributeError:
         return False
 
 
@@ -539,6 +826,12 @@ def _table_embed(game: UnoGame, note: str | None = None) -> discord.Embed:
     embed = discord.Embed(title="UNO da Ayla", description=note, color=COLORS.get(game.current_color or "azul", 0x7AA7FF))
     embed.add_field(name="Topo", value=_top_label(game), inline=True)
     embed.add_field(name="Cor atual", value=game.current_color or "nenhuma", inline=True)
+    embed.add_field(name="Regras", value=game.ruleset.upper(), inline=True)
+    if game.last_character:
+        character_name = CHAOS_CHARACTERS[game.last_character]["name"]
+        embed.add_field(name="Personagem", value=character_name, inline=True)
+        if game.last_character_effect:
+            embed.add_field(name="Acao visual", value=game.last_character_effect.upper(), inline=True)
     embed.add_field(name="Vez", value=game.current_player.member.mention, inline=True)
     status = "\n".join(f"{player.member.display_name}: `{len(player.hand)}` carta(s)" for player in game.players)
     embed.add_field(name="Jogadores", value=status, inline=False)
@@ -563,6 +856,22 @@ def _top_label(game: UnoGame) -> str:
     return f"{game.top_card.label()} ({game.current_color})"
 
 
+def _rules_prompt(game: UnoGame) -> str:
+    if game.is_chaos:
+        description = (
+            "Cartas `?` ativam eventos aleatorios. O baralho inclui ataques de +8 e +99, "
+            "trocas de mao, transformacoes especiais e 500 cartas de estoque. "
+            "Existem 13 personagens, cada um com 5 efeitos diferentes."
+        )
+    else:
+        description = "Somente as regras classicas do UNO, sem eventos extras."
+    return (
+        f"Mesa de UNO criada por <@{game.host_id}>. Jogadores: `{len(game.players)}`.\n"
+        f"Modo selecionado: **{game.ruleset.upper()}**. {description}\n"
+        "O criador pode trocar o modo nos botoes abaixo antes de usar `a!uno iniciar`."
+    )
+
+
 def _normalize_color(color: str | None) -> str | None:
     if not color:
         return None
@@ -570,7 +879,7 @@ def _normalize_color(color: str | None) -> str | None:
     return COLOR_ALIASES.get(normalized, normalized)
 
 
-def _new_uno_deck() -> list[UnoCard]:
+def _new_uno_deck(*, chaos: bool = False) -> list[UnoCard]:
     deck: list[UnoCard] = []
     for color in COLORS:
         deck.append(UnoCard(color, "0"))
@@ -580,5 +889,8 @@ def _new_uno_deck() -> list[UnoCard]:
     for _ in range(4):
         deck.append(UnoCard(None, "coringa"))
         deck.append(UnoCard(None, "+4"))
+    if chaos:
+        while len(deck) < CHAOS_DECK_SIZE:
+            deck.append(UnoCard(None, random.choice(CHAOS_DECK_VALUES)))
     random.shuffle(deck)
     return deck

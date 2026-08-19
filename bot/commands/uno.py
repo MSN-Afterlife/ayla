@@ -135,11 +135,19 @@ class UnoGame:
             for player in self.players:
                 player.hand.append(self.draw_one())
 
-        top = self.draw_one()
-        while top.is_wild or top.is_chaos or top.value in ACTION_VALUES:
-            self.deck.insert(0, top)
-            random.shuffle(self.deck)
-            top = self.draw_one()
+        # Escolhe uma carta inicial valida sem reembaralhar o baralho inteiro.
+        # Isso e essencial para baralhos grandes, especialmente com 1 milhao de cartas.
+        top_index = next(
+            (
+                index
+                for index, card in enumerate(self.deck)
+                if not card.is_wild and not card.is_chaos and card.value not in ACTION_VALUES
+            ),
+            None,
+        )
+        if top_index is None:
+            raise RuntimeError("O baralho nao possui uma carta inicial valida.")
+        top = self.deck.pop(top_index)
 
         self.discard.append(top)
         self.current_color = top.color
@@ -446,7 +454,15 @@ class UnoRulesView(discord.ui.View):
         self.game.ruleset = ruleset
         self.game.deck = _new_uno_deck(chaos=self.game.is_chaos, chaos_deck_size=self.game.chaos_deck_size)
         self.source_message = interaction.message
-        await interaction.response.edit_message(content=_rules_prompt(self.game), view=self)
+        try:
+            # Confirma o clique dentro da janela do Discord e depois edita a
+            # mensagem pelo endpoint normal, evitando tokens de interacao expirados.
+            await interaction.response.defer()
+            await interaction.message.edit(content=_rules_prompt(self.game), view=self)
+        except discord.NotFound:
+            # O painel pode ter sido apagado ou o clique pode ter chegado tarde.
+            # Nesse caso a partida continua intacta e nao ha traceback para poluir o log.
+            return
 
     @discord.ui.button(label="Entrar na mesa", style=discord.ButtonStyle.success, row=1)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -1031,17 +1047,28 @@ def _normalize_color(color: str | None) -> str | None:
 
 
 def _new_uno_deck(*, chaos: bool = False, chaos_deck_size: int = CHAOS_DECK_SIZE) -> list[UnoCard]:
-    deck: list[UnoCard] = []
+    classic_cards: list[UnoCard] = []
     for color in COLORS:
-        deck.append(UnoCard(color, "0"))
+        classic_cards.append(UnoCard(color, "0"))
         for value in VALUES[1:]:
-            deck.append(UnoCard(color, value))
-            deck.append(UnoCard(color, value))
+            classic_cards.append(UnoCard(color, value))
+            classic_cards.append(UnoCard(color, value))
     for _ in range(4):
-        deck.append(UnoCard(None, "coringa"))
-        deck.append(UnoCard(None, "+4"))
-    if chaos:
-        while len(deck) < max(CLASSIC_DECK_SIZE, chaos_deck_size):
-            deck.append(UnoCard(None, random.choice(CHAOS_DECK_VALUES)))
+        classic_cards.append(UnoCard(None, "coringa"))
+        classic_cards.append(UnoCard(None, "+4"))
+
+    if not chaos:
+        random.shuffle(classic_cards)
+        return classic_cards
+
+    size = max(CLASSIC_DECK_SIZE, chaos_deck_size)
+    chaos_count = max(5, round(size * 0.30))
+    normal_count = size - chaos_count
+    deck = random.choices(classic_cards, k=normal_count)
+
+    chaos_cards = [UnoCard(None, value) for value in CHAOS_DECK_VALUES]
+    # Garante pelo menos cinco cartas de +99, mesmo em um baralho pequeno.
+    deck.extend(UnoCard(None, "?+99") for _ in range(5))
+    deck.extend(random.choices(chaos_cards, k=chaos_count - 5))
     random.shuffle(deck)
     return deck

@@ -29,9 +29,11 @@ COLOR_ALIASES = {
 VALUES = [str(number) for number in range(10)] + ["bloqueio", "reverso", "+2"]
 ACTION_VALUES = {"bloqueio", "reverso", "+2"}
 WILD_VALUES = {"coringa", "+4"}
-CHAOS_VALUES = {"?", "?+8", "?+99", "?mao", "?troca", "?personagem"}
-CHAOS_DECK_VALUES = ["?", "?", "?+8", "?+8", "?+99", "?mao", "?troca", "?personagem"]
+CHAOS_VALUES = {"?", "?+8", "?+99", "?mao", "?troca", "?personagem", "\u2194"}
+CHAOS_DECK_VALUES = ["?", "?", "?+8", "?+8", "?+99", "?mao", "?troca", "?personagem", "\u2194"]
 CHAOS_DECK_SIZE = 500
+CLASSIC_DECK_SIZE = 108
+MAX_CHAOS_DECK_SIZE = 1_000_000
 CHAOS_CHARACTERS = {
     "godzilla": {"name": "Godzilla", "effects": ["rampage", "roar", "stomp", "atomic", "tailwind"]},
     "kraken": {"name": "Kraken", "effects": ["tentacles", "drown", "gift", "tide", "steal"]},
@@ -88,13 +90,15 @@ class UnoGame:
         host: discord.Member | discord.User,
         ruleset: str = "normal",
         ayla_caotica_url: str | None = None,
+        chaos_deck_size: int = CHAOS_DECK_SIZE,
     ) -> None:
         self.channel_id = channel_id
         self.host_id = host.id
         self.ruleset = ruleset
         self.ayla_caotica_url = ayla_caotica_url
+        self.chaos_deck_size = max(CLASSIC_DECK_SIZE, chaos_deck_size)
         self.players = [UnoPlayer(host)]
-        self.deck = _new_uno_deck(chaos=self.is_chaos)
+        self.deck = _new_uno_deck(chaos=self.is_chaos, chaos_deck_size=self.chaos_deck_size)
         self.discard: list[UnoCard] = []
         self.current_color: str | None = None
         self.turn_index = 0
@@ -172,6 +176,8 @@ class UnoGame:
 
         self.current_player.hand.pop(hand_index)
         self.discard.append(card)
+        if self.is_chaos:
+            self.deck.append(card)
         self.current_color = color if card.is_wild else (card.color or self.current_color)
         self.awaiting_draw = False
         self.last_character = None
@@ -227,11 +233,23 @@ class UnoGame:
             self.advance()
             return f"A mao de {self.current_player.member.display_name} virou uma mao coringa: {changed} carta(s) foram corrompidas."
         if card.value == "?troca":
+            actor = self.current_player
             target = self._random_other_player()
             if target:
-                self.current_player.hand, target.hand = target.hand, self.current_player.hand
+                actor.hand, target.hand = target.hand, actor.hand
                 self.advance()
-                return f"Troca maluca: {self.current_player.member.display_name} trocou de mao com {target.member.display_name}."
+                return f"Troca maluca: {actor.member.display_name} trocou de mao com {target.member.display_name}."
+        if card.value == "\u2194":
+            actor = self.current_player
+            target = self._player_with_fewest_cards()
+            if target and actor.hand and target.hand:
+                actor_index = random.randrange(len(actor.hand))
+                target_index = random.randrange(len(target.hand))
+                actor.hand[actor_index], target.hand[target_index] = target.hand[target_index], actor.hand[actor_index]
+                self.advance()
+                return f"Seta da troca: {actor.member.display_name} trocou uma carta aleatoria com {target.member.display_name}, que tinha menos cartas."
+            self.advance()
+            return "Seta da troca: nao havia duas maos com cartas para trocar."
         if card.value == "?personagem":
             message, steps = self._character_event_v2()
             self.advance(steps)
@@ -246,11 +264,12 @@ class UnoGame:
                 self.advance(2)
                 return f"Evento aleatorio: {target.member.display_name} comprou +{amount} cartas."
         elif event == "troca":
+            actor = self.current_player
             target = self._random_other_player()
             if target:
-                self.current_player.hand, target.hand = target.hand, self.current_player.hand
+                actor.hand, target.hand = target.hand, actor.hand
                 self.advance()
-                return f"Evento aleatorio: {self.current_player.member.display_name} trocou de mao com {target.member.display_name}."
+                return f"Evento aleatorio: {actor.member.display_name} trocou de mao com {target.member.display_name}."
         elif event == "mao":
             amount = max(1, len(self.current_player.hand) // 2)
             for index in random.sample(range(len(self.current_player.hand)), min(amount, len(self.current_player.hand))):
@@ -278,6 +297,14 @@ class UnoGame:
     def _random_other_player(self) -> UnoPlayer | None:
         others = [player for player in self.players if player is not self.current_player]
         return random.choice(others) if others else None
+
+    def _player_with_fewest_cards(self) -> UnoPlayer | None:
+        others = [player for player in self.players if player is not self.current_player]
+        if not others:
+            return None
+        smallest = min(len(player.hand) for player in others)
+        tied = [player for player in others if len(player.hand) == smallest]
+        return random.choice(tied)
 
     def _character_event(self) -> str:
         character = random.choice(["Godzilla", "A Bruxa do Baralho", "O Ladrao de Cartas", "Ayla Caotica"])
@@ -407,6 +434,7 @@ class UnoRulesView(discord.ui.View):
     def __init__(self, game: UnoGame) -> None:
         super().__init__(timeout=300)
         self.game = game
+        self.source_message: discord.Message | None = None
 
     async def _set_rules(self, interaction: discord.Interaction, ruleset: str) -> None:
         if interaction.user.id != self.game.host_id:
@@ -416,8 +444,35 @@ class UnoRulesView(discord.ui.View):
             await interaction.response.send_message("A partida ja foi iniciada.", ephemeral=True)
             return
         self.game.ruleset = ruleset
-        self.game.deck = _new_uno_deck(chaos=self.game.is_chaos)
+        self.game.deck = _new_uno_deck(chaos=self.game.is_chaos, chaos_deck_size=self.game.chaos_deck_size)
+        self.source_message = interaction.message
         await interaction.response.edit_message(content=_rules_prompt(self.game), view=self)
+
+    @discord.ui.button(label="Entrar na mesa", style=discord.ButtonStyle.success, row=1)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.source_message = interaction.message
+        if self.game.started:
+            await interaction.response.send_message("A partida ja foi iniciada.", ephemeral=True)
+            return
+        if self.game.add_player(interaction.user):
+            await interaction.response.send_message(
+                f"{interaction.user.mention} entrou na mesa. Jogadores: `{len(self.game.players)}`."
+            )
+            if self.source_message:
+                await self.source_message.edit(content=_rules_prompt(self.game), view=self)
+            return
+        await interaction.response.send_message("Voce ja esta na mesa.", ephemeral=True)
+
+    @discord.ui.button(label="Tamanho do baralho", style=discord.ButtonStyle.secondary, row=1)
+    async def deck_size(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.source_message = interaction.message
+        if interaction.user.id != self.game.host_id:
+            await interaction.response.send_message("So quem criou a mesa pode alterar o tamanho do baralho.", ephemeral=True)
+            return
+        if self.game.started:
+            await interaction.response.send_message("A partida ja foi iniciada.", ephemeral=True)
+            return
+        await interaction.response.send_modal(UnoDeckSizeModal(self.game, self))
 
     @discord.ui.button(label="UNO normal", style=discord.ButtonStyle.primary)
     async def normal(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -428,10 +483,50 @@ class UnoRulesView(discord.ui.View):
         await self._set_rules(interaction, "caos")
 
 
+class UnoDeckSizeModal(discord.ui.Modal, title="Tamanho do baralho Caos"):
+    size = discord.ui.TextInput(
+        label="Quantidade total de cartas",
+        placeholder=f"Digite um valor entre {CLASSIC_DECK_SIZE} e {MAX_CHAOS_DECK_SIZE}",
+        min_length=3,
+        max_length=7,
+        required=True,
+    )
+
+    def __init__(self, game: UnoGame, view: UnoRulesView) -> None:
+        super().__init__()
+        self.game = game
+        self.rules_view = view
+        self.size.default = str(game.chaos_deck_size)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.game.host_id:
+            await interaction.response.send_message("So quem criou a mesa pode alterar o tamanho do baralho.", ephemeral=True)
+            return
+        try:
+            size = int(str(self.size.value).strip())
+        except ValueError:
+            await interaction.response.send_message("Digite apenas um numero inteiro.", ephemeral=True)
+            return
+        if not CLASSIC_DECK_SIZE <= size <= MAX_CHAOS_DECK_SIZE:
+            await interaction.response.send_message(
+                f"O tamanho deve ficar entre `{CLASSIC_DECK_SIZE}` e `{MAX_CHAOS_DECK_SIZE}` cartas.",
+                ephemeral=True,
+            )
+            return
+
+        self.game.chaos_deck_size = size
+        if self.game.is_chaos:
+            self.game.deck = _new_uno_deck(chaos=True, chaos_deck_size=size)
+        await interaction.response.send_message(f"Baralho Caos definido para `{size}` cartas.", ephemeral=True)
+        if self.rules_view.source_message:
+            await self.rules_view.source_message.edit(content=_rules_prompt(self.game), view=self.rules_view)
+
+
 def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> None:
     games: dict[int, UnoGame] = {}
     images = UnoImageBuilder()
     ayla_caotica_url = settings.ayla_caotica_url if settings else None
+    chaos_deck_size = settings.uno_chaos_deck_size if settings else CHAOS_DECK_SIZE
     uno_slash = app_commands.Group(name="uno", description="Joga UNO da Ayla com 2+ jogadores.")
 
     @bot.group(name="uno", invoke_without_command=True)
@@ -450,7 +545,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await ctx.send("Ja existe uma mesa de UNO neste canal.")
             return
 
-        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, ayla_caotica_url=ayla_caotica_url)
+        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, ayla_caotica_url=ayla_caotica_url, chaos_deck_size=chaos_deck_size)
         await ctx.send(_rules_prompt(games[ctx.channel.id]), view=UnoRulesView(games[ctx.channel.id]))
 
     @uno.command(name="entrar")
@@ -598,7 +693,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await interaction.response.send_message("Ja existe uma mesa de UNO neste canal.", ephemeral=True)
             return
 
-        game = UnoGame(interaction.channel.id, interaction.user, ayla_caotica_url=ayla_caotica_url)
+        game = UnoGame(interaction.channel.id, interaction.user, ayla_caotica_url=ayla_caotica_url, chaos_deck_size=chaos_deck_size)
         games[interaction.channel.id] = game
         await interaction.response.send_message(_rules_prompt(game), view=UnoRulesView(game))
 
@@ -881,6 +976,8 @@ def _table_embed(game: UnoGame, note: str | None = None) -> discord.Embed:
     embed.add_field(name="Topo", value=_top_label(game), inline=True)
     embed.add_field(name="Cor atual", value=game.current_color or "nenhuma", inline=True)
     embed.add_field(name="Regras", value=game.ruleset.upper(), inline=True)
+    if game.is_chaos:
+        embed.add_field(name="Estoque Caos", value=f"`{len(game.deck)}/{game.chaos_deck_size}`", inline=True)
     if game.last_character:
         character_name = CHAOS_CHARACTERS[game.last_character]["name"]
         embed.add_field(name="Personagem", value=character_name, inline=True)
@@ -914,7 +1011,7 @@ def _rules_prompt(game: UnoGame) -> str:
     if game.is_chaos:
         description = (
             "Cartas `?` ativam eventos aleatorios. O baralho inclui ataques de +8 e +99, "
-            "trocas de mao, transformacoes especiais e 500 cartas de estoque. "
+            f"trocas de mao, carta ↔ contra quem tem menos cartas, transformacoes especiais e {game.chaos_deck_size} cartas de estoque. "
             "Existem 13 personagens, cada um com 5 efeitos diferentes."
         )
     else:
@@ -933,7 +1030,7 @@ def _normalize_color(color: str | None) -> str | None:
     return COLOR_ALIASES.get(normalized, normalized)
 
 
-def _new_uno_deck(*, chaos: bool = False) -> list[UnoCard]:
+def _new_uno_deck(*, chaos: bool = False, chaos_deck_size: int = CHAOS_DECK_SIZE) -> list[UnoCard]:
     deck: list[UnoCard] = []
     for color in COLORS:
         deck.append(UnoCard(color, "0"))
@@ -944,7 +1041,7 @@ def _new_uno_deck(*, chaos: bool = False) -> list[UnoCard]:
         deck.append(UnoCard(None, "coringa"))
         deck.append(UnoCard(None, "+4"))
     if chaos:
-        while len(deck) < CHAOS_DECK_SIZE:
+        while len(deck) < max(CLASSIC_DECK_SIZE, chaos_deck_size):
             deck.append(UnoCard(None, random.choice(CHAOS_DECK_VALUES)))
     random.shuffle(deck)
     return deck

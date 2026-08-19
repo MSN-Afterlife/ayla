@@ -1,4 +1,5 @@
 import random
+import re
 from dataclasses import dataclass, field
 
 import discord
@@ -100,6 +101,7 @@ class UnoGame:
         self.direction = 1
         self.started = False
         self.awaiting_draw = False
+        self.pending_uno_player_id: int | None = None
         self.last_character: str | None = None
         self.last_character_url: str | None = None
         self.last_character_effect: str | None = None
@@ -436,7 +438,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
     async def uno(ctx: commands.Context) -> None:
         await ctx.send(
             "UNO: `a!uno criar`, `entrar`, `iniciar`, `mao`, `jogar <numero> [cor]`, "
-            "`comprar`, `passar`, `uno`, `mesa`, `cancelar`."
+            "`comprar`, `passar`, `mesa`, `cancelar`."
         )
 
     @uno.command(name="criar")
@@ -525,10 +527,9 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await ctx.send(embed=_winner_embed(winner, card))
             return
 
-        if len(acting_player.hand) == 1 and not acting_player.said_uno:
-            game._draw_many(acting_player, 2)
-            message += " Nao falou UNO com uma carta: comprou 2."
-            await _send_hand(acting_player, game)
+        if len(acting_player.hand) == 1:
+            game.pending_uno_player_id = acting_player.member.id
+            message += f" {acting_player.member.mention} ficou com uma carta! Escreva `uno` agora. Se alguem escrever `compra` antes, compra 2 cartas."
 
         await _send_hand(game.current_player, game)
         await ctx.send(
@@ -574,19 +575,6 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
         game.pass_turn()
         await _send_hand(game.current_player, game)
         await ctx.send(embed=_table_embed(game, "Vez passada."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
-
-    @uno.command(name="uno")
-    async def uno_call(ctx: commands.Context) -> None:
-        game = games.get(ctx.channel.id)
-        player = _find_player(game, ctx.author.id) if game else None
-        if not game or not player:
-            await ctx.send("Voce nao esta nessa partida.")
-            return
-        if len(player.hand) != 1:
-            await ctx.send("Voce so pode falar UNO quando esta com uma carta.")
-            return
-        player.said_uno = True
-        await ctx.send(f"{ctx.author.mention} falou UNO.")
 
     @uno.command(name="cancelar")
     async def uno_cancel(ctx: commands.Context) -> None:
@@ -705,10 +693,9 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await interaction.response.send_message(embed=_winner_embed(winner, card))
             return
 
-        if len(acting_player.hand) == 1 and not acting_player.said_uno:
-            game._draw_many(acting_player, 2)
-            message += " Nao falou UNO com uma carta: comprou 2."
-            await _send_hand(acting_player, game)
+        if len(acting_player.hand) == 1:
+            game.pending_uno_player_id = acting_player.member.id
+            message += f" {acting_player.member.mention} ficou com uma carta! Escreva `uno` agora. Se alguem escrever `compra` antes, compra 2 cartas."
 
         await _send_hand(game.current_player, game)
         await interaction.response.send_message(
@@ -761,22 +748,6 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
         await _send_hand(game.current_player, game)
         await interaction.response.send_message(embed=_table_embed(game, "Vez passada."), file=await images.build_table_image(game.top_card, current_color=game.current_color))
 
-    @uno_slash.command(name="uno", description="Declara UNO quando voce esta com uma carta.")
-    async def uno_call_slash(interaction: discord.Interaction) -> None:
-        if not interaction.channel:
-            await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
-            return
-        game = games.get(interaction.channel.id)
-        player = _find_player(game, interaction.user.id) if game else None
-        if not game or not player:
-            await interaction.response.send_message("Voce nao esta nessa partida.", ephemeral=True)
-            return
-        if len(player.hand) != 1:
-            await interaction.response.send_message("Voce so pode falar UNO quando esta com uma carta.", ephemeral=True)
-            return
-        player.said_uno = True
-        await interaction.response.send_message(f"{interaction.user.mention} falou UNO.")
-
     @uno_slash.command(name="cancelar", description="Cancela a mesa de UNO deste canal.")
     async def uno_cancel_slash(interaction: discord.Interaction) -> None:
         if not interaction.channel:
@@ -796,6 +767,86 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
 
     bot.tree.add_command(uno_slash)
 
+    async def handle_uno_reaction(message: discord.Message) -> bool:
+        """Processa UNO, denuncia e jogadas digitadas no canal ou no privado."""
+        content = message.content.casefold().strip().strip("!?.,")
+        game = games.get(message.channel.id) if message.guild else next(
+            (candidate for candidate in games.values() if candidate.started and _find_player(candidate, message.author.id)),
+            None,
+        )
+        if not game or not game.started:
+            return False
+
+        player = _find_player(game, message.author.id)
+        if not player:
+            return False
+        output_channel = message.channel if message.guild else bot.get_channel(game.channel_id)
+        if output_channel is None:
+            output_channel = message.channel
+
+        if content == "uno":
+            if len(player.hand) != 1:
+                return False
+            player.said_uno = True
+            if game.pending_uno_player_id == player.member.id:
+                game.pending_uno_player_id = None
+            await output_channel.send(f"{player.member.mention} falou UNO a tempo!")
+            return True
+
+        if content in {"compra", "comprar"}:
+            if game.pending_uno_player_id is None or message.author.id == game.pending_uno_player_id:
+                return False
+            target = _find_player(game, game.pending_uno_player_id)
+            if not target or len(target.hand) != 1 or target.said_uno:
+                game.pending_uno_player_id = None
+                return False
+            game._draw_many(target, 2)
+            game.pending_uno_player_id = None
+            await _send_hand(target, game)
+            await output_channel.send(
+                f"{message.author.mention} denunciou primeiro! {target.member.mention} comprou 2 cartas por nao falar UNO."
+            )
+            return True
+
+        match = re.fullmatch(r"(\d+)(?:\s+(.+))?", content)
+        if not match or player.member.id != game.current_player.member.id:
+            return False
+
+        card_number = int(match.group(1))
+        color = _normalize_color(match.group(2)) if match.group(2) else None
+        acting_player = game.current_player
+        ok, result, card = game.play(card_number - 1, color)
+        if not ok:
+            await message.channel.send(result)
+            return True
+
+        await _send_hand(acting_player, game)
+        winner = game.winner()
+        if winner:
+            games.pop(game.channel_id, None)
+            await output_channel.send(embed=_winner_embed(winner, card))
+            return True
+
+        if len(acting_player.hand) == 1:
+            game.pending_uno_player_id = acting_player.member.id
+            result += f" {acting_player.member.mention} ficou com uma carta! Escreva `uno` agora. Se alguem escrever `compra` antes, compra 2 cartas."
+
+        await _send_hand(game.current_player, game)
+        await output_channel.send(
+            embed=_table_embed(game, result),
+            file=await images.build_table_image(
+                game.top_card,
+                current_color=game.current_color,
+                character=game.last_character if game.is_chaos else None,
+                character_url=game.last_character_url if game.is_chaos else None,
+                character_effect=game.last_character_effect if game.is_chaos else None,
+                character_target=game.last_character_target if game.is_chaos else None,
+            ),
+        )
+        return True
+
+    bot._handle_uno_reaction = handle_uno_reaction
+
 
 async def _dm_all_hands(game: UnoGame) -> list[str]:
     failed = []
@@ -811,7 +862,10 @@ async def _send_hand(player: UnoPlayer, game: UnoGame) -> bool:
         await player.member.send(
             content=(
                 f"Topo: {_top_label(game)} | Vez: {game.current_player.member.display_name}\n"
-                f"Modo: {game.ruleset.upper()}. Jogue no canal: `a!uno jogar <numero> [cor]`. Para coringa/+4, informe a cor."
+                f"Modo: {game.ruleset.upper()}.\n"
+                "Como jogar: a imagem mostra o numero de cada carta. Envie somente o numero da carta no chat da mesa ou aqui neste privado para jogar. "
+                "Para coringa ou +4, envie numero e cor (por exemplo: `3 azul`). Se ficar com uma carta, escreva `uno` no chat. "
+                "Se alguem escrever `compra` antes, voce compra 2 cartas. Para comprar, use `a!uno comprar` no chat da mesa."
             ),
             file=await builder.build_hand_image(player.hand, current_color=game.current_color, top_card=game.top_card),
         )

@@ -25,6 +25,10 @@ def setup_message_events(bot: commands.Bot, settings: Settings, chat_config: Cha
 
         await bot.process_commands(message)
 
+        uno_reaction = getattr(bot, "_handle_uno_reaction", None)
+        if uno_reaction and await uno_reaction(message):
+            return
+
         if _is_command_message(message.content, bot.command_prefix):
             return
 

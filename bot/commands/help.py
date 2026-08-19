@@ -142,9 +142,9 @@ HELP_CATEGORIES = {
         "fields": [
             ("`{prefix}uno criar` / `{prefix}uno entrar`", "Cria uma mesa e permite 2+ jogadores entrarem.", False),
             ("`{prefix}uno iniciar`", "Inicia a partida e envia a mao de cada jogador no privado.", False),
-            ("`{prefix}uno jogar 3 azul`", "Joga a carta numero 3; cor e obrigatoria em coringa e +4.", False),
+            ("`3` ou `3 azul` no chat/privado", "Joga a carta numerada na imagem; para coringa e +4, informe tambem a cor.", False),
             ("`{prefix}uno comprar` / `{prefix}uno passar`", "Compra uma carta e passa a vez se nao jogar.", False),
-            ("`{prefix}uno mao` / `{prefix}uno mesa` / `{prefix}uno uno`", "Reenvia sua mao, mostra a mesa ou declara UNO.", False),
+            ("`{prefix}uno mao` / `{prefix}uno mesa`", "Reenvia sua mao ou mostra a mesa. Para declarar UNO, escreva `uno` no chat.", False),
         ],
         "color": 0xE74C3C,
     },

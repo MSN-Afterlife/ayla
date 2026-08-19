@@ -14,7 +14,6 @@ CARD_WIDTH = 280
 CARD_HEIGHT = 420
 HAND_CARD_GAP = 18
 HAND_CARDS_PER_ROW = 6
-HAND_DISPLAY_MAX = 24
 
 CARD_IMAGE_BASE_URL = "https://raw.githubusercontent.com/john-costanzo/uno-card-images/master"
 
@@ -84,7 +83,7 @@ class UnoImageBuilder:
         images = [await self._card_image(card, current_color=current_color) for card in cards]
         top_image = await self._card_image(top_card, current_color=current_color)
 
-        shown_images = images[:HAND_DISPLAY_MAX]
+        shown_images = images
         count = len(shown_images)
         rows = max(1, (count + HAND_CARDS_PER_ROW - 1) // HAND_CARDS_PER_ROW)
         hand_width = HAND_CARDS_PER_ROW * CARD_WIDTH + (HAND_CARDS_PER_ROW - 1) * HAND_CARD_GAP
@@ -99,15 +98,16 @@ class UnoImageBuilder:
         draw.text((40, 72), "Topo da mesa", fill=(180, 193, 216), font=label_font)
         canvas.alpha_composite(top_image, (40, 100))
 
-        hand_label = "Cartas na mao"
-        if len(images) > HAND_DISPLAY_MAX:
-            hand_label += f" (+{len(images) - HAND_DISPLAY_MAX} ocultas)"
+        hand_label = "Cartas na mao (envie o numero da carta)"
         draw.text((340, 72), hand_label, fill=(180, 193, 216), font=label_font)
         for index, image in enumerate(shown_images):
             row, column = divmod(index, HAND_CARDS_PER_ROW)
             x = 340 + column * (CARD_WIDTH + HAND_CARD_GAP)
             y = 100 + row * (CARD_HEIGHT + HAND_CARD_GAP)
             canvas.alpha_composite(image, (x, y))
+            number = str(index + 1)
+            draw.rounded_rectangle((x + 12, y + 12, x + 74, y + 70), radius=14, fill=(8, 12, 24, 235), outline=(255, 255, 255, 220), width=2)
+            draw.text((x + 31, y + 20), number, fill=(255, 255, 255), font=_font(28, bold=True))
 
         return _file(canvas, "uno-mao.png")
 

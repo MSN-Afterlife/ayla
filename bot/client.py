@@ -4,6 +4,7 @@ from discord.ext import commands
 from discord.utils import utcnow
 
 from bot.commands.basic import setup_basic_commands
+from bot.commands.clickup import setup_clickup_commands
 from bot.commands.affection import setup_affection_commands
 from bot.commands.announcements import setup_announcement_commands
 from bot.commands.chat_config import setup_chat_config_commands
@@ -32,6 +33,9 @@ class AylaBot(commands.Bot):
     async def close(self) -> None:
         if self._site_api:
             await self._site_api.stop()
+        clickup_service = getattr(self, "_clickup_service", None)
+        if clickup_service:
+            await clickup_service.close()
         await super().close()
 
 
@@ -55,6 +59,7 @@ def create_bot(settings: Settings) -> commands.Bot:
         print(f"Bot conectado como {bot.user}")
 
     setup_basic_commands(bot)
+    bot._clickup_service = setup_clickup_commands(bot, settings)
     setup_affection_commands(bot, settings)
     setup_announcement_commands(bot)
     setup_media_commands(bot, settings)

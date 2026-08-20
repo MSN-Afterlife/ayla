@@ -34,6 +34,9 @@ class Settings:
     daily_site_url: str = "https://msnafterlife.online/daily"
     youtube_cookies_path: str | None = None
     youtube_js_runtime_path: str = "node"
+    clickup_api_token: str | None = None
+    clickup_list_id: str | None = None
+    clickup_allowed_role_ids: list[int] | None = None
 
 
 def load_settings() -> Settings:
@@ -72,6 +75,9 @@ def load_settings() -> Settings:
         daily_site_url=os.getenv("DAILY_SITE_URL", "https://msnafterlife.online/daily"),
         youtube_cookies_path=os.getenv("YOUTUBE_COOKIES_PATH"),
         youtube_js_runtime_path=os.getenv("YOUTUBE_JS_RUNTIME_PATH", "node"),
+        clickup_api_token=os.getenv("CLICKUP_API_TOKEN"),
+        clickup_list_id=os.getenv("CLICKUP_LIST_ID"),
+        clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
     )
 
 
@@ -88,3 +94,20 @@ def _load_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "sim", "on"}
+
+
+def _load_int_list(name: str) -> list[int]:
+    value = os.getenv(name)
+    if not value:
+        return []
+
+    result: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            result.append(int(item))
+        except ValueError:
+            raise RuntimeError(f"{name} deve conter apenas IDs numericos separados por virgula.") from None
+    return result

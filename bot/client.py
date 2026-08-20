@@ -36,6 +36,9 @@ class AylaBot(commands.Bot):
         clickup_service = getattr(self, "_clickup_service", None)
         if clickup_service:
             await clickup_service.close()
+        task_ai_service = getattr(self, "_task_ai_service", None)
+        if task_ai_service:
+            await task_ai_service.close()
         await super().close()
 
 

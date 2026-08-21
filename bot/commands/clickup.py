@@ -46,12 +46,15 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         )
         title = _task_title(message)
         description = _task_description(message, interaction.user)
+        subtasks = []
         if message.content.strip():
             logger.info("Task AI analysis requested for Discord message %s", message.id)
             try:
                 analysis = await task_ai_service.analyze_task(message.content)
                 title = analysis.title
                 description = _task_description(message, interaction.user, analysis.description)
+                subtasks = analysis.subtasks
+                logger.info("Task AI generated %s subtasks for %s", len(subtasks), message.id)
                 logger.info("Task AI analysis completed for %s", message.id)
             except Exception as error:
                 logger.warning("Task AI analysis failed for %s: %s", message.id, _safe_error_name(error))
@@ -65,11 +68,38 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             )
             return
 
-        task_id = str(task.get("id", "desconhecido"))
+        task_id = str(task.get("id")) if task.get("id") else ""
+        created_subtasks = 0
+        if subtasks and task_id:
+            for index, subtask in enumerate(subtasks, start=1):
+                logger.info("Creating ClickUp subtask %s/%s for parent %s", index, len(subtasks), task_id)
+                try:
+                    created = await service.create_subtask(
+                        settings.clickup_list_id,
+                        task_id,
+                        subtask.title,
+                        subtask.description,
+                    )
+                    created_subtasks += 1
+                    logger.info(
+                        "ClickUp subtask %s created for parent %s",
+                        created.get("id", "desconhecido"),
+                        task_id,
+                    )
+                except ClickUpError as error:
+                    logger.error("ClickUp subtask creation failed for parent %s: %s", task_id, error)
+
         task_url = task.get("url")
-        logger.info("ClickUp task %s created from Discord message %s", task_id, message.id)
+        logger.info("ClickUp task %s created from Discord message %s", task_id or "desconhecido", message.id)
         suffix = f"\n[ Abrir tarefa no ClickUp ]({task_url})" if task_url else ""
-        await interaction.followup.send(f"✅ Tarefa criada no ClickUp: **{title}**{suffix}", ephemeral=True)
+        if subtasks and created_subtasks < len(subtasks):
+            status = f"⚠️ {created_subtasks} de {len(subtasks)} subtarefas foram criadas."
+        elif created_subtasks:
+            status = f"com {created_subtasks} subtarefas"
+        else:
+            status = ""
+        detail = f" {status}" if status else ""
+        await interaction.followup.send(f"✅ Tarefa criada no ClickUp{detail}: **{title}**{suffix}", ephemeral=True)
 
     context_menu = app_commands.ContextMenu(
         name="📋 Criar tarefa",

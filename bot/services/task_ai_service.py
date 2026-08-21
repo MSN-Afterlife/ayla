@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from bot.config import Settings
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 TASK_AI_TIMEOUT_SECONDS = 10
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 4000
+MAX_SUBTASKS = 5
 
 
 class TaskAIError(Exception):
@@ -25,6 +26,13 @@ class TaskAIError(Exception):
 
 @dataclass(frozen=True)
 class TaskAnalysis:
+    title: str
+    description: str
+    subtasks: list["TaskSubtask"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TaskSubtask:
     title: str
     description: str
 
@@ -69,9 +77,14 @@ class TaskAIService:
 _TASK_ANALYSIS_PROMPT = """Você transforma mensagens informais do Discord em tarefas técnicas curtas e objetivas.
 
 Retorne exclusivamente JSON válido com exatamente estes campos:
-{"title": "...", "description": "..."}
+{"title": "...", "description": "...", "subtasks": []}
 
 Regras:
+- crie subtasks somente quando existirem duas ou mais demandas independentes;
+- nÃ£o decomponha uma Ãºnica tarefa em etapas de execuÃ§Ã£o;
+- retorne subtasks como [] quando nÃ£o houver decomposiÃ§Ã£o Ãºtil;
+- cada subtarefa deve conter title e description;
+- crie no mÃ¡ximo 5 subtarefas;
 - não invente fatos, contexto ou solução técnica;
 - preserve o significado da mensagem;
 - transforme linguagem informal em linguagem clara;
@@ -112,4 +125,26 @@ def _parse_analysis(content: str) -> TaskAnalysis:
     description = description.strip()[:MAX_DESCRIPTION_LENGTH]
     if not title or not description:
         raise TaskAIError("resposta da IA possui campos vazios")
-    return TaskAnalysis(title=title, description=description)
+    return TaskAnalysis(title=title, description=description, subtasks=_parse_subtasks(payload.get("subtasks", [])))
+
+
+def _parse_subtasks(value: Any) -> list[TaskSubtask]:
+    if not isinstance(value, list):
+        return []
+
+    valid: list[TaskSubtask] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        description = item.get("description")
+        if not isinstance(title, str) or not isinstance(description, str):
+            continue
+        title = " ".join(title.split())[:MAX_TITLE_LENGTH].strip()
+        description = description.strip()[:MAX_DESCRIPTION_LENGTH]
+        if title and description:
+            valid.append(TaskSubtask(title=title, description=description))
+
+    if len(valid) < 2:
+        return []
+    return valid[:MAX_SUBTASKS]

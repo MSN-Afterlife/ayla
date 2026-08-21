@@ -19,7 +19,13 @@ class ClickUpService:
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._session: aiohttp.ClientSession | None = None
 
-    async def create_task(self, list_id: str, name: str, description: str) -> dict[str, Any]:
+    async def create_task(
+        self,
+        list_id: str,
+        name: str,
+        description: str,
+        parent_task_id: str | None = None,
+    ) -> dict[str, Any]:
         if not self._api_token:
             raise ClickUpError("CLICKUP_API_TOKEN não está configurado.")
         if not list_id.strip():
@@ -30,10 +36,13 @@ class ClickUpService:
         endpoint = self._endpoint.format(list_id=list_id)
         try:
             session = await self._get_session()
+            payload = {"name": name[:200], "markdown_content": description}
+            if parent_task_id:
+                payload["parent"] = parent_task_id
             async with session.post(
                 endpoint,
                 headers={"Authorization": self._api_token, "Content-Type": "application/json"},
-                json={"name": name[:200], "markdown_content": description},
+                json=payload,
             ) as response:
                 response_text = await response.text()
                 if response.status < 200 or response.status >= 300:
@@ -58,6 +67,15 @@ class ClickUpService:
         except (aiohttp.ClientError, TimeoutError) as error:
             logger.error("ClickUp task creation failed: endpoint=%s error=%s", endpoint, error)
             raise ClickUpError("Não foi possível conectar ao ClickUp.") from error
+
+    async def create_subtask(
+        self,
+        list_id: str,
+        parent_task_id: str,
+        name: str,
+        description: str,
+    ) -> dict[str, Any]:
+        return await self.create_task(list_id, name, description, parent_task_id=parent_task_id)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:

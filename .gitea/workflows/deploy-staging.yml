@@ -1,0 +1,40 @@
+name: Deploy Lyn Staging
+
+on:
+  push:
+    branches:
+      - develop
+
+concurrency:
+  group: lyn-staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: lyn-deploy
+    steps:
+      - name: Check out the pushed revision
+        uses: actions/checkout@v4
+
+      - name: Build and restart Lyn Staging
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runtime_dir=/home/maycon/bots/meu-bot/runtime-staging
+          env_file="$GITHUB_WORKSPACE/.env"
+
+          test -s "$env_file"
+          mkdir -p "$runtime_dir/data"
+
+          docker build --tag meu-bot-staging:latest .
+
+          docker rm --force meu-bot-staging 2>/dev/null || true
+
+          docker run --detach \
+            --name meu-bot-staging \
+            --restart unless-stopped \
+            --publish 127.0.0.1:8091:8090 \
+            --env-file "$env_file" \
+            --volume "$runtime_dir/data:/app/data" \
+            meu-bot-staging:latest

@@ -1,7 +1,12 @@
 import os
+import json
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
+
+CLICKUP_DESTINATION_KEYS = {
+    "ayla_bugs", "site_bugs", "incidents", "security", "suggestions", "community", "manual_triage",
+}
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,8 @@ class Settings:
     serpapi_api_key: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    task_ai_model: str = "gpt-5.4-mini"
+    task_ai_timeout_seconds: float = 120
     levels_database_path: str = "data/levels.sqlite3"
     levels_xp_min: int = 15
     levels_xp_max: int = 25
@@ -48,6 +55,15 @@ class Settings:
     authentik_token: str | None = None
     authentik_authdev_group: str | None = None
     ayla_caotica_url: str | None = None
+    clickup_api_token: str | None = None
+    clickup_list_id: str | None = None
+    clickup_allowed_role_ids: list[int] | None = None
+    clickup_destinations: dict[str, str] | None = None
+    clickup_custom_field_ids: dict[str, str] | None = None
+    # Keep the Free plan safe by default: use native fields, tags and markdown.
+    clickup_free_mode: bool = True
+    clickup_workspace_id: str | None = None
+    clickup_catalog_cache_seconds: int = 600
 
 
 def load_settings() -> Settings:
@@ -83,6 +99,8 @@ def load_settings() -> Settings:
         serpapi_api_key=os.getenv("SERPAPI_API_KEY"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        task_ai_model=os.getenv("TASK_AI_MODEL", "gpt-5.4-mini"),
+        task_ai_timeout_seconds=float(os.getenv("TASK_AI_TIMEOUT_SECONDS", "120")),
         levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),
         levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
@@ -103,7 +121,35 @@ def load_settings() -> Settings:
         authentik_token=os.getenv("AUTHENTIK_TOKEN"),
         authentik_authdev_group=os.getenv("AUTHENTIK_AUTHDEV_GROUP"),
         ayla_caotica_url=os.getenv("AYLACAOTICAURL"),
+        clickup_api_token=os.getenv("CLICKUP_API_TOKEN"),
+        clickup_list_id=os.getenv("CLICKUP_LIST_ID"),
+        clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
+        clickup_destinations=_load_destination_map("CLICKUP_DESTINATIONS"),
+        clickup_custom_field_ids=_load_json_map("CLICKUP_CUSTOM_FIELD_IDS"),
+        clickup_free_mode=_load_bool("CLICKUP_FREE_MODE", True),
+        clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
+        clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
     )
+
+
+def validate_clickup_settings(settings: Settings) -> None:
+    if not settings.clickup_api_token:
+        return
+    destinations = settings.clickup_destinations or {}
+    if not destinations:
+        if settings.clickup_list_id:
+            return
+        raise RuntimeError(
+            "CLICKUP_DESTINATIONS não está configurado. Preencha as sete chaves "
+            "ayla_bugs, site_bugs, incidents, security, suggestions, community e manual_triage."
+        )
+    missing = set()
+    unknown = set(destinations) - CLICKUP_DESTINATION_KEYS
+    empty = [key for key in CLICKUP_DESTINATION_KEYS if not str(destinations.get(key, "")).strip()]
+    if unknown or empty:
+        raise RuntimeError(
+            f"CLICKUP_DESTINATIONS inválido: missing={sorted(missing)} unknown={sorted(unknown)} empty={sorted(empty)}."
+        )
 
 
 def _load_list(name: str, default: list[str]) -> list[str]:
@@ -119,3 +165,50 @@ def _load_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "sim", "on"}
+
+
+def _load_int_list(name: str) -> list[int]:
+    value = os.getenv(name)
+    if not value:
+        return []
+
+    result: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            result.append(int(item))
+        except ValueError:
+            raise RuntimeError(f"{name} deve conter apenas IDs numericos separados por virgula.") from None
+    return result
+
+def _load_json_map(name: str) -> dict[str, str]:
+    value = os.getenv(name)
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{name} deve conter um objeto JSON.") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{name} deve conter um objeto JSON.")
+    result: dict[str, str] = {}
+    for key, item in payload.items():
+        if not str(key).strip() or not str(item).strip():
+            raise RuntimeError(f"{name} contém uma chave ou list_id vazio: {key!r}.")
+        result[str(key)] = str(item)
+    return result
+
+
+def _load_destination_map(name: str) -> dict[str, str]:
+    result = _load_json_map(name)
+    if not result:
+        return {}
+    unknown = set(result) - CLICKUP_DESTINATION_KEYS
+    missing = CLICKUP_DESTINATION_KEYS - set(result)
+    if unknown:
+        raise RuntimeError(f"{name} contém destinos desconhecidos: {sorted(unknown)}.")
+    if missing:
+        raise RuntimeError(f"{name} não contém list_id para: {sorted(missing)}.")
+    return result

@@ -1,4 +1,5 @@
 import os
+import json
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -37,6 +38,9 @@ class Settings:
     clickup_api_token: str | None = None
     clickup_list_id: str | None = None
     clickup_allowed_role_ids: list[int] | None = None
+    clickup_destinations: dict[str, str] | None = None
+    clickup_custom_field_ids: dict[str, str] | None = None
+    clickup_custom_field_options: dict[str, dict[str, str]] | None = None
 
 
 def load_settings() -> Settings:
@@ -78,6 +82,9 @@ def load_settings() -> Settings:
         clickup_api_token=os.getenv("CLICKUP_API_TOKEN"),
         clickup_list_id=os.getenv("CLICKUP_LIST_ID"),
         clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
+        clickup_destinations=_load_json_map("CLICKUP_DESTINATIONS"),
+        clickup_custom_field_ids=_load_json_map("CLICKUP_CUSTOM_FIELD_IDS"),
+        clickup_custom_field_options=_load_nested_json_map("CLICKUP_CUSTOM_FIELD_OPTIONS"),
     )
 
 
@@ -111,3 +118,30 @@ def _load_int_list(name: str) -> list[int]:
         except ValueError:
             raise RuntimeError(f"{name} deve conter apenas IDs numericos separados por virgula.") from None
     return result
+
+
+def _load_json_map(name: str) -> dict[str, str]:
+    value = os.getenv(name)
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{name} deve conter um objeto JSON.") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{name} deve conter um objeto JSON.")
+    return {str(key): str(item) for key, item in payload.items() if str(key).strip() and str(item).strip()}
+
+
+def _load_nested_json_map(name: str) -> dict[str, dict[str, str]]:
+    value = os.getenv(name)
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{name} deve conter um objeto JSON.") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{name} deve conter um objeto JSON.")
+    return {str(key): {str(option): str(option_id) for option, option_id in options.items()}
+            for key, options in payload.items() if isinstance(options, dict)}

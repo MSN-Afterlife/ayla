@@ -7,7 +7,7 @@ from discord.ext import commands
 
 from bot.config import Settings
 from bot.services.clickup_service import ClickUpError, ClickUpService
-from bot.services.task_ai_service import TaskAIService
+from bot.services.task_ai_service import TaskAIService, TaskAnalysis
 
 
 logger = logging.getLogger(__name__)
@@ -47,12 +47,13 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         title = _task_title(message)
         description = _task_description(message, interaction.user)
         subtasks = []
+        analysis = None
         if message.content.strip():
             logger.info("Task AI analysis requested for Discord message %s", message.id)
             try:
                 analysis = await task_ai_service.analyze_task(message.content)
                 title = analysis.title
-                description = _task_description(message, interaction.user, analysis.description)
+                description = _task_description(message, interaction.user, analysis.description, analysis)
                 subtasks = analysis.subtasks
                 logger.info("Task AI generated %s subtasks for %s", len(subtasks), message.id)
                 logger.info("Task AI analysis completed for %s", message.id)
@@ -61,7 +62,13 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                 logger.info("Using ClickUp task fallback for %s", message.id)
 
         try:
-            task = await service.create_task(settings.clickup_list_id, title, description)
+            list_id = (settings.clickup_destinations or {}).get(getattr(analysis, "destination", "manual_triage"), settings.clickup_list_id)
+            if not list_id:
+                raise ClickUpError("Nenhuma lista do ClickUp foi configurada para este destino.")
+            task = await service.create_task(
+                list_id, title, description, priority=getattr(analysis, "priority", "normal"),
+                custom_fields=_custom_fields(analysis, settings),
+            )
         except ClickUpError:
             await interaction.followup.send(
                 "❌ Não consegui criar a tarefa no ClickUp. O erro foi registrado para análise.", ephemeral=True
@@ -79,6 +86,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                         task_id,
                         subtask.title,
                         subtask.description,
+                        priority=analysis.priority,
                     )
                     created_subtasks += 1
                     logger.info(
@@ -129,6 +137,7 @@ def _task_description(
     message: discord.Message,
     creator: discord.User | discord.Member,
     ai_summary: str | None = None,
+    analysis: TaskAnalysis | None = None,
 ) -> str:
     content = message.content.strip() or "_(mensagem sem conteúdo textual)_"
     author_name = _display_name(message.author)
@@ -138,6 +147,22 @@ def _task_description(
     lines = []
     if ai_summary:
         lines.extend(["## Resumo", ai_summary.strip(), ""])
+    if analysis:
+        lines.extend([
+            "## Triagem automática",
+            f"- **Categoria:** {analysis.category}", f"- **Área:** {analysis.area}",
+            f"- **Ambiente:** {analysis.environment}", f"- **Prioridade:** {analysis.priority}",
+            f"- **Risco:** {analysis.risk}", f"- **Confiança:** {analysis.confidence}",
+            f"- **Destino:** {analysis.destination}", "",
+        ])
+        if analysis.possible_cause:
+            lines.extend(["### Possível causa", analysis.possible_cause, ""])
+        if analysis.possible_solution:
+            lines.extend(["### Solução possível", analysis.possible_solution, ""])
+        if analysis.acceptance_criteria:
+            lines.extend(["### Critérios de aceite", *[f"- {item}" for item in analysis.acceptance_criteria], ""])
+        if analysis.missing_information:
+            lines.extend(["### Informações ausentes", *[f"- {item}" for item in analysis.missing_information], ""])
     lines.extend([
         "## Mensagem original",
         content,
@@ -164,6 +189,29 @@ def _task_description(
     if message.attachments:
         lines.extend(["", "## Anexos", *[f"- {attachment.url}" for attachment in message.attachments]])
     return "\n".join(lines)[:MAX_DESCRIPTION_LENGTH]
+
+
+def _custom_fields(analysis: TaskAnalysis | None, settings: Settings) -> list[dict[str, str]]:
+    """Monta somente os campos configurados; o restante permanece no Markdown."""
+    if analysis is None:
+        return []
+    values = {
+        "risk": analysis.risk, "category": analysis.category, "area": analysis.area,
+        "environment": analysis.environment, "confidence": analysis.confidence,
+        "possible_cause": analysis.possible_cause, "possible_solution": analysis.possible_solution,
+        "acceptance_criteria": "\n".join(f"- {item}" for item in analysis.acceptance_criteria),
+        "missing_information": "\n".join(f"- {item}" for item in analysis.missing_information),
+    }
+    field_ids = settings.clickup_custom_field_ids or {}
+    options = settings.clickup_custom_field_options or {}
+    result = []
+    for key, value in values.items():
+        field_id = field_ids.get(key)
+        if not field_id or not value:
+            continue
+        value = options.get(key, {}).get(value, value)
+        result.append({"id": field_id, "value": value})
+    return result
 
 
 def _safe_error_name(error: Exception) -> str:

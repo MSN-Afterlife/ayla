@@ -25,6 +25,8 @@ class ClickUpService:
         name: str,
         description: str,
         parent_task_id: str | None = None,
+        priority: str | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not self._api_token:
             raise ClickUpError("CLICKUP_API_TOKEN não está configurado.")
@@ -37,6 +39,10 @@ class ClickUpService:
         try:
             session = await self._get_session()
             payload = {"name": name[:200], "markdown_content": description}
+            if priority in {"urgent", "high", "normal", "low"}:
+                payload["priority"] = {"urgent": 1, "high": 2, "normal": 3, "low": 4}[priority]
+            if custom_fields:
+                payload["custom_fields"] = custom_fields
             if parent_task_id:
                 payload["parent"] = parent_task_id
             async with session.post(
@@ -74,8 +80,10 @@ class ClickUpService:
         parent_task_id: str,
         name: str,
         description: str,
+        priority: str | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return await self.create_task(list_id, name, description, parent_task_id=parent_task_id)
+        return await self.create_task(list_id, name, description, parent_task_id=parent_task_id, priority=priority, custom_fields=custom_fields)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:

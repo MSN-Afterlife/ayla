@@ -19,8 +19,9 @@ class ClickUpService:
     _field_endpoint = "https://api.clickup.com/api/v2/list/{list_id}/field"
     _get_task_endpoint = "https://api.clickup.com/api/v2/task/{task_id}"
 
-    def __init__(self, api_token: str | None, *, timeout_seconds: float = 15) -> None:
+    def __init__(self, api_token: str | None, *, timeout_seconds: float = 15, free_mode: bool = False) -> None:
         self._api_token = api_token
+        self._free_mode = free_mode
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._session: aiohttp.ClientSession | None = None
         self._catalog_cache: list[dict[str, str]] | None = None
@@ -42,6 +43,12 @@ class ClickUpService:
         context: str = "task",
     ) -> dict[str, Any]:
         self._validate_common(list_id, name)
+        if self._free_mode:
+            # Explicit 0 forces a standard Task even when the List default is Bug.
+            if custom_fields:
+                logger.info("ClickUp Free mode: omitting %s Custom Fields", len(custom_fields))
+            custom_fields = None
+            custom_item_id = 0
         endpoint = self._task_endpoint.format(list_id=list_id)
         numeric_priority = priority_to_clickup(priority, context=context)
         request_payload: dict[str, Any] = {"name": name[:200], "markdown_content": description}
@@ -67,7 +74,12 @@ class ClickUpService:
         try:
             response_payload, status = await self._request("POST", endpoint, request_payload, context=context)
         except ClickUpError as error:
-            if points is not None and _is_sprint_points_disabled(error):
+            if custom_item_id is None and _is_custom_task_type_limit(error):
+                logger.warning("ClickUp custom task type limit context=%s; retrying standard Task", context)
+                retry_payload = dict(request_payload)
+                retry_payload["custom_item_id"] = 0
+                response_payload, status = await self._request("POST", endpoint, retry_payload, context=f"{context}_standard_task")
+            elif points is not None and _is_sprint_points_disabled(error):
                 logger.warning("ClickUp Sprint Points unavailable context=%s; retrying task without points", context)
                 retry_payload = dict(request_payload)
                 retry_payload.pop("points", None)

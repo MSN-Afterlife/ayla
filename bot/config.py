@@ -46,6 +46,8 @@ class Settings:
     clickup_allowed_role_ids: list[int] | None = None
     clickup_destinations: dict[str, str] | None = None
     clickup_custom_field_ids: dict[str, str] | None = None
+    # Keep the Free plan safe by default: use native fields, tags and markdown.
+    clickup_free_mode: bool = True
     clickup_workspace_id: str | None = None
     clickup_catalog_cache_seconds: int = 600
 
@@ -93,6 +95,7 @@ def load_settings() -> Settings:
         clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
         clickup_destinations=_load_destination_map("CLICKUP_DESTINATIONS"),
         clickup_custom_field_ids=_load_json_map("CLICKUP_CUSTOM_FIELD_IDS"),
+        clickup_free_mode=_load_bool("CLICKUP_FREE_MODE", True),
         clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
         clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
     )

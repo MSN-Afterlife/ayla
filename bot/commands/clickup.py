@@ -22,7 +22,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         validate_clickup_settings(settings)
     except RuntimeError as error:
         logger.error("ClickUp configuration invalid: %s", error)
-    service = ClickUpService(settings.clickup_api_token)
+    service = ClickUpService(settings.clickup_api_token, free_mode=settings.clickup_free_mode)
     task_ai_service = TaskAIService(settings)
     bot._task_ai_service = task_ai_service
 
@@ -80,7 +80,9 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             destination = getattr(analysis, "destination", "manual_triage")
             list_id = resolve_destination(settings, destination, catalog)
             task_priority = getattr(analysis, "priority", None) or semantic_priority
-            fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
+            fields_metadata = [] if settings.clickup_free_mode else await _load_custom_field_metadata(service, list_id, settings, destination)
+            if settings.clickup_free_mode:
+                logger.info("ClickUp Free mode enabled message_id=%s; using native fields, tags and markdown", message.id)
             if analysis is not None and fields_metadata and message.content.strip():
                 try:
                     enriched_analysis = await task_ai_service.analyze_task(message.content, catalog, fields_metadata)
@@ -485,9 +487,9 @@ def _find_dropdown_option(key: str, value: object, options: object) -> dict[str,
     if key == "risk":
         equivalences = (
             {"critical", "critico", "critica", "critical"},
-            {"high", "alto", "alta"},
-            {"medium", "medio", "media"},
-            {"low", "baixo", "baixa"},
+            {"high", "alto", "alta", "major"},
+            {"medium", "medio", "media", "minor"},
+            {"low", "baixo", "baixa", "trivial"},
         )
         for group in equivalences:
             normalized_group = {_normalize_field_name(item) for item in group}

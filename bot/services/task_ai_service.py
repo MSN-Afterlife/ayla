@@ -92,6 +92,7 @@ class TaskAIService:
                         {"role": "system", "content": self._build_prompt(catalog, custom_fields)},
                         {"role": "user", "content": cleaned_content},
                     ],
+                    response_format={"type": "json_object"},
                     max_completion_tokens=900,
                 ),
                 timeout=self._timeout_seconds,
@@ -109,7 +110,7 @@ class TaskAIService:
             options = (field.get("type_config") or {}).get("options", []) if isinstance(field.get("type_config"), dict) else []
             option_text = ", ".join(f"{item.get('id')}={item.get('name', item.get('label', ''))}" for item in options if isinstance(item, dict))
             field_lines.append(f"- id={field['id']} | name={field.get('name', '')} | type={field.get('type', '')} | options={option_text}")
-        field_instruction = "\nCustom Fields reais da lista (use os IDs e opções abaixo; não crie opções):\n" + "\n".join(field_lines) + "\nRetorne também custom_field_values como objeto {field_id: valor}; para dropdown use exatamente o option id da lista. Só preencha quando houver evidência." if field_lines else ""
+        field_instruction = "\nCustom Fields reais da lista (use somente estes IDs e opções; não crie nomes nem IDs):\n" + "\n".join(field_lines) + "\ncustom_field_values é obrigatório para todo campo aplicável com evidência. Formato: {\"ID_DO_CAMPO\": \"ID_DA_OPCAO\"}. Para dropdown, use EXATAMENTE o ID da opção, nunca o nome traduzido. Se não houver evidência, não inclua o campo." if field_lines else ""
         if catalog:
             lines = [f"- id={item['id']} | {item['path']}" for item in catalog[:150] if item.get("id") and item.get("path")]
             lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")

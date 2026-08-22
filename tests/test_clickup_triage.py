@@ -134,6 +134,14 @@ class TaskTriageTests(unittest.TestCase):
         ])
         self.assertEqual(fields, [{"id": "field-risk", "value": "opt-high"}])
 
+    def test_risk_dropdown_accepts_severity_scale(self):
+        settings = Settings("token", clickup_custom_field_ids={"risk": "field-risk"})
+        analysis = _parse_analysis('{"title":"x","description":"y","risk":"medium"}')
+        fields = _custom_fields(analysis, settings, [
+            {"id": "field-risk", "type": "drop_down", "type_config": {"options": [{"id": "opt-critical", "name": "Critical"}, {"id": "opt-major", "name": "Major"}, {"id": "opt-minor", "name": "Minor"}, {"id": "opt-trivial", "name": "Trivial"}]}}
+        ])
+        self.assertEqual(fields, [{"id": "field-risk", "value": "opt-minor"}])
+
     def test_custom_fields_absent_are_empty(self):
         settings = Settings("token")
         analysis = _parse_analysis('{"title":"x","description":"y"}')
@@ -196,6 +204,34 @@ class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.requests[0][2]["json"]["points"], 3)
         self.assertNotIn("points", session.requests[1][2]["json"])
         self.assertEqual(session.requests[1][2]["json"]["time_estimate"], 3600000)
+        await service.close()
+
+    async def test_custom_task_type_limit_retries_standard_task(self):
+        service = ClickUpService("secret-token")
+        session = FakeSession([
+            (400, {"err": "Max usage for custom task types reached", "ECODE": "ITEM_246"}),
+            (200, {"id": "standard-1"}),
+        ])
+        service._session = session
+        task = await service.create_task("123", "TÃ­tulo", "DescriÃ§Ã£o")
+        self.assertEqual(task["id"], "standard-1")
+        self.assertEqual(session.requests[1][2]["json"]["custom_item_id"], 0)
+        await service.close()
+
+    async def test_free_mode_always_uses_standard_task_and_omits_custom_fields(self):
+        service = ClickUpService("secret-token", free_mode=True)
+        session = FakeSession([(200, {"id": "standard-free"})])
+        service._session = session
+        task = await service.create_task(
+            "123", "TÃ­tulo", "DescriÃ§Ã£o",
+            custom_fields=[{"id": "risk", "value": "opt"}],
+            custom_item_id=987654,
+            points=3,
+        )
+        self.assertEqual(task["id"], "standard-free")
+        payload = session.requests[0][2]["json"]
+        self.assertEqual(payload["custom_item_id"], 0)
+        self.assertNotIn("custom_fields", payload)
         await service.close()
 
     async def test_subtask_failure_does_not_prevent_next_subtask(self):

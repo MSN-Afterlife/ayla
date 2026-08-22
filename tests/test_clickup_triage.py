@@ -48,6 +48,7 @@ class TaskTriageTests(unittest.TestCase):
 
     def test_deterministic_priority_overrides(self):
         self.assertEqual(priority_from_content("token exposto no servidor"), "urgent")
+        self.assertEqual(priority_from_content("bug visual deixou um usuário cego e houve convulsão, corrigir com urgência"), "urgent")
         self.assertEqual(_deterministic_overrides("função importante quebrada em produção", "low", "low", "production")[0], "high")
         self.assertEqual(_deterministic_overrides("erro apenas visual de CSS", "high", "low", "unknown")[0], "low")
         self.assertEqual(_deterministic_overrides("erro somente em staging", "urgent", "low", "staging")[0], "normal")
@@ -75,6 +76,20 @@ class TaskTriageTests(unittest.TestCase):
         self.assertEqual(_parse_analysis(json.dumps(payload), {"site_bugs", "manual_triage"}).destination, "site_bugs")
         payload["destination"] = "lista_inventada"
         self.assertEqual(_parse_analysis(json.dumps(payload), {"site_bugs", "manual_triage"}).destination, "manual_triage")
+
+    def test_missing_effort_fields_get_safe_fallbacks(self):
+        analysis = _parse_analysis('{"title":"x","description":"y","priority":"urgent","risk":"critical"}')
+        self.assertEqual(analysis.points, 8)
+        self.assertEqual(analysis.estimated_minutes, 480)
+        self.assertEqual(analysis.resolution_deadline_days, 1)
+
+    def test_source_evidence_fills_browser_and_operating_system(self):
+        analysis = _parse_analysis(
+            '{"title":"x","description":"y"}',
+            source_content="Testei no Chrome 128 usando Windows 11.",
+        )
+        self.assertEqual(analysis.browser_version, "Chrome 128")
+        self.assertEqual(analysis.operating_system, "Windows 11")
 
     def test_ai_can_select_a_discovered_list_id(self):
         payload = {"title": "Corrigir site", "description": "Erro no site", "destination": "list-42"}

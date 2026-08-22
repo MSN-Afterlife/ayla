@@ -80,7 +80,15 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             list_id = resolve_destination(settings, destination, catalog)
             task_priority = getattr(analysis, "priority", None) or semantic_priority
             fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
-            custom_fields = _custom_fields(analysis, settings, fields_metadata)
+            custom_fields = _custom_fields(
+                analysis, settings, fields_metadata,
+                reference_at=message.created_at,
+                reported_by=_display_name(message.author),
+            )
+            description = _task_description(
+                message, interaction.user, analysis.description, analysis,
+                mapped_field_keys=_mapped_field_keys(analysis, settings, fields_metadata, custom_fields),
+            )
             task_tags = _task_tags(analysis)
             time_estimate = analysis.estimated_minutes * 60 * 1000 if analysis and analysis.estimated_minutes else None
             points = analysis.points if analysis else None
@@ -200,6 +208,7 @@ def _task_description(
     creator: discord.User | discord.Member,
     ai_summary: str | None = None,
     analysis: TaskAnalysis | None = None,
+    mapped_field_keys: set[str] | None = None,
 ) -> str:
     content = message.content.strip() or "_(mensagem sem conteúdo textual)_"
     author_name = _display_name(message.author)
@@ -250,7 +259,34 @@ def _task_description(
     ])
     if message.attachments:
         lines.extend(["", "## Anexos", *[f"- {attachment.url}" for attachment in message.attachments]])
+    lines = _remove_mapped_markdown(lines, mapped_field_keys or set())
     return "\n".join(lines)[:MAX_DESCRIPTION_LENGTH]
+
+
+def _remove_mapped_markdown(lines: list[str], mapped: set[str]) -> list[str]:
+    labels = {
+        "category": "Categoria:", "area": "Área:", "environment": "Ambiente:",
+        "priority": "Prioridade:", "risk": "Risco:", "confidence": "Confiança:",
+    }
+    sections = {
+        "possible_cause": "Possível causa", "possible_solution": "Solução possível",
+        "acceptance_criteria": "Critérios de aceite",
+    }
+    result = []
+    skip_section = False
+    for line in lines:
+        if skip_section:
+            if not line.strip():
+                skip_section = False
+            continue
+        section_key = next((key for key, title in sections.items() if key in mapped and line == f"### {title}"), None)
+        if section_key:
+            skip_section = True
+            continue
+        if any(key in mapped and label in line for key, label in labels.items()):
+            continue
+        result.append(line)
+    return result
 
 
 async def _load_custom_field_metadata(service: ClickUpService, list_id: str, settings: Settings, destination: str) -> list[dict[str, object]]:
@@ -266,7 +302,9 @@ async def _load_custom_field_metadata(service: ClickUpService, list_id: str, set
     missing = {key: field_id for key, field_id in settings.clickup_custom_field_ids.items() if field_id not in available}
     if missing:
         logger.error("Custom Fields configuration invalid destination=%s missing=%s; invalid fields will be skipped", destination, missing)
-    return [available[field_id] for field_id in settings.clickup_custom_field_ids.values() if field_id in available]
+    # Keep the complete API catalog so fields not present in the legacy map can
+    # still be matched automatically by their names.
+    return list(available.values())
 
 
 async def _verify_custom_fields(service: ClickUpService, task_id: str, sent_fields: list[dict[str, object]], message_id: int) -> None:
@@ -284,7 +322,14 @@ async def _verify_custom_fields(service: ClickUpService, task_id: str, sent_fiel
             logger.info("Custom Field confirmed message_id=%s task_id=%s field_id=%s value=%s", message_id, task_id, field_id, actual[field_id])
 
 
-def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
+def _custom_fields(
+    analysis: TaskAnalysis | None,
+    settings: Settings,
+    metadata: list[dict[str, object]] | None = None,
+    *,
+    reference_at: datetime | None = None,
+    reported_by: str | None = None,
+) -> list[dict[str, object]]:
     """Monta Custom Fields reais; campos sem configuração ficam somente no Markdown."""
     if analysis is None:
         return []
@@ -295,6 +340,14 @@ def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: 
         "possible_solution": analysis.possible_solution,
         "acceptance_criteria": "\n".join(f"- {item}" for item in analysis.acceptance_criteria),
         "missing_information": "\n".join(f"- {item}" for item in analysis.missing_information),
+        "browser_version": analysis.browser_version,
+        "operating_system": analysis.operating_system,
+        "reproduction_steps": "\n".join(f"- {item}" for item in analysis.reproduction_steps),
+        "reported_by": reported_by or "",
+        "resolution_deadline": (
+            int((reference_at + timedelta(days=analysis.resolution_deadline_days)).timestamp() * 1000)
+            if reference_at is not None and analysis.resolution_deadline_days is not None else None
+        ),
     }
     field_ids = settings.clickup_custom_field_ids or {}
     available = {str(field.get("id")): field for field in metadata or [] if field.get("id")}
@@ -308,7 +361,7 @@ def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: 
         if field_type == "drop_down":
             type_config = field.get("type_config") if isinstance(field.get("type_config"), dict) else {}
             options = type_config.get("options", [])
-            option = next((item for item in options if isinstance(item, dict) and str(item.get("name", "")).casefold() == str(value).casefold()), None)
+            option = _find_dropdown_option(key, value, options)
             if not option:
                 logger.error("Custom Field dropdown option missing field_id=%s value=%s", field_id, value)
                 continue
@@ -316,6 +369,28 @@ def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: 
         result.append({"id": field_id, "value": value})
         logger.info("Custom Field prepared field_id=%s type=%s value=%s", field_id, field_type, value)
     return result
+
+
+def _mapped_field_keys(
+    analysis: TaskAnalysis,
+    settings: Settings,
+    metadata: list[dict[str, object]],
+    sent_fields: list[dict[str, object]],
+) -> set[str]:
+    sent_ids = {str(field.get("id")) for field in sent_fields}
+    keys = {
+        "risk", "category", "area", "environment", "confidence", "possible_cause",
+        "possible_solution", "acceptance_criteria", "missing_information", "browser_version",
+        "operating_system", "reproduction_steps", "reported_by", "resolution_deadline",
+    }
+    configured = settings.clickup_custom_field_ids or {}
+    available = {str(field.get("id")): field for field in metadata if field.get("id")}
+    mapped = set()
+    for key in keys:
+        field_id = configured.get(key) or _find_named_field_id(key, available.values())
+        if field_id and field_id in sent_ids:
+            mapped.add(key)
+    return mapped
 
 
 _CUSTOM_FIELD_NAME_ALIASES = {
@@ -328,6 +403,12 @@ _CUSTOM_FIELD_NAME_ALIASES = {
     "possible_solution": {"possivel solucao", "possible solution", "solucao"},
     "acceptance_criteria": {"criterios de aceite", "acceptance criteria"},
     "missing_information": {"informacoes ausentes", "missing information"},
+    "browser_version": {"browser version", "versao do navegador", "versao navegador"},
+    "operating_system": {"operating system", "sistema operacional"},
+    "reproduction_steps": {"reproduction steps", "passos para reproduzir", "passos de reproducao"},
+    "reported_by": {"reported by", "reportado por"},
+    "resolution_deadline": {"resolution deadline", "prazo de resolucao", "prazo de resolução"},
+    "risk": {"risco", "risk", "severity level", "nivel de severidade", "nível de severidade"},
 }
 
 
@@ -342,6 +423,22 @@ def _find_named_field_id(key: str, fields) -> str | None:
 def _normalize_field_name(value: object) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     return "".join(char for char in text if not unicodedata.combining(char)).casefold().strip()
+
+
+def _find_dropdown_option(key: str, value: object, options: object) -> dict[str, object] | None:
+    if not isinstance(options, list):
+        return None
+    candidates = {_normalize_field_name(value)}
+    if key == "risk":
+        candidates.add({
+            "critical": "critical", "critico": "critical", "crítico": "critical",
+            "high": "high", "alto": "high", "medium": "medium", "medio": "medium", "médio": "medium",
+            "low": "low", "baixo": "low",
+        }.get(_normalize_field_name(value), _normalize_field_name(value)))
+    for option in options:
+        if isinstance(option, dict) and _normalize_field_name(option.get("name")) in candidates:
+            return option
+    return None
 
 
 def _visible_value(field: str, value: str) -> str:

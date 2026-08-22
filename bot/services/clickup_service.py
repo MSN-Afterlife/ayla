@@ -61,7 +61,16 @@ class ClickUpService:
             context, list_id, parent_task_id or "-", priority, numeric_priority,
             [field.get("id") for field in custom_fields or []], request_payload,
         )
-        response_payload, status = await self._request("POST", endpoint, request_payload, context=context)
+        try:
+            response_payload, status = await self._request("POST", endpoint, request_payload, context=context)
+        except ClickUpError as error:
+            if points is not None and _is_sprint_points_disabled(error):
+                logger.warning("ClickUp Sprint Points unavailable context=%s; retrying task without points", context)
+                retry_payload = dict(request_payload)
+                retry_payload.pop("points", None)
+                response_payload, status = await self._request("POST", endpoint, retry_payload, context=f"{context}_without_points")
+            else:
+                raise
         task_id = response_payload.get("id") if isinstance(response_payload, dict) else None
         logger.info("ClickUp response context=%s status=%s task_id=%s body=%s", context, status, task_id or "-", response_payload)
         return response_payload
@@ -180,7 +189,14 @@ class ClickUpService:
                 response_text = await response.text()
                 if response.status < 200 or response.status >= 300:
                     logger.error("ClickUp API failed context=%s status=%s endpoint=%s body=%s", context, response.status, endpoint, _safe_response_body(response_text))
-                    raise ClickUpError(f"ClickUp respondeu HTTP {response.status} em {context}.")
+                    detail = ""
+                    try:
+                        error_payload = json.loads(response_text)
+                        if isinstance(error_payload, dict):
+                            detail = f" {error_payload.get('ECODE', '')} {error_payload.get('err', '')}".strip()
+                    except json.JSONDecodeError:
+                        pass
+                    raise ClickUpError(f"ClickUp respondeu HTTP {response.status} em {context}. {detail}".strip())
                 try:
                     parsed = json.loads(response_text) if response_text else {}
                 except json.JSONDecodeError:
@@ -209,6 +225,11 @@ def priority_to_clickup(priority: Any, *, context: str = "task") -> int | None:
         logger.warning("ClickUp priority invalid context=%s value=%r; field omitted reason=not_allowed", context, priority)
         return None
     return CLICKUP_PRIORITY_VALUES[priority]
+
+
+def _is_sprint_points_disabled(error: ClickUpError) -> bool:
+    text = str(error).casefold()
+    return "item_227" in text or "sprint points clickapp is not enabled" in text
 
 
 def _safe_response_body(body: str, limit: int = 1000) -> str:

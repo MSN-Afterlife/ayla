@@ -152,6 +152,20 @@ class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.requests[1][2]["json"], {"name": "Investigar endpoint", "markdown_content": "Executar teste", "priority": 2, "parent": "parent-1"})
         await service.close()
 
+    async def test_sprint_points_disabled_retries_without_points(self):
+        service = ClickUpService("secret-token")
+        session = FakeSession([
+            (400, {"err": "The Sprint Points ClickApp is not enabled.", "ECODE": "ITEM_227"}),
+            (200, {"id": "parent-2"}),
+        ])
+        service._session = session
+        task = await service.create_task("123", "TÃ­tulo", "DescriÃ§Ã£o", time_estimate=3600000, points=3)
+        self.assertEqual(task["id"], "parent-2")
+        self.assertEqual(session.requests[0][2]["json"]["points"], 3)
+        self.assertNotIn("points", session.requests[1][2]["json"])
+        self.assertEqual(session.requests[1][2]["json"]["time_estimate"], 3600000)
+        await service.close()
+
     async def test_subtask_failure_does_not_prevent_next_subtask(self):
         service = ClickUpService("secret-token")
         session = FakeSession([(400, {"err": "invalid field"}), (200, {"id": "sub-2"})])

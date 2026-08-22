@@ -80,6 +80,17 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             list_id = resolve_destination(settings, destination, catalog)
             task_priority = getattr(analysis, "priority", None) or semantic_priority
             fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
+            if analysis is not None and fields_metadata and message.content.strip():
+                try:
+                    enriched_analysis = await task_ai_service.analyze_task(message.content, catalog, fields_metadata)
+                    if enriched_analysis.destination == destination:
+                        analysis = enriched_analysis
+                        title = analysis.title
+                        subtasks = analysis.subtasks
+                        task_priority = analysis.priority or semantic_priority
+                        logger.info("Task AI enriched with ClickUp Custom Fields message_id=%s fields=%s", message.id, len(analysis.custom_field_values))
+                except Exception as error:
+                    logger.warning("Task AI Custom Fields enrichment failed message_id=%s error=%s; using first analysis", message.id, _safe_error_name(error))
             custom_fields = _custom_fields(
                 analysis, settings, fields_metadata,
                 reference_at=message.created_at,
@@ -352,10 +363,17 @@ def _custom_fields(
     field_ids = settings.clickup_custom_field_ids or {}
     available = {str(field.get("id")): field for field in metadata or [] if field.get("id")}
     result: list[dict[str, object]] = []
+    direct_values = getattr(analysis, "custom_field_values", {}) or {}
+    for field_id, value in direct_values.items():
+        if str(field_id) in available and value not in (None, ""):
+            result.append({"id": str(field_id), "value": value})
+            logger.info("Custom Field prepared directly from API schema field_id=%s value=%s", field_id, value)
     for key, value in values.items():
         field_id = field_ids.get(key) or _find_named_field_id(key, available.values())
         field = available.get(field_id or "")
         if not field_id or not value or not field:
+            continue
+        if str(field_id) in {str(item["id"]) for item in result}:
             continue
         field_type = field.get("type")
         if not _field_type_allowed(key, field_type):
@@ -366,7 +384,11 @@ def _custom_fields(
             options = type_config.get("options", [])
             option = _find_dropdown_option(key, value, options)
             if not option:
-                logger.error("Custom Field dropdown option missing field_id=%s value=%s", field_id, value)
+                logger.error(
+                    "Custom Field dropdown option missing field_id=%s key=%s value=%s available=%s",
+                    field_id, key, value,
+                    [item.get("name") for item in options if isinstance(item, dict)],
+                )
                 continue
             value = str(option.get("id"))
         result.append({"id": field_id, "value": value})
@@ -445,13 +467,26 @@ def _normalize_field_name(value: object) -> str:
 def _find_dropdown_option(key: str, value: object, options: object) -> dict[str, object] | None:
     if not isinstance(options, list):
         return None
-    candidates = {_normalize_field_name(value)}
+    normalized = _normalize_field_name(value)
+    candidates = {normalized}
     if key == "risk":
         candidates.add({
             "critical": "critical", "critico": "critical", "crítico": "critical",
             "high": "high", "alto": "high", "medium": "medium", "medio": "medium", "médio": "medium",
             "low": "low", "baixo": "low",
         }.get(_normalize_field_name(value), _normalize_field_name(value)))
+    if key == "risk":
+        equivalences = (
+            {"critical", "critico", "critica", "critical"},
+            {"high", "alto", "alta"},
+            {"medium", "medio", "media"},
+            {"low", "baixo", "baixa"},
+        )
+        for group in equivalences:
+            normalized_group = {_normalize_field_name(item) for item in group}
+            if normalized in normalized_group:
+                candidates.update(normalized_group)
+                break
     for option in options:
         if isinstance(option, dict) and _normalize_field_name(option.get("name")) in candidates:
             return option

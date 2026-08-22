@@ -66,6 +66,7 @@ class TaskAnalysis:
     operating_system: str = ""
     reproduction_steps: list[str] = field(default_factory=list)
     resolution_deadline_days: int | None = None
+    custom_field_values: dict[str, Any] = field(default_factory=dict)
 
 
 class TaskAIService:
@@ -77,7 +78,7 @@ class TaskAIService:
         if self._client is None and settings.openai_api_key and AsyncOpenAI is not None:
             self._client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
 
-    async def analyze_task(self, content: str, catalog: list[dict[str, str]] | None = None) -> TaskAnalysis:
+    async def analyze_task(self, content: str, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None) -> TaskAnalysis:
         cleaned_content = content.strip()
         if not cleaned_content:
             raise TaskAIError("mensagem sem conteúdo textual")
@@ -88,7 +89,7 @@ class TaskAIService:
                 self._client.chat.completions.create(
                     model=self._model,
                     messages=[
-                        {"role": "system", "content": self._build_prompt(catalog)},
+                        {"role": "system", "content": self._build_prompt(catalog, custom_fields)},
                         {"role": "user", "content": cleaned_content},
                     ],
                     temperature=0.2,
@@ -99,12 +100,22 @@ class TaskAIService:
         except TimeoutError as error:
             raise TaskAIError(f"análise da IA excedeu {self._timeout_seconds:g}s") from error
         allowed = {item["id"] for item in catalog or [] if item.get("id")} or self._destinations
-        return _parse_analysis(_response_content(response), allowed, source_content=cleaned_content)
+        return _parse_analysis(_response_content(response), allowed, source_content=cleaned_content, custom_field_schema=custom_fields)
 
-    def _build_prompt(self, catalog: list[dict[str, str]] | None = None) -> str:
+    def _build_prompt(self, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None) -> str:
+        field_lines = []
+        for field in custom_fields or []:
+            if not field.get("id"):
+                continue
+            options = (field.get("type_config") or {}).get("options", []) if isinstance(field.get("type_config"), dict) else []
+            option_text = ", ".join(f"{item.get('id')}={item.get('name', item.get('label', ''))}" for item in options if isinstance(item, dict))
+            field_lines.append(f"- id={field['id']} | name={field.get('name', '')} | type={field.get('type', '')} | options={option_text}")
+        field_instruction = "\nCustom Fields reais da lista (use os IDs e opções abaixo; não crie opções):\n" + "\n".join(field_lines) + "\nRetorne também custom_field_values como objeto {field_id: valor}; para dropdown use exatamente o option id da lista. Só preencha quando houver evidência." if field_lines else ""
         if catalog:
             lines = [f"- id={item['id']} | {item['path']}" for item in catalog[:150] if item.get("id") and item.get("path")]
             lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")
+            if field_instruction:
+                lines.insert(0, field_instruction)
             return _TASK_ANALYSIS_PROMPT + "\nListas reais disponíveis no ClickUp (escolha somente um id):\n" + "\n".join(lines)
         destinations = {
             "ayla_bugs": "bugs no bot Ayla e seus comandos/serviços",
@@ -117,6 +128,8 @@ class TaskAIService:
         }
         lines = [f"- {key}: {destinations.get(key, 'destino configurado pelo sistema')}" for key in sorted(self._destinations)]
         lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")
+        if field_instruction:
+            lines.insert(0, field_instruction)
         return _TASK_ANALYSIS_PROMPT + "\nDestinos disponíveis neste ambiente (use somente estes):\n" + "\n".join(lines)
 
     async def close(self) -> None:
@@ -144,7 +157,7 @@ def _response_content(response: Any) -> str:
     return content.strip()
 
 
-def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, source_content: str | None = None) -> TaskAnalysis:
+def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, source_content: str | None = None, custom_field_schema: list[dict[str, Any]] | None = None) -> TaskAnalysis:
     logger.debug("Task AI raw JSON=%s", content[:8000])
     candidate = content.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
@@ -186,6 +199,7 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
     estimate_confidence_value = payload.get("estimate_confidence")
     estimate_confidence = _enum(estimate_confidence_value, {"high", "medium", "low"}, "low", "estimate_confidence") if estimate_confidence_value is not None else "low"
     tags = _parse_tags(payload.get("tags"))
+    custom_field_values = _validate_custom_field_values(payload.get("custom_field_values"), custom_field_schema or [])
     browser_version = _text(payload.get("browser_version"), 100) or _extract_browser(source_content or "")
     operating_system = _text(payload.get("operating_system"), 100) or _extract_operating_system(source_content or "")
     if points is None:
@@ -205,6 +219,7 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
         operating_system=operating_system,
         reproduction_steps=_string_list(payload.get("reproduction_steps")),
         resolution_deadline_days=resolution_deadline_days,
+        custom_field_values=custom_field_values,
         priority=priority, risk=risk, **{key: values[key] for key in ("category", "area", "environment", "confidence")},
     )
     logger.info("Task AI normalized analysis=%s", analysis)
@@ -276,6 +291,26 @@ def _parse_tags(value: Any) -> list[str]:
         if tag and tag not in result:
             result.append(tag)
     return result[:5]
+
+
+def _validate_custom_field_values(value: Any, schema: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    fields = {str(item.get("id")): item for item in schema if item.get("id")}
+    result = {}
+    for field_id, raw_value in value.items():
+        field = fields.get(str(field_id))
+        if not field or raw_value in (None, ""):
+            continue
+        field_type = field.get("type")
+        if field_type == "drop_down":
+            options = (field.get("type_config") or {}).get("options", []) if isinstance(field.get("type_config"), dict) else []
+            if not any(isinstance(item, dict) and str(item.get("id")) == str(raw_value) for item in options):
+                continue
+        elif field_type in {"text", "short_text", "url"} and not isinstance(raw_value, str):
+            continue
+        result[str(field_id)] = raw_value
+    return result
 
 
 def _extract_browser(text: str) -> str:

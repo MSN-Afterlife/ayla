@@ -126,6 +126,14 @@ class TaskTriageTests(unittest.TestCase):
         ])
         self.assertEqual(fields, [{"id": "field-risk", "value": "opt-critical"}, {"id": "field-solution", "value": "Criar serviço centralizado."}])
 
+    def test_risk_dropdown_accepts_gender_and_language_variants(self):
+        settings = Settings("token", clickup_custom_field_ids={"risk": "field-risk"})
+        analysis = _parse_analysis('{"title":"x","description":"y","risk":"high"}')
+        fields = _custom_fields(analysis, settings, [
+            {"id": "field-risk", "type": "drop_down", "type_config": {"options": [{"id": "opt-high", "name": "Alta"}]}}
+        ])
+        self.assertEqual(fields, [{"id": "field-risk", "value": "opt-high"}])
+
     def test_custom_fields_absent_are_empty(self):
         settings = Settings("token")
         analysis = _parse_analysis('{"title":"x","description":"y"}')

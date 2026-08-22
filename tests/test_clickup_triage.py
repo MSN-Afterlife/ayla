@@ -80,6 +80,10 @@ class TaskTriageTests(unittest.TestCase):
         payload = {"title": "Corrigir site", "description": "Erro no site", "destination": "list-42"}
         self.assertEqual(_parse_analysis(json.dumps(payload), {"list-42"}).destination, "list-42")
 
+    def test_ai_numeric_discovered_list_id_is_normalized(self):
+        payload = {"title": "Corrigir site", "description": "Erro no site", "destination": 901316877187}
+        self.assertEqual(_parse_analysis(json.dumps(payload), {"901316877187"}).destination, "901316877187")
+
     def test_destination_configuration_is_validated(self):
         settings = Settings("x", clickup_api_token="token", clickup_destinations={"manual_triage": "123"})
         with self.assertRaises(RuntimeError):

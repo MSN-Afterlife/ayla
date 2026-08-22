@@ -152,8 +152,19 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None) 
     defaults = {"category": "other", "area": "other", "environment": "unknown", "priority": "normal", "risk": "low", "confidence": "low"}
     values = {key: _enum(payload.get(key), ALLOWED_VALUES[key], default, key) for key, default in defaults.items()}
     destinations = allowed_destinations or DEFAULT_DESTINATIONS
-    destination = payload.get("destination")
-    if not isinstance(destination, str) or destination not in destinations:
+    raw_destination = payload.get("destination")
+    # IDs do not need to be quoted in JSON, so some models return a ClickUp
+    # list ID as an integer even though the catalog/API represents it as text.
+    # Normalize both forms before checking the discovered catalog.
+    if isinstance(raw_destination, bool):
+        destination = ""
+    elif isinstance(raw_destination, int):
+        destination = str(raw_destination)
+    elif isinstance(raw_destination, str):
+        destination = raw_destination.strip()
+    else:
+        destination = ""
+    if destination not in destinations:
         logger.warning("Task AI destination invalid value=%r allowed=%s; using manual_triage", destination, sorted(destinations))
         destination = "manual_triage"
     priority, risk = _deterministic_overrides(content, values["priority"], values["risk"], values["environment"])

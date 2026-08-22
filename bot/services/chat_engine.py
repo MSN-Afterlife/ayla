@@ -3,7 +3,6 @@ import re
 from bot.characters.loader import Character
 from bot.config import Settings
 from bot.memory.conversation_store import MessageEntry
-from bot.services.affection_service import AffectionProfile
 from bot.services.prompt_builder import build_prompt
 
 try:
@@ -37,13 +36,12 @@ class ChatEngine:
         history: list[MessageEntry],
         user_name: str,
         message: str,
-        affection: AffectionProfile | None = None,
     ) -> str:
         cleaned_message = message.strip()
         if not cleaned_message:
             cleaned_message = "oi"
 
-        prompt = build_prompt(self._character, history, user_name, cleaned_message, affection)
+        prompt = build_prompt(self._character, history, user_name, cleaned_message)
         try:
             response = await self._client.chat.completions.create(
                 model=self._settings.openai_model,

@@ -5,9 +5,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.config import Settings
+from bot.config import Settings, validate_clickup_settings
 from bot.services.clickup_service import ClickUpError, ClickUpService
-from bot.services.task_ai_service import TaskAIService, TaskAnalysis
+from bot.services.task_ai_service import TaskAIService, TaskAnalysis, priority_from_content
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ SAO_PAULO_TIMEZONE = timezone(timedelta(hours=-3))
 
 
 def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpService:
+    validate_clickup_settings(settings)
     service = ClickUpService(settings.clickup_api_token)
     task_ai_service = TaskAIService(settings)
     bot._task_ai_service = task_ai_service
@@ -27,11 +28,11 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             )
             return
 
-        if not settings.clickup_api_token or not settings.clickup_list_id:
+        if not settings.clickup_api_token:
             logger.error(
-                "ClickUp is not configured: token=%s list_id=%s",
+                "ClickUp is not configured: token=%s destinations=%s",
                 bool(settings.clickup_api_token),
-                bool(settings.clickup_list_id),
+                bool(settings.clickup_destinations),
             )
             await interaction.response.send_message(
                 "A integração com o ClickUp não está configurada. Avise um administrador.", ephemeral=True
@@ -48,6 +49,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         description = _task_description(message, interaction.user)
         subtasks = []
         analysis = None
+        semantic_priority = priority_from_content(message.content) if message.content.strip() else None
         if message.content.strip():
             logger.info("Task AI analysis requested for Discord message %s", message.id)
             try:
@@ -58,16 +60,19 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                 logger.info("Task AI generated %s subtasks for %s", len(subtasks), message.id)
                 logger.info("Task AI analysis completed for %s", message.id)
             except Exception as error:
-                logger.warning("Task AI analysis failed for %s: %s", message.id, _safe_error_name(error))
-                logger.info("Using ClickUp task fallback for %s", message.id)
+                logger.warning("Task AI analysis failed message_id=%s error=%s detail=%s", message.id, _safe_error_name(error), str(error)[:300])
+                logger.info("Using ClickUp fallback message_id=%s priority=%s", message.id, semantic_priority)
 
         try:
-            list_id = (settings.clickup_destinations or {}).get(getattr(analysis, "destination", "manual_triage"), settings.clickup_list_id)
-            if not list_id:
-                raise ClickUpError("Nenhuma lista do ClickUp foi configurada para este destino.")
+            destination = getattr(analysis, "destination", "manual_triage")
+            list_id = resolve_destination(settings, destination)
+            task_priority = getattr(analysis, "priority", None) or semantic_priority
+            fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
+            custom_fields = _custom_fields(analysis, settings, fields_metadata)
+            logger.info("Task triage message_id=%s destination=%s list_id=%s priority=%s subtasks=%s custom_fields=%s", message.id, destination, list_id, task_priority, len(subtasks), [field["id"] for field in custom_fields])
             task = await service.create_task(
-                list_id, title, description, priority=getattr(analysis, "priority", "normal"),
-                custom_fields=_custom_fields(analysis, settings),
+                list_id, title, description, priority=task_priority, custom_fields=custom_fields,
+                context=f"parent message_id={message.id}",
             )
         except ClickUpError:
             await interaction.followup.send(
@@ -82,11 +87,12 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                 logger.info("Creating ClickUp subtask %s/%s for parent %s", index, len(subtasks), task_id)
                 try:
                     created = await service.create_subtask(
-                        settings.clickup_list_id,
+                        list_id,
                         task_id,
                         subtask.title,
                         subtask.description,
-                        priority=analysis.priority,
+                        priority=task_priority,
+                        context=f"subtask {index}/{len(subtasks)} message_id={message.id}",
                     )
                     created_subtasks += 1
                     logger.info(
@@ -95,7 +101,10 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                         task_id,
                     )
                 except ClickUpError as error:
-                    logger.error("ClickUp subtask creation failed for parent %s: %s", task_id, error)
+                    logger.error("ClickUp subtask creation failed parent_id=%s index=%s error=%s", task_id, index, error)
+
+        if task_id and custom_fields:
+            await _verify_custom_fields(service, task_id, custom_fields, message.id)
 
         task_url = task.get("url")
         logger.info("ClickUp task %s created from Discord message %s", task_id or "desconhecido", message.id)
@@ -125,6 +134,16 @@ def _is_allowed(interaction: discord.Interaction, allowed_role_ids: list[int]) -
     return user.guild_permissions.administrator or any(role.id in allowed_role_ids for role in user.roles)
 
 
+def resolve_destination(settings: Settings, destination: str) -> str:
+    destinations = settings.clickup_destinations or {}
+    if destination not in destinations:
+        raise ClickUpError(f"Destino {destination!r} não possui list_id configurado.")
+    list_id = destinations[destination]
+    if not list_id.strip():
+        raise ClickUpError(f"Destino {destination!r} possui list_id vazio.")
+    return list_id
+
+
 def _task_title(message: discord.Message) -> str:
     content = " ".join(message.content.split())
     if content:
@@ -150,9 +169,9 @@ def _task_description(
     if analysis:
         lines.extend([
             "## Triagem automática",
-            f"- **Categoria:** {analysis.category}", f"- **Área:** {analysis.area}",
-            f"- **Ambiente:** {analysis.environment}", f"- **Prioridade:** {analysis.priority}",
-            f"- **Risco:** {analysis.risk}", f"- **Confiança:** {analysis.confidence}",
+            f"- **Categoria:** {_visible_value('category', analysis.category)}", f"- **Área:** {_visible_value('area', analysis.area)}",
+            f"- **Ambiente:** {_visible_value('environment', analysis.environment)}", f"- **Prioridade:** {_visible_value('priority', analysis.priority)}",
+            f"- **Risco:** {_visible_value('risk', analysis.risk)}", f"- **Confiança:** {_visible_value('confidence', analysis.confidence)}",
             f"- **Destino:** {analysis.destination}", "",
         ])
         if analysis.possible_cause:
@@ -191,27 +210,81 @@ def _task_description(
     return "\n".join(lines)[:MAX_DESCRIPTION_LENGTH]
 
 
-def _custom_fields(analysis: TaskAnalysis | None, settings: Settings) -> list[dict[str, str]]:
-    """Monta somente os campos configurados; o restante permanece no Markdown."""
-    if analysis is None:
+async def _load_custom_field_metadata(service: ClickUpService, list_id: str, settings: Settings, destination: str) -> list[dict[str, object]]:
+    if not settings.clickup_custom_field_ids:
+        logger.warning("Custom Fields absent destination=%s list_id=%s data_source=markdown_only", destination, list_id)
+        return []
+    try:
+        fields = await service.get_list_custom_fields(list_id)
+    except ClickUpError as error:
+        logger.error("Custom Fields lookup failed destination=%s list_id=%s error=%s; continuing markdown_only", destination, list_id, error)
+        return []
+    available = {str(field.get("id")): field for field in fields if field.get("id")}
+    missing = {key: field_id for key, field_id in settings.clickup_custom_field_ids.items() if field_id not in available}
+    if missing:
+        logger.error("Custom Fields configuration invalid destination=%s missing=%s; invalid fields will be skipped", destination, missing)
+    return [available[field_id] for field_id in settings.clickup_custom_field_ids.values() if field_id in available]
+
+
+async def _verify_custom_fields(service: ClickUpService, task_id: str, sent_fields: list[dict[str, object]], message_id: int) -> None:
+    try:
+        task = await service.get_task(task_id)
+    except ClickUpError as error:
+        logger.error("Custom Fields verification failed message_id=%s task_id=%s error=%s", message_id, task_id, error)
+        return
+    actual = {str(field.get("id")): field.get("value") for field in task.get("custom_fields", []) if isinstance(field, dict)}
+    for field in sent_fields:
+        field_id = str(field["id"])
+        if field_id not in actual or actual[field_id] in (None, ""):
+            logger.error("Custom Field not confirmed message_id=%s task_id=%s field_id=%s", message_id, task_id, field_id)
+        else:
+            logger.info("Custom Field confirmed message_id=%s task_id=%s field_id=%s value=%s", message_id, task_id, field_id, actual[field_id])
+
+
+def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
+    """Monta Custom Fields reais; campos sem configuração ficam somente no Markdown."""
+    if analysis is None or not settings.clickup_custom_field_ids:
         return []
     values = {
-        "risk": analysis.risk, "category": analysis.category, "area": analysis.area,
-        "environment": analysis.environment, "confidence": analysis.confidence,
-        "possible_cause": analysis.possible_cause, "possible_solution": analysis.possible_solution,
+        "risk": _visible_value("risk", analysis.risk), "category": _visible_value("category", analysis.category),
+        "area": _visible_value("area", analysis.area), "environment": _visible_value("environment", analysis.environment),
+        "confidence": _visible_value("confidence", analysis.confidence), "possible_cause": analysis.possible_cause,
+        "possible_solution": analysis.possible_solution,
         "acceptance_criteria": "\n".join(f"- {item}" for item in analysis.acceptance_criteria),
         "missing_information": "\n".join(f"- {item}" for item in analysis.missing_information),
     }
-    field_ids = settings.clickup_custom_field_ids or {}
-    options = settings.clickup_custom_field_options or {}
-    result = []
+    field_ids = settings.clickup_custom_field_ids
+    available = {str(field.get("id")): field for field in metadata or [] if field.get("id")}
+    result: list[dict[str, object]] = []
     for key, value in values.items():
         field_id = field_ids.get(key)
-        if not field_id or not value:
+        field = available.get(field_id or "")
+        if not field_id or not value or not field:
             continue
-        value = options.get(key, {}).get(value, value)
+        field_type = field.get("type")
+        if field_type == "drop_down":
+            type_config = field.get("type_config") if isinstance(field.get("type_config"), dict) else {}
+            options = type_config.get("options", [])
+            option = next((item for item in options if isinstance(item, dict) and str(item.get("name", "")).casefold() == str(value).casefold()), None)
+            if not option:
+                logger.error("Custom Field dropdown option missing field_id=%s value=%s", field_id, value)
+                continue
+            value = str(option.get("id"))
         result.append({"id": field_id, "value": value})
+        logger.info("Custom Field prepared field_id=%s type=%s value=%s", field_id, field_type, value)
     return result
+
+
+def _visible_value(field: str, value: str) -> str:
+    labels = {
+        "risk": {"critical": "Crítico", "high": "Alto", "medium": "Médio", "low": "Baixo"},
+        "category": {"bug": "Bug", "improvement": "Melhoria", "security": "Segurança", "content": "Conteúdo", "infrastructure": "Infraestrutura", "other": "Outro"},
+        "area": {"ayla": "Ayla", "site": "Site", "api": "API", "database": "Banco de dados", "discord": "Discord", "infrastructure": "Infraestrutura", "other": "Outro"},
+        "environment": {"production": "Produção", "staging": "Staging", "both": "Ambos", "local": "Local", "unknown": "Desconhecido"},
+        "confidence": {"high": "Alta", "medium": "Média", "low": "Baixa"},
+        "priority": {"urgent": "Urgente", "high": "Alta", "normal": "Normal", "low": "Baixa"},
+    }
+    return labels.get(field, {}).get(value, value)
 
 
 def _safe_error_name(error: Exception) -> str:

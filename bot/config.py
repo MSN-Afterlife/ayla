@@ -4,6 +4,10 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+CLICKUP_DESTINATION_KEYS = {
+    "ayla_bugs", "site_bugs", "incidents", "security", "suggestions", "community", "manual_triage",
+}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -41,7 +45,6 @@ class Settings:
     clickup_allowed_role_ids: list[int] | None = None
     clickup_destinations: dict[str, str] | None = None
     clickup_custom_field_ids: dict[str, str] | None = None
-    clickup_custom_field_options: dict[str, dict[str, str]] | None = None
 
 
 def load_settings() -> Settings:
@@ -84,10 +87,27 @@ def load_settings() -> Settings:
         clickup_api_token=os.getenv("CLICKUP_API_TOKEN"),
         clickup_list_id=os.getenv("CLICKUP_LIST_ID"),
         clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
-        clickup_destinations=_load_json_map("CLICKUP_DESTINATIONS"),
+        clickup_destinations=_load_destination_map("CLICKUP_DESTINATIONS"),
         clickup_custom_field_ids=_load_json_map("CLICKUP_CUSTOM_FIELD_IDS"),
-        clickup_custom_field_options=_load_nested_json_map("CLICKUP_CUSTOM_FIELD_OPTIONS"),
     )
+
+
+def validate_clickup_settings(settings: Settings) -> None:
+    if not settings.clickup_api_token:
+        return
+    destinations = settings.clickup_destinations or {}
+    if not destinations:
+        raise RuntimeError(
+            "CLICKUP_DESTINATIONS não está configurado. Preencha as sete chaves "
+            "ayla_bugs, site_bugs, incidents, security, suggestions, community e manual_triage."
+        )
+    missing = CLICKUP_DESTINATION_KEYS - set(destinations)
+    unknown = set(destinations) - CLICKUP_DESTINATION_KEYS
+    empty = [key for key in CLICKUP_DESTINATION_KEYS if not str(destinations.get(key, "")).strip()]
+    if missing or unknown or empty:
+        raise RuntimeError(
+            f"CLICKUP_DESTINATIONS inválido: missing={sorted(missing)} unknown={sorted(unknown)} empty={sorted(empty)}."
+        )
 
 
 def _load_list(name: str, default: list[str]) -> list[str]:
@@ -121,7 +141,6 @@ def _load_int_list(name: str) -> list[int]:
             raise RuntimeError(f"{name} deve conter apenas IDs numericos separados por virgula.") from None
     return result
 
-
 def _load_json_map(name: str) -> dict[str, str]:
     value = os.getenv(name)
     if not value:
@@ -132,18 +151,25 @@ def _load_json_map(name: str) -> dict[str, str]:
         raise RuntimeError(f"{name} deve conter um objeto JSON.") from error
     if not isinstance(payload, dict):
         raise RuntimeError(f"{name} deve conter um objeto JSON.")
-    return {str(key): str(item) for key, item in payload.items() if str(key).strip() and str(item).strip()}
+    result: dict[str, str] = {}
+    for key, item in payload.items():
+        if not str(key).strip() or not str(item).strip():
+            raise RuntimeError(f"{name} contém uma chave ou list_id vazio: {key!r}.")
+        result[str(key)] = str(item)
+    return result
 
 
-def _load_nested_json_map(name: str) -> dict[str, dict[str, str]]:
-    value = os.getenv(name)
-    if not value:
+def _load_destination_map(name: str) -> dict[str, str]:
+    result = _load_json_map(name)
+    if not result:
         return {}
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"{name} deve conter um objeto JSON.") from error
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"{name} deve conter um objeto JSON.")
-    return {str(key): {str(option): str(option_id) for option, option_id in options.items()}
-            for key, options in payload.items() if isinstance(options, dict)}
+    unknown = set(result) - CLICKUP_DESTINATION_KEYS
+    missing = CLICKUP_DESTINATION_KEYS - set(result)
+    if unknown:
+        raise RuntimeError(f"{name} contém destinos desconhecidos: {sorted(unknown)}.")
+    if missing:
+        raise RuntimeError(f"{name} não contém list_id para: {sorted(missing)}.")
+    invalid_ids = [key for key, value in result.items() if not value.isdigit()]
+    if invalid_ids:
+        raise RuntimeError(f"{name} contém list_id inválido para: {invalid_ids}.")
+    return result

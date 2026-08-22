@@ -45,6 +45,8 @@ class Settings:
     clickup_allowed_role_ids: list[int] | None = None
     clickup_destinations: dict[str, str] | None = None
     clickup_custom_field_ids: dict[str, str] | None = None
+    clickup_workspace_id: str | None = None
+    clickup_catalog_cache_seconds: int = 600
 
 
 def load_settings() -> Settings:
@@ -89,6 +91,8 @@ def load_settings() -> Settings:
         clickup_allowed_role_ids=_load_int_list("CLICKUP_ALLOWED_ROLE_IDS"),
         clickup_destinations=_load_destination_map("CLICKUP_DESTINATIONS"),
         clickup_custom_field_ids=_load_json_map("CLICKUP_CUSTOM_FIELD_IDS"),
+        clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
+        clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
     )
 
 
@@ -97,14 +101,16 @@ def validate_clickup_settings(settings: Settings) -> None:
         return
     destinations = settings.clickup_destinations or {}
     if not destinations:
+        if settings.clickup_list_id:
+            return
         raise RuntimeError(
             "CLICKUP_DESTINATIONS não está configurado. Preencha as sete chaves "
             "ayla_bugs, site_bugs, incidents, security, suggestions, community e manual_triage."
         )
-    missing = CLICKUP_DESTINATION_KEYS - set(destinations)
+    missing = set()
     unknown = set(destinations) - CLICKUP_DESTINATION_KEYS
     empty = [key for key in CLICKUP_DESTINATION_KEYS if not str(destinations.get(key, "")).strip()]
-    if missing or unknown or empty:
+    if unknown or empty:
         raise RuntimeError(
             f"CLICKUP_DESTINATIONS inválido: missing={sorted(missing)} unknown={sorted(unknown)} empty={sorted(empty)}."
         )

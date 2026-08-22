@@ -16,7 +16,10 @@ SAO_PAULO_TIMEZONE = timezone(timedelta(hours=-3))
 
 
 def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpService:
-    validate_clickup_settings(settings)
+    try:
+        validate_clickup_settings(settings)
+    except RuntimeError as error:
+        logger.error("ClickUp configuration invalid: %s", error)
     service = ClickUpService(settings.clickup_api_token)
     task_ai_service = TaskAIService(settings)
     bot._task_ai_service = task_ai_service
@@ -50,10 +53,18 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         subtasks = []
         analysis = None
         semantic_priority = priority_from_content(message.content) if message.content.strip() else None
+        catalog = []
+        try:
+            catalog = await service.get_list_catalog(
+                settings.clickup_workspace_id,
+                cache_seconds=settings.clickup_catalog_cache_seconds,
+            )
+        except ClickUpError as error:
+            logger.error("ClickUp catalog unavailable message_id=%s error=%s; using configured/legacy routing", message.id, error)
         if message.content.strip():
             logger.info("Task AI analysis requested for Discord message %s", message.id)
             try:
-                analysis = await task_ai_service.analyze_task(message.content)
+                analysis = await task_ai_service.analyze_task(message.content, catalog)
                 title = analysis.title
                 description = _task_description(message, interaction.user, analysis.description, analysis)
                 subtasks = analysis.subtasks
@@ -65,11 +76,11 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
 
         try:
             destination = getattr(analysis, "destination", "manual_triage")
-            list_id = resolve_destination(settings, destination)
+            list_id = resolve_destination(settings, destination, catalog)
             task_priority = getattr(analysis, "priority", None) or semantic_priority
             fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
             custom_fields = _custom_fields(analysis, settings, fields_metadata)
-            logger.info("Task triage message_id=%s destination=%s list_id=%s priority=%s subtasks=%s custom_fields=%s", message.id, destination, list_id, task_priority, len(subtasks), [field["id"] for field in custom_fields])
+            logger.info("Task triage message_id=%s destination=%s list_id=%s priority=%s subtasks=%s custom_fields=%s", message.id, _destination_label(destination, catalog), list_id, task_priority, len(subtasks), [field["id"] for field in custom_fields])
             task = await service.create_task(
                 list_id, title, description, priority=task_priority, custom_fields=custom_fields,
                 context=f"parent message_id={message.id}",
@@ -134,14 +145,30 @@ def _is_allowed(interaction: discord.Interaction, allowed_role_ids: list[int]) -
     return user.guild_permissions.administrator or any(role.id in allowed_role_ids for role in user.roles)
 
 
-def resolve_destination(settings: Settings, destination: str) -> str:
+def resolve_destination(settings: Settings, destination: str, catalog: list[dict[str, str]] | None = None) -> str:
+    catalog = catalog or []
+    catalog_ids = {item.get("id") for item in catalog}
+    if destination in catalog_ids:
+        return destination
     destinations = settings.clickup_destinations or {}
     if destination not in destinations:
+        if destination == "manual_triage" and settings.clickup_list_id:
+            logger.warning(
+                "Using legacy CLICKUP_LIST_ID for manual_triage; configure CLICKUP_DESTINATIONS for automatic routing."
+            )
+            return settings.clickup_list_id
         raise ClickUpError(f"Destino {destination!r} não possui list_id configurado.")
     list_id = destinations[destination]
     if not list_id.strip():
         raise ClickUpError(f"Destino {destination!r} possui list_id vazio.")
     return list_id
+
+
+def _destination_label(destination: str, catalog: list[dict[str, str]]) -> str:
+    for item in catalog:
+        if item.get("id") == destination:
+            return f"{item.get('path', item.get('name', destination))} ({destination})"
+    return destination
 
 
 def _task_title(message: discord.Message) -> str:

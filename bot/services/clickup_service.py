@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -21,6 +22,8 @@ class ClickUpService:
         self._api_token = api_token
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._session: aiohttp.ClientSession | None = None
+        self._catalog_cache: list[dict[str, str]] | None = None
+        self._catalog_cached_at = 0.0
 
     async def create_task(
         self,
@@ -70,6 +73,41 @@ class ClickUpService:
         payload, status = await self._request("GET", self._get_task_endpoint.format(task_id=task_id), context="verify_task")
         logger.info("ClickUp verification task_id=%s status=%s body=%s", task_id, status, payload)
         return payload
+
+    async def get_list_catalog(self, workspace_id: str | None = None, *, cache_seconds: int = 600) -> list[dict[str, str]]:
+        if self._catalog_cache is not None and time.monotonic() - self._catalog_cached_at < cache_seconds:
+            return list(self._catalog_cache)
+        teams_payload, _ = await self._request("GET", "https://api.clickup.com/api/v2/team", context="catalog_workspaces")
+        teams = teams_payload.get("teams") if isinstance(teams_payload, dict) else None
+        if not isinstance(teams, list) or not teams:
+            raise ClickUpError("ClickUp não retornou nenhum Workspace autorizado.")
+        workspace = next((item for item in teams if str(item.get("id")) == str(workspace_id)), None) if workspace_id else teams[0]
+        if not isinstance(workspace, dict) or not workspace.get("id"):
+            raise ClickUpError(f"Workspace do ClickUp não encontrado: {workspace_id}.")
+        workspace_name = str(workspace.get("name", workspace.get("id")))
+        spaces_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/team/{workspace['id']}/space", context="catalog_spaces")
+        spaces = spaces_payload.get("spaces") if isinstance(spaces_payload, dict) else []
+        catalog: list[dict[str, str]] = []
+        for space in spaces if isinstance(spaces, list) else []:
+            if not isinstance(space, dict) or not space.get("id"):
+                continue
+            space_name = str(space.get("name", space["id"]))
+            folders_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/space/{space['id']}/folder", context="catalog_folders")
+            folders = folders_payload.get("folders") if isinstance(folders_payload, dict) else []
+            for folder in folders if isinstance(folders, list) else []:
+                if not isinstance(folder, dict) or not folder.get("id"):
+                    continue
+                folder_name = str(folder.get("name", folder["id"]))
+                lists_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/folder/{folder['id']}/list", context="catalog_lists")
+                catalog.extend(_catalog_lists(lists_payload, workspace_name, space_name, folder_name))
+            folderless_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/space/{space['id']}/list", context="catalog_folderless_lists")
+            catalog.extend(_catalog_lists(folderless_payload, workspace_name, space_name, None))
+        if not catalog:
+            raise ClickUpError(f"Nenhuma lista acessível encontrada no Workspace {workspace_name!r}.")
+        self._catalog_cache = catalog
+        self._catalog_cached_at = time.monotonic()
+        logger.info("ClickUp catalog refreshed workspace=%s workspace_id=%s lists=%s", workspace_name, workspace["id"], len(catalog))
+        return list(catalog)
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
@@ -126,3 +164,14 @@ def priority_to_clickup(priority: Any, *, context: str = "task") -> int | None:
 
 def _safe_response_body(body: str, limit: int = 1000) -> str:
     return body.replace("\n", " ")[:limit] or "<vazio>"
+
+
+def _catalog_lists(payload: Any, workspace: str, space: str, folder: str | None) -> list[dict[str, str]]:
+    lists = payload.get("lists") if isinstance(payload, dict) else []
+    result = []
+    for item in lists if isinstance(lists, list) else []:
+        if not isinstance(item, dict) or not item.get("id") or not item.get("name"):
+            continue
+        path = " > ".join(part for part in (workspace, space, folder, str(item["name"])) if part)
+        result.append({"id": str(item["id"]), "name": str(item["name"]), "path": path})
+    return result

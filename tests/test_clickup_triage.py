@@ -76,6 +76,10 @@ class TaskTriageTests(unittest.TestCase):
         payload["destination"] = "lista_inventada"
         self.assertEqual(_parse_analysis(json.dumps(payload), {"site_bugs", "manual_triage"}).destination, "manual_triage")
 
+    def test_ai_can_select_a_discovered_list_id(self):
+        payload = {"title": "Corrigir site", "description": "Erro no site", "destination": "list-42"}
+        self.assertEqual(_parse_analysis(json.dumps(payload), {"list-42"}).destination, "list-42")
+
     def test_destination_configuration_is_validated(self):
         settings = Settings("x", clickup_api_token="token", clickup_destinations={"manual_triage": "123"})
         with self.assertRaises(RuntimeError):
@@ -86,6 +90,8 @@ class TaskTriageTests(unittest.TestCase):
         self.assertEqual(resolve_destination(settings, "site_bugs"), "456")
         with self.assertRaises(Exception):
             resolve_destination(settings, "unknown")
+        legacy = Settings("x", clickup_list_id="789")
+        self.assertEqual(resolve_destination(legacy, "manual_triage"), "789")
 
     def test_destination_json_rejects_empty_and_unknown_values(self):
         with patch.dict("os.environ", {"CLICKUP_DESTINATIONS": '{"manual_triage":""}'}, clear=False):
@@ -108,6 +114,21 @@ class TaskTriageTests(unittest.TestCase):
 
 
 class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clickup_catalog_discovers_workspace_space_folder_and_lists(self):
+        service = ClickUpService("secret-token")
+        session = FakeSession([
+            (200, {"teams": [{"id": "workspace-1", "name": "Meu Workspace"}]}),
+            (200, {"spaces": [{"id": "space-1", "name": "Produto"}]}),
+            (200, {"folders": [{"id": "folder-1", "name": "Bugs"}]}),
+            (200, {"lists": [{"id": "list-1", "name": "Site"}]}),
+            (200, {"lists": [{"id": "list-2", "name": "Geral"}]}),
+        ])
+        service._session = session
+        catalog = await service.get_list_catalog("workspace-1")
+        self.assertEqual([item["id"] for item in catalog], ["list-1", "list-2"])
+        self.assertEqual(catalog[0]["path"], "Meu Workspace > Produto > Bugs > Site")
+        await service.close()
+
     async def test_parent_and_subtask_payloads(self):
         service = ClickUpService("secret-token")
         session = FakeSession([(200, {"id": "parent-1", "url": "https://clickup.test/parent-1"}), (200, {"id": "sub-1"})])

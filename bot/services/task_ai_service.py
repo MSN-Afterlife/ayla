@@ -63,12 +63,12 @@ class TaskAIService:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self._model = settings.openai_model
         self._timeout_seconds = getattr(settings, "task_ai_timeout_seconds", DEFAULT_TASK_AI_TIMEOUT_SECONDS)
-        self._destinations = set((settings.clickup_destinations or {}).keys()) or DEFAULT_DESTINATIONS
+        self._destinations = set((settings.clickup_destinations or {}).keys()) or {"manual_triage"}
         self._client = client
         if self._client is None and settings.openai_api_key and AsyncOpenAI is not None:
             self._client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
 
-    async def analyze_task(self, content: str) -> TaskAnalysis:
+    async def analyze_task(self, content: str, catalog: list[dict[str, str]] | None = None) -> TaskAnalysis:
         cleaned_content = content.strip()
         if not cleaned_content:
             raise TaskAIError("mensagem sem conteúdo textual")
@@ -79,7 +79,7 @@ class TaskAIService:
                 self._client.chat.completions.create(
                     model=self._model,
                     messages=[
-                        {"role": "system", "content": self._build_prompt()},
+                        {"role": "system", "content": self._build_prompt(catalog)},
                         {"role": "user", "content": cleaned_content},
                     ],
                     temperature=0.2,
@@ -89,9 +89,13 @@ class TaskAIService:
             )
         except TimeoutError as error:
             raise TaskAIError(f"análise da IA excedeu {self._timeout_seconds:g}s") from error
-        return _parse_analysis(_response_content(response), self._destinations)
+        allowed = {item["id"] for item in catalog or [] if item.get("id")} or self._destinations
+        return _parse_analysis(_response_content(response), allowed)
 
-    def _build_prompt(self) -> str:
+    def _build_prompt(self, catalog: list[dict[str, str]] | None = None) -> str:
+        if catalog:
+            lines = [f"- id={item['id']} | {item['path']}" for item in catalog[:150] if item.get("id") and item.get("path")]
+            return _TASK_ANALYSIS_PROMPT + "\nListas reais disponíveis no ClickUp (escolha somente um id):\n" + "\n".join(lines)
         destinations = {
             "ayla_bugs": "bugs no bot Ayla e seus comandos/serviços",
             "site_bugs": "bugs funcionais ou visuais do site",
@@ -151,7 +155,7 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None) 
     destination = payload.get("destination")
     if not isinstance(destination, str) or destination not in destinations:
         logger.warning("Task AI destination invalid value=%r allowed=%s; using manual_triage", destination, sorted(destinations))
-        destination = "manual_triage" if "manual_triage" in destinations else next(iter(destinations))
+        destination = "manual_triage"
     priority, risk = _deterministic_overrides(content, values["priority"], values["risk"], values["environment"])
     subtasks, discarded = _parse_subtasks(payload.get("subtasks", []))
     logger.info("Task AI subtasks received=%s valid=%s discarded=%s", len(payload.get("subtasks", [])) if isinstance(payload.get("subtasks", []), list) else 0, len(subtasks), discarded)

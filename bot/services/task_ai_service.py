@@ -57,6 +57,11 @@ class TaskAnalysis:
     possible_solution: str = ""
     acceptance_criteria: list[str] = field(default_factory=list)
     missing_information: list[str] = field(default_factory=list)
+    estimated_minutes: int | None = None
+    estimate_confidence: str = "low"
+    estimate_basis: str = ""
+    points: int | None = None
+    tags: list[str] = field(default_factory=list)
 
 
 class TaskAIService:
@@ -95,6 +100,7 @@ class TaskAIService:
     def _build_prompt(self, catalog: list[dict[str, str]] | None = None) -> str:
         if catalog:
             lines = [f"- id={item['id']} | {item['path']}" for item in catalog[:150] if item.get("id") and item.get("path")]
+            lines.insert(0, "Inclua estimated_minutes (5-10080 ou null), estimate_confidence (high|medium|low), estimate_basis, points (1-13 ou null) e tags (ate 5 nomes curtos).")
             return _TASK_ANALYSIS_PROMPT + "\nListas reais disponíveis no ClickUp (escolha somente um id):\n" + "\n".join(lines)
         destinations = {
             "ayla_bugs": "bugs no bot Ayla e seus comandos/serviços",
@@ -106,6 +112,7 @@ class TaskAIService:
             "manual_triage": "mensagem realmente ambígua ou sem dados suficientes",
         }
         lines = [f"- {key}: {destinations.get(key, 'destino configurado pelo sistema')}" for key in sorted(self._destinations)]
+        lines.insert(0, "Inclua estimated_minutes (5-10080 ou null), estimate_confidence (high|medium|low), estimate_basis, points (1-13 ou null) e tags (ate 5 nomes curtos).")
         return _TASK_ANALYSIS_PROMPT + "\nDestinos disponíveis neste ambiente (use somente estes):\n" + "\n".join(lines)
 
     async def close(self) -> None:
@@ -169,11 +176,17 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None) 
         destination = "manual_triage"
     priority, risk = _deterministic_overrides(content, values["priority"], values["risk"], values["environment"])
     subtasks, discarded = _parse_subtasks(payload.get("subtasks", []))
+    estimated_minutes = _bounded_int(payload.get("estimated_minutes"), 5, 10080)
+    points = _bounded_int(payload.get("points"), 1, 13)
+    estimate_confidence = _enum(payload.get("estimate_confidence"), {"high", "medium", "low"}, "low", "estimate_confidence")
+    tags = _parse_tags(payload.get("tags"))
     logger.info("Task AI subtasks received=%s valid=%s discarded=%s", len(payload.get("subtasks", [])) if isinstance(payload.get("subtasks", []), list) else 0, len(subtasks), discarded)
     analysis = TaskAnalysis(
         title=title, description=description, subtasks=subtasks, destination=destination,
         possible_cause=_nullable_text(payload.get("possible_cause")), possible_solution=_text(payload.get("possible_solution")),
         acceptance_criteria=_string_list(payload.get("acceptance_criteria")), missing_information=_string_list(payload.get("missing_information")),
+        estimated_minutes=estimated_minutes, estimate_confidence=estimate_confidence,
+        estimate_basis=_text(payload.get("estimate_basis")), points=points, tags=tags,
         priority=priority, risk=risk, **{key: values[key] for key in ("category", "area", "environment", "confidence")},
     )
     logger.info("Task AI normalized analysis=%s", analysis)
@@ -222,6 +235,29 @@ def _enum(value: Any, allowed: set[str], default: str, field_name: str) -> str:
 
 def _string_list(value: Any) -> list[str]:
     return [_text(item) for item in value if isinstance(item, str) and _text(item)] if isinstance(value, list) else []
+
+
+def _bounded_int(value: Any, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(minimum, min(maximum, number))
+
+
+def _parse_tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        tag = re.sub(r"[^a-z0-9_-]+", "-", item.casefold()).strip("-_")[:40]
+        if tag and tag not in result:
+            result.append(tag)
+    return result[:5]
 
 
 def _deterministic_overrides(content: str, priority: str, risk: str, environment: str) -> tuple[str, str]:

@@ -116,6 +116,12 @@ class TaskTriageTests(unittest.TestCase):
         analysis = _parse_analysis('{"title":"x","description":"y"}')
         self.assertEqual(_custom_fields(analysis, settings), [])
 
+    def test_custom_fields_are_discovered_by_name_without_configuration(self):
+        settings = Settings("token")
+        analysis = _parse_analysis('{"title":"x","description":"y","risk":"critical"}')
+        fields = _custom_fields(analysis, settings, [{"id": "field-risk", "name": "Risco", "type": "text"}])
+        self.assertEqual(fields, [{"id": "field-risk", "value": "Crítico"}])
+
 
 class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_clickup_catalog_discovers_workspace_space_folder_and_lists(self):

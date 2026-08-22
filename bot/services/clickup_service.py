@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from urllib.parse import quote
 from typing import Any
 
 import aiohttp
@@ -33,6 +34,9 @@ class ClickUpService:
         parent_task_id: str | None = None,
         priority: str | None = None,
         custom_fields: list[dict[str, Any]] | None = None,
+        time_estimate: int | None = None,
+        points: int | None = None,
+        tags: list[str] | None = None,
         *,
         context: str = "task",
     ) -> dict[str, Any]:
@@ -44,6 +48,12 @@ class ClickUpService:
             request_payload["priority"] = numeric_priority
         if custom_fields:
             request_payload["custom_fields"] = custom_fields
+        if time_estimate is not None:
+            request_payload["time_estimate"] = time_estimate
+        if points is not None:
+            request_payload["points"] = points
+        if tags:
+            request_payload["tags"] = tags
         if parent_task_id:
             request_payload["parent"] = parent_task_id
         logger.info(
@@ -58,6 +68,45 @@ class ClickUpService:
 
     async def create_subtask(self, list_id: str, parent_task_id: str, name: str, description: str, priority: str | None = None, custom_fields: list[dict[str, Any]] | None = None, *, context: str = "subtask") -> dict[str, Any]:
         return await self.create_task(list_id, name, description, parent_task_id=parent_task_id, priority=priority, custom_fields=custom_fields, context=context)
+
+    async def get_space_tags(self, space_id: str) -> list[dict[str, Any]]:
+        payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/space/{space_id}/tag", context="space_tags")
+        tags = payload.get("tags") if isinstance(payload, dict) else None
+        return [tag for tag in tags if isinstance(tag, dict)] if isinstance(tags, list) else []
+
+    async def create_space_tag(self, space_id: str, tag_name: str) -> None:
+        await self._request(
+            "POST", f"https://api.clickup.com/api/v2/space/{space_id}/tag",
+            {"tag": {"name": tag_name, "tag_fg": "#FFFFFF", "tag_bg": "#7B68EE"}},
+            context="create_space_tag",
+        )
+
+    async def add_tag_to_task(self, task_id: str, tag_name: str) -> None:
+        await self._request(
+            "POST", f"https://api.clickup.com/api/v2/task/{task_id}/tag/{quote(tag_name, safe='')}",
+            context="add_task_tag",
+        )
+
+    async def ensure_task_tags(self, task_id: str, space_id: str | None, tags: list[str]) -> None:
+        if not tags:
+            return
+        existing: set[str] = set()
+        if space_id:
+            try:
+                existing = {str(tag.get("name", "")).casefold() for tag in await self.get_space_tags(space_id)}
+            except ClickUpError as error:
+                logger.warning("ClickUp tags lookup failed space_id=%s error=%s", space_id, error)
+        for tag_name in tags:
+            if space_id and tag_name.casefold() not in existing:
+                try:
+                    await self.create_space_tag(space_id, tag_name)
+                    existing.add(tag_name.casefold())
+                except ClickUpError as error:
+                    logger.warning("ClickUp tag creation failed tag=%s error=%s", tag_name, error)
+            try:
+                await self.add_tag_to_task(task_id, tag_name)
+            except ClickUpError as error:
+                logger.warning("ClickUp tag assignment failed task_id=%s tag=%s error=%s", task_id, tag_name, error)
 
     async def get_list_custom_fields(self, list_id: str) -> list[dict[str, Any]]:
         if not list_id.strip():
@@ -99,9 +148,9 @@ class ClickUpService:
                     continue
                 folder_name = str(folder.get("name", folder["id"]))
                 lists_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/folder/{folder['id']}/list", context="catalog_lists")
-                catalog.extend(_catalog_lists(lists_payload, workspace_name, space_name, folder_name))
+                catalog.extend(_catalog_lists(lists_payload, workspace_name, space_name, folder_name, str(space["id"])))
             folderless_payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/space/{space['id']}/list", context="catalog_folderless_lists")
-            catalog.extend(_catalog_lists(folderless_payload, workspace_name, space_name, None))
+            catalog.extend(_catalog_lists(folderless_payload, workspace_name, space_name, None, str(space["id"])))
         if not catalog:
             raise ClickUpError(f"Nenhuma lista acessível encontrada no Workspace {workspace_name!r}.")
         self._catalog_cache = catalog
@@ -166,12 +215,12 @@ def _safe_response_body(body: str, limit: int = 1000) -> str:
     return body.replace("\n", " ")[:limit] or "<vazio>"
 
 
-def _catalog_lists(payload: Any, workspace: str, space: str, folder: str | None) -> list[dict[str, str]]:
+def _catalog_lists(payload: Any, workspace: str, space: str, folder: str | None, space_id: str | None = None) -> list[dict[str, str]]:
     lists = payload.get("lists") if isinstance(payload, dict) else []
     result = []
     for item in lists if isinstance(lists, list) else []:
         if not isinstance(item, dict) or not item.get("id") or not item.get("name"):
             continue
         path = " > ".join(part for part in (workspace, space, folder, str(item["name"])) if part)
-        result.append({"id": str(item["id"]), "name": str(item["name"]), "path": path})
+        result.append({"id": str(item["id"]), "name": str(item["name"]), "path": path, "space_id": str(space_id or "")})
     return result

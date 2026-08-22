@@ -1,4 +1,5 @@
 import logging
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -80,9 +81,13 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             task_priority = getattr(analysis, "priority", None) or semantic_priority
             fields_metadata = await _load_custom_field_metadata(service, list_id, settings, destination)
             custom_fields = _custom_fields(analysis, settings, fields_metadata)
+            task_tags = _task_tags(analysis)
+            time_estimate = analysis.estimated_minutes * 60 * 1000 if analysis and analysis.estimated_minutes else None
+            points = analysis.points if analysis else None
             logger.info("Task triage message_id=%s destination=%s list_id=%s priority=%s subtasks=%s custom_fields=%s", message.id, _destination_label(destination, catalog), list_id, task_priority, len(subtasks), [field["id"] for field in custom_fields])
             task = await service.create_task(
                 list_id, title, description, priority=task_priority, custom_fields=custom_fields,
+                time_estimate=time_estimate, points=points,
                 context=f"parent message_id={message.id}",
             )
         except ClickUpError:
@@ -92,6 +97,9 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             return
 
         task_id = str(task.get("id")) if task.get("id") else ""
+        if task_id and analysis:
+            space_id = next((item.get("space_id") for item in catalog if item.get("id") == list_id), None)
+            await service.ensure_task_tags(task_id, space_id, _task_tags(analysis))
         created_subtasks = 0
         if subtasks and task_id:
             for index, subtask in enumerate(subtasks, start=1):
@@ -171,6 +179,14 @@ def _destination_label(destination: str, catalog: list[dict[str, str]]) -> str:
     return destination
 
 
+def _task_tags(analysis: TaskAnalysis) -> list[str]:
+    tags = list(analysis.tags)
+    for value in (analysis.category, analysis.area, analysis.environment):
+        if value and value not in {"other", "unknown"} and value not in tags:
+            tags.append(value)
+    return tags[:5]
+
+
 def _task_title(message: discord.Message) -> str:
     content = " ".join(message.content.split())
     if content:
@@ -238,15 +254,15 @@ def _task_description(
 
 
 async def _load_custom_field_metadata(service: ClickUpService, list_id: str, settings: Settings, destination: str) -> list[dict[str, object]]:
-    if not settings.clickup_custom_field_ids:
-        logger.warning("Custom Fields absent destination=%s list_id=%s data_source=markdown_only", destination, list_id)
-        return []
     try:
         fields = await service.get_list_custom_fields(list_id)
     except ClickUpError as error:
         logger.error("Custom Fields lookup failed destination=%s list_id=%s error=%s; continuing markdown_only", destination, list_id, error)
         return []
     available = {str(field.get("id")): field for field in fields if field.get("id")}
+    if not settings.clickup_custom_field_ids:
+        logger.info("Custom Fields discovered automatically destination=%s list_id=%s count=%s; Markdown remains enabled", destination, list_id, len(available))
+        return list(available.values())
     missing = {key: field_id for key, field_id in settings.clickup_custom_field_ids.items() if field_id not in available}
     if missing:
         logger.error("Custom Fields configuration invalid destination=%s missing=%s; invalid fields will be skipped", destination, missing)
@@ -270,7 +286,7 @@ async def _verify_custom_fields(service: ClickUpService, task_id: str, sent_fiel
 
 def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: list[dict[str, object]] | None = None) -> list[dict[str, object]]:
     """Monta Custom Fields reais; campos sem configuração ficam somente no Markdown."""
-    if analysis is None or not settings.clickup_custom_field_ids:
+    if analysis is None:
         return []
     values = {
         "risk": _visible_value("risk", analysis.risk), "category": _visible_value("category", analysis.category),
@@ -280,11 +296,11 @@ def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: 
         "acceptance_criteria": "\n".join(f"- {item}" for item in analysis.acceptance_criteria),
         "missing_information": "\n".join(f"- {item}" for item in analysis.missing_information),
     }
-    field_ids = settings.clickup_custom_field_ids
+    field_ids = settings.clickup_custom_field_ids or {}
     available = {str(field.get("id")): field for field in metadata or [] if field.get("id")}
     result: list[dict[str, object]] = []
     for key, value in values.items():
-        field_id = field_ids.get(key)
+        field_id = field_ids.get(key) or _find_named_field_id(key, available.values())
         field = available.get(field_id or "")
         if not field_id or not value or not field:
             continue
@@ -300,6 +316,32 @@ def _custom_fields(analysis: TaskAnalysis | None, settings: Settings, metadata: 
         result.append({"id": field_id, "value": value})
         logger.info("Custom Field prepared field_id=%s type=%s value=%s", field_id, field_type, value)
     return result
+
+
+_CUSTOM_FIELD_NAME_ALIASES = {
+    "risk": {"risco", "risk"},
+    "category": {"categoria", "category"},
+    "area": {"area"},
+    "environment": {"ambiente", "environment"},
+    "confidence": {"confianca", "confidence"},
+    "possible_cause": {"possivel causa", "possible cause", "causa"},
+    "possible_solution": {"possivel solucao", "possible solution", "solucao"},
+    "acceptance_criteria": {"criterios de aceite", "acceptance criteria"},
+    "missing_information": {"informacoes ausentes", "missing information"},
+}
+
+
+def _find_named_field_id(key: str, fields) -> str | None:
+    aliases = _CUSTOM_FIELD_NAME_ALIASES.get(key, set())
+    for field in fields:
+        if isinstance(field, dict) and _normalize_field_name(field.get("name")) in aliases:
+            return str(field["id"])
+    return None
+
+
+def _normalize_field_name(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in text if not unicodedata.combining(char)).casefold().strip()
 
 
 def _visible_value(field: str, value: str) -> str:

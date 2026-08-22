@@ -92,8 +92,7 @@ class TaskAIService:
                         {"role": "system", "content": self._build_prompt(catalog, custom_fields)},
                         {"role": "user", "content": cleaned_content},
                     ],
-                    temperature=0.2,
-                    max_tokens=900,
+                    max_completion_tokens=900,
                 ),
                 timeout=self._timeout_seconds,
             )

@@ -68,8 +68,8 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             try:
                 analysis = await task_ai_service.analyze_task(message.content, catalog)
                 title = analysis.title
-                description = _task_description(message, interaction.user, analysis.description, analysis)
-                subtasks = analysis.subtasks
+                description = _task_description(message, interaction.user, analysis.description if analysis else None, analysis)
+                subtasks = analysis.subtasks if analysis else []
                 logger.info("Task AI generated %s subtasks for %s", len(subtasks), message.id)
                 logger.info("Task AI analysis completed for %s", message.id)
             except Exception as error:
@@ -101,7 +101,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                 reported_by=_display_name(message.author),
             )
             description = _task_description(
-                message, interaction.user, analysis.description, analysis,
+                message, interaction.user, analysis.description if analysis else None, analysis,
                 mapped_field_keys=_mapped_field_keys(analysis, settings, fields_metadata, custom_fields),
             )
             task_tags = _task_tags(analysis)

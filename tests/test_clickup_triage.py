@@ -112,6 +112,16 @@ class TaskTriageTests(unittest.TestCase):
         legacy = Settings("x", clickup_list_id="789")
         self.assertEqual(resolve_destination(legacy, "manual_triage"), "789")
 
+    def test_destination_path_is_normalized_to_discovered_list_id(self):
+        settings = Settings("x")
+        catalog = [{"id": "triage-42", "name": "Triage Manual", "path": "MSN Afterlife Tasks > Backlog > Triage Manual"}]
+        self.assertEqual(resolve_destination(settings, "MSN Afterlife Tasks > Backlog > Triage Manual", catalog), "triage-42")
+
+    def test_invalid_destination_uses_backlog_manual_triage_from_catalog(self):
+        settings = Settings("x")
+        catalog = [{"id": "triage-42", "name": "Triage Manual", "path": "MSN Afterlife Tasks > Backlog > Triage Manual"}]
+        self.assertEqual(resolve_destination(settings, "manual_triage", catalog), "triage-42")
+
     def test_destination_json_rejects_empty_and_unknown_values(self):
         with patch.dict("os.environ", {"CLICKUP_DESTINATIONS": '{"manual_triage":""}'}, clear=False):
             with self.assertRaises(RuntimeError):

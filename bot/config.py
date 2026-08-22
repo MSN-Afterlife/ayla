@@ -64,6 +64,7 @@ class Settings:
     clickup_free_mode: bool = True
     clickup_workspace_id: str | None = None
     clickup_catalog_cache_seconds: int = 600
+    clickup_manual_triage_query: str = "Backlog > Triage Manual"
 
 
 def load_settings() -> Settings:
@@ -129,6 +130,7 @@ def load_settings() -> Settings:
         clickup_free_mode=_load_bool("CLICKUP_FREE_MODE", True),
         clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
         clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
+        clickup_manual_triage_query=os.getenv("CLICKUP_MANUAL_TRIAGE_QUERY", "Backlog > Triage Manual"),
     )
 
 

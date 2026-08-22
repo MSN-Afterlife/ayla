@@ -137,6 +137,15 @@ class TaskTriageTests(unittest.TestCase):
         fields = _custom_fields(analysis, settings, [{"id": "field-risk", "name": "Risco", "type": "text"}])
         self.assertEqual(fields, [{"id": "field-risk", "value": "Crítico"}])
 
+    def test_reported_by_does_not_send_text_to_people_or_email_fields(self):
+        settings = Settings("token")
+        analysis = _parse_analysis('{"title":"x","description":"y"}')
+        fields = _custom_fields(analysis, settings, [
+            {"id": "field-person", "name": "Reported By", "type": "users"},
+            {"id": "field-email", "name": "Reported By", "type": "email"},
+        ], reported_by="Mounk")
+        self.assertEqual(fields, [])
+
 
 class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_clickup_catalog_discovers_workspace_space_folder_and_lists(self):

@@ -358,6 +358,9 @@ def _custom_fields(
         if not field_id or not value or not field:
             continue
         field_type = field.get("type")
+        if not _field_type_allowed(key, field_type):
+            logger.warning("Custom Field skipped incompatible key=%s field_id=%s type=%s", key, field_id, field_type)
+            continue
         if field_type == "drop_down":
             type_config = field.get("type_config") if isinstance(field.get("type_config"), dict) else {}
             options = type_config.get("options", [])
@@ -415,9 +418,23 @@ _CUSTOM_FIELD_NAME_ALIASES = {
 def _find_named_field_id(key: str, fields) -> str | None:
     aliases = _CUSTOM_FIELD_NAME_ALIASES.get(key, set())
     for field in fields:
-        if isinstance(field, dict) and _normalize_field_name(field.get("name")) in aliases:
+        if isinstance(field, dict) and _normalize_field_name(field.get("name")) in aliases and _field_type_allowed(key, field.get("type")):
             return str(field["id"])
     return None
+
+
+def _field_type_allowed(key: str, field_type: object) -> bool:
+    field_type = str(field_type or "")
+    if key == "reported_by":
+        # A Discord user is not automatically a ClickUp user or an email.
+        return field_type in {"text", "short_text"}
+    if key == "resolution_deadline":
+        return field_type == "date"
+    if key in {"risk", "category", "area", "environment", "confidence"}:
+        return field_type in {"drop_down", "short_text", "text"}
+    if key in {"browser_version", "operating_system", "reproduction_steps", "possible_cause", "possible_solution", "acceptance_criteria", "missing_information"}:
+        return field_type in {"short_text", "text", "url"}
+    return True
 
 
 def _normalize_field_name(value: object) -> str:

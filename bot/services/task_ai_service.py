@@ -13,7 +13,7 @@ except ImportError:
     AsyncOpenAI = None
 
 logger = logging.getLogger(__name__)
-TASK_AI_TIMEOUT_SECONDS = 10
+DEFAULT_TASK_AI_TIMEOUT_SECONDS = 120
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 4000
 MAX_SUBTASKS = 5
@@ -60,6 +60,7 @@ class TaskAnalysis:
 class TaskAIService:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self._model = settings.openai_model
+        self._timeout_seconds = getattr(settings, "task_ai_timeout_seconds", DEFAULT_TASK_AI_TIMEOUT_SECONDS)
         self._client = client
         if self._client is None and settings.openai_api_key and AsyncOpenAI is not None:
             self._client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
@@ -74,7 +75,7 @@ class TaskAIService:
             model=self._model,
             messages=[{"role": "system", "content": _TASK_ANALYSIS_PROMPT}, {"role": "user", "content": cleaned_content}],
             temperature=0.2, max_tokens=700,
-        ), timeout=TASK_AI_TIMEOUT_SECONDS)
+        ), timeout=self._timeout_seconds)
         return _parse_analysis(_response_content(response))
 
     async def close(self) -> None:

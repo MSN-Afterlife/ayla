@@ -71,7 +71,7 @@ class TaskAnalysis:
 
 class TaskAIService:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
-        self._model = settings.openai_model
+        self._model = getattr(settings, "task_ai_model", "gpt-5.4-mini")
         self._timeout_seconds = getattr(settings, "task_ai_timeout_seconds", DEFAULT_TASK_AI_TIMEOUT_SECONDS)
         self._destinations = set((settings.clickup_destinations or {}).keys()) or {"manual_triage"}
         self._client = client

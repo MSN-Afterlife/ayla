@@ -37,6 +37,7 @@ class ClickUpService:
         time_estimate: int | None = None,
         points: int | None = None,
         tags: list[str] | None = None,
+        custom_item_id: int | None = None,
         *,
         context: str = "task",
     ) -> dict[str, Any]:
@@ -56,6 +57,8 @@ class ClickUpService:
             request_payload["tags"] = tags
         if parent_task_id:
             request_payload["parent"] = parent_task_id
+        if custom_item_id is not None:
+            request_payload["custom_item_id"] = custom_item_id
         logger.info(
             "ClickUp request context=%s list_id=%s parent_id=%s priority=%s/%s custom_fields=%s payload=%s",
             context, list_id, parent_task_id or "-", priority, numeric_priority,
@@ -76,7 +79,7 @@ class ClickUpService:
         return response_payload
 
     async def create_subtask(self, list_id: str, parent_task_id: str, name: str, description: str, priority: str | None = None, custom_fields: list[dict[str, Any]] | None = None, *, context: str = "subtask") -> dict[str, Any]:
-        return await self.create_task(list_id, name, description, parent_task_id=parent_task_id, priority=priority, custom_fields=custom_fields, context=context)
+        return await self.create_task(list_id, name, description, parent_task_id=parent_task_id, priority=priority, custom_fields=custom_fields, context=context, custom_item_id=0)
 
     async def get_space_tags(self, space_id: str) -> list[dict[str, Any]]:
         payload, _ = await self._request("GET", f"https://api.clickup.com/api/v2/space/{space_id}/tag", context="space_tags")
@@ -230,6 +233,11 @@ def priority_to_clickup(priority: Any, *, context: str = "task") -> int | None:
 def _is_sprint_points_disabled(error: ClickUpError) -> bool:
     text = str(error).casefold()
     return "item_227" in text or "sprint points clickapp is not enabled" in text
+
+
+def _is_custom_task_type_limit(error: ClickUpError) -> bool:
+    text = str(error).casefold()
+    return "item_246" in text or "max usage for custom task types reached" in text
 
 
 def _safe_response_body(body: str, limit: int = 1000) -> str:

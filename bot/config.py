@@ -26,6 +26,7 @@ class Settings:
     image_provider_order: list[str] | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    task_ai_model: str = "gpt-5.4-mini"
     task_ai_timeout_seconds: float = 120
     levels_database_path: str = "data/levels.sqlite3"
     levels_xp_min: int = 15
@@ -72,6 +73,7 @@ def load_settings() -> Settings:
         image_provider_order=_load_list("IMAGE_PROVIDER_ORDER", ["ddgs", "google"]),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        task_ai_model=os.getenv("TASK_AI_MODEL", "gpt-5.4-mini"),
         task_ai_timeout_seconds=float(os.getenv("TASK_AI_TIMEOUT_SECONDS", "120")),
         levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),
         levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),

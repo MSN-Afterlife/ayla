@@ -1,5 +1,6 @@
 import logging
 import unicodedata
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -83,6 +84,9 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
             if analysis is not None and fields_metadata and message.content.strip():
                 try:
                     enriched_analysis = await task_ai_service.analyze_task(message.content, catalog, fields_metadata)
+                    if enriched_analysis.destination == "manual_triage" and destination != "manual_triage":
+                        enriched_analysis = replace(enriched_analysis, destination=destination)
+                        logger.warning("Task AI enrichment returned invalid/triage destination; preserving first valid destination=%s message_id=%s", destination, message.id)
                     if enriched_analysis.destination == destination:
                         analysis = enriched_analysis
                         title = analysis.title
@@ -140,6 +144,9 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                     )
                 except ClickUpError as error:
                     logger.error("ClickUp subtask creation failed parent_id=%s index=%s error=%s", task_id, index, error)
+                    if "item_246" in str(error).casefold() or "max usage for custom task types reached" in str(error).casefold():
+                        logger.error("Stopping remaining subtasks because ClickUp custom task type limit was reached parent_id=%s", task_id)
+                        break
 
         if task_id and custom_fields:
             await _verify_custom_fields(service, task_id, custom_fields, message.id)

@@ -181,7 +181,7 @@ class ClickUpPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subtask["id"], "sub-1")
         self.assertEqual(session.requests[0][2]["json"]["priority"], 1)
         self.assertEqual(session.requests[0][2]["json"]["custom_fields"], [{"id": "risk", "value": "opt"}])
-        self.assertEqual(session.requests[1][2]["json"], {"name": "Investigar endpoint", "markdown_content": "Executar teste", "priority": 2, "parent": "parent-1"})
+        self.assertEqual(session.requests[1][2]["json"], {"name": "Investigar endpoint", "markdown_content": "Executar teste", "priority": 2, "parent": "parent-1", "custom_item_id": 0})
         await service.close()
 
     async def test_sprint_points_disabled_retries_without_points(self):

@@ -175,7 +175,4 @@ def _load_destination_map(name: str) -> dict[str, str]:
         raise RuntimeError(f"{name} contém destinos desconhecidos: {sorted(unknown)}.")
     if missing:
         raise RuntimeError(f"{name} não contém list_id para: {sorted(missing)}.")
-    invalid_ids = [key for key, value in result.items() if not value.isdigit()]
-    if invalid_ids:
-        raise RuntimeError(f"{name} contém list_id inválido para: {invalid_ids}.")
     return result

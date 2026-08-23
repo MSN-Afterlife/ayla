@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 import aiohttp
 import discord
@@ -228,6 +229,11 @@ async def _remote_image(url: str | None) -> Image.Image | None:
         return None
 
     try:
+        local_path = Path(url)
+        if local_path.is_file():
+            with Image.open(local_path) as local_image:
+                return ImageOps.exif_transpose(local_image).convert("RGB").copy()
+
         headers = {
             "User-Agent": "Mozilla/5.0 AylaBot/1.0",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",

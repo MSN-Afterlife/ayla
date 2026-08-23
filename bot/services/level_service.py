@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bot.config import Settings
+from bot.services.profile_background_storage import ProfileBackgroundStorage
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class LevelService:
         self._settings = settings
         self._database_path = Path(settings.levels_database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._background_storage = ProfileBackgroundStorage(settings.profile_background_storage_path)
         self._initialize()
 
     def add_message_xp(self, guild_id: int, user_id: int, user_name: str) -> tuple[LevelProfile, LevelProfile] | None:
@@ -156,6 +158,16 @@ class LevelService:
             )
             connection.commit()
 
+    async def save_profile_background_from_url(self, user_id: int, url: str) -> None:
+        stored_path = await self._background_storage.download(user_id, url)
+        previous = self.get_profile_background(user_id)
+        try:
+            self.set_profile_background(user_id, stored_path)
+        except Exception:
+            Path(stored_path).unlink(missing_ok=True)
+            raise
+        self._remove_stored_background(previous, stored_path)
+
     def set_profile_background_mode(self, user_id: int, background_mode: str) -> None:
         now = int(time.time())
         with closing(self._connect()) as connection:
@@ -188,6 +200,7 @@ class LevelService:
 
     def clear_profile_background(self, user_id: int) -> None:
         now = int(time.time())
+        previous = self.get_profile_background(user_id)
         with closing(self._connect()) as connection:
             connection.execute(
                 """
@@ -200,6 +213,17 @@ class LevelService:
                 (user_id, now),
             )
             connection.commit()
+        self._remove_stored_background(previous)
+
+    def _remove_stored_background(self, path: str | None, replacement: str | None = None) -> None:
+        if not path or path == replacement:
+            return
+        candidate = Path(path)
+        try:
+            candidate.resolve().relative_to(self._background_storage.directory)
+        except (OSError, ValueError):
+            return
+        candidate.unlink(missing_ok=True)
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection:

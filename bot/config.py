@@ -36,6 +36,7 @@ class Settings:
     task_ai_model: str = "gpt-5.4-mini"
     task_ai_timeout_seconds: float = 120
     levels_database_path: str = "data/levels.sqlite3"
+    profile_background_storage_path: str = "data/profile_backgrounds"
     levels_xp_min: int = 15
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60
@@ -109,6 +110,7 @@ def load_settings() -> Settings:
         task_ai_model=os.getenv("TASK_AI_MODEL", "gpt-5.4-mini"),
         task_ai_timeout_seconds=float(os.getenv("TASK_AI_TIMEOUT_SECONDS", "120")),
         levels_database_path=os.getenv("LEVELS_DATABASE_PATH", "data/levels.sqlite3"),
+        profile_background_storage_path=os.getenv("PROFILE_BACKGROUND_STORAGE_PATH", "data/profile_backgrounds"),
         levels_xp_min=int(os.getenv("LEVELS_XP_MIN", "15")),
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
         levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),

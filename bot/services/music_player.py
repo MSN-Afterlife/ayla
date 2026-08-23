@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 from functools import partial
+import shlex
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -60,6 +61,7 @@ class Track:
     album: str | None = None
     thumbnail_url: str | None = None
     requester_id: int | None = None
+    http_headers: dict[str, str] | None = None
 
 
 class GuildMusicPlayer:
@@ -77,6 +79,7 @@ class GuildMusicPlayer:
         self._repeat = RepeatMode.OFF
         self._filter_name = "none"
         self._suppress_after = False
+        self._stream_retry_attempted = False
 
     @property
     def current(self) -> Track | None:
@@ -225,6 +228,7 @@ class GuildMusicPlayer:
             return
 
         self._current = self._queue.popleft()
+        self._stream_retry_attempted = False
         self._play_current(voice_client)
 
         if self._text_channel:
@@ -236,6 +240,15 @@ class GuildMusicPlayer:
             return
 
         before_options = FFMPEG_RECONNECT_OPTIONS
+        if self._current.http_headers:
+            header_lines = []
+            for key, value in self._current.http_headers.items():
+                key = str(key).replace("\r", "").replace("\n", "").strip()
+                value = str(value).replace("\r", "").replace("\n", "").strip()
+                if key and value and key.lower() in {"user-agent", "referer", "origin", "accept", "accept-language"}:
+                    header_lines.append(f"{key}: {value}")
+            if header_lines:
+                before_options += f" -headers {shlex.quote(chr(13) + chr(10).join(header_lines) + chr(13) + chr(10))}"
         if seek:
             before_options = f"-ss {seek} {before_options}"
 
@@ -263,11 +276,19 @@ class GuildMusicPlayer:
                 self._suppress_after = False
                 return
 
+            stream_rejected = _is_stream_rejected(error)
             if error and self._text_channel:
+                error_message = "O servidor do áudio recusou o stream. Tentando renovar..." if stream_rejected else "Erro ao tocar a musica."
                 asyncio.run_coroutine_threadsafe(
-                    self._text_channel.send(f"Erro ao tocar a musica: `{error}`"),
+                    self._text_channel.send(error_message),
                     self._bot.loop,
                 )
+
+            if stream_rejected and not self._stream_retry_attempted:
+                self._stream_retry_attempted = True
+                self._current_started_at = None
+                asyncio.run_coroutine_threadsafe(self._retry_current_stream(voice_client), self._bot.loop)
+                return
 
             scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
             if scrobbler:
@@ -278,6 +299,24 @@ class GuildMusicPlayer:
             asyncio.run_coroutine_threadsafe(self._play_next(voice_client), self._bot.loop)
 
         return callback
+
+    async def _retry_current_stream(self, voice_client: discord.VoiceClient) -> None:
+        track = self._current
+        if not track:
+            await self._play_next(voice_client)
+            return
+        position = self.current_position()
+        try:
+            await self._bot._music_service.refresh_track(track)
+            self._play_current(voice_client, seek=position, new_playback=False)
+            return
+        except MusicError as error:
+            if self._text_channel:
+                await self._text_channel.send(f"Nao consegui renovar o stream da musica: `{error}`")
+        scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+        if scrobbler:
+            scrobbler.ended(self._guild_id, position)
+        await self._play_next(voice_client)
 
 
 class MusicService:
@@ -369,7 +408,19 @@ class MusicService:
             album=info.get("album"),
             thumbnail_url=info.get("thumbnail"),
             requester_id=requester_id,
+            http_headers=info.get("http_headers"),
         )
+
+    async def refresh_track(self, track: Track) -> None:
+        if not track.webpage_url:
+            raise MusicError("A faixa não possui uma URL de origem para renovar o stream.")
+        info = await asyncio.to_thread(self._extract_info, track.webpage_url)
+        entries = self._entries_from_info(info)
+        if not entries:
+            raise MusicError("Não consegui renovar o stream da faixa.")
+        refreshed = self._track_from_info(entries[0], track.requested_by, track.webpage_url, track.requester_id)
+        track.stream_url = refreshed.stream_url
+        track.http_headers = refreshed.http_headers
 
     async def _normalize_query(self, query: str) -> str:
         if not _is_url(query):
@@ -409,6 +460,13 @@ class MusicService:
 def _is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_stream_rejected(error: Exception | None) -> bool:
+    if error is None:
+        return False
+    message = str(error).lower()
+    return "403" in message or "return code of 8" in message or "return code 8" in message
 
 
 def _friendly_ytdl_error(error: Exception) -> str:

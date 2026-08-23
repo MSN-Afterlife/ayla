@@ -34,6 +34,7 @@ async def _send(ctx: commands.Context, message: str) -> None:
 
 def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
     music = MusicService(bot, settings)
+    bot._music_service = music
     lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")

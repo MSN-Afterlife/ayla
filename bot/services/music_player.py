@@ -1,5 +1,7 @@
 import asyncio
 import random
+import time
+from functools import partial
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -57,6 +59,7 @@ class Track:
     artist: str | None = None
     album: str | None = None
     thumbnail_url: str | None = None
+    requester_id: int | None = None
 
 
 class GuildMusicPlayer:
@@ -99,6 +102,15 @@ class GuildMusicPlayer:
             return self._current_seek
         return self._current_seek + max(0, round(monotonic() - self._current_started_at))
 
+    def pause(self) -> None:
+        if self._current_started_at is not None:
+            self._current_seek = self.current_position()
+            self._current_started_at = None
+
+    def resume(self) -> None:
+        if self._current and self._current_started_at is None:
+            self._current_started_at = monotonic()
+
     def add_many(self, tracks: list[Track], text_channel: discord.abc.Messageable) -> int:
         self._text_channel = text_channel
         first_position = self.queue_size(include_current=True) + 1
@@ -131,7 +143,7 @@ class GuildMusicPlayer:
         self._suppress_after = True
         if voice_client.is_playing() or voice_client.is_paused():
             voice_client.stop()
-        self._play_current(voice_client, seek=seconds)
+        self._play_current(voice_client, seek=seconds, new_playback=False)
 
     async def seek_relative(self, voice_client: discord.VoiceClient, seconds: int) -> int:
         new_position = self.current_position() + seconds
@@ -139,6 +151,7 @@ class GuildMusicPlayer:
         return max(0, new_position)
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
+        self._bot._lastfm_scrobbler.ended(self._guild_id, self.current_position()) if hasattr(self._bot, "_lastfm_scrobbler") else None
         self.clear()
         self._current = None
         self._current_started_at = None
@@ -218,7 +231,7 @@ class GuildMusicPlayer:
             view = self._now_playing_view_factory(self) if self._now_playing_view_factory and self._current else None
             await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
 
-    def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0) -> None:
+    def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0, new_playback: bool = True) -> None:
         if not self._current:
             return
 
@@ -240,6 +253,9 @@ class GuildMusicPlayer:
         self._current_seek = seek
         self._current_started_at = monotonic()
         voice_client.play(self._source, after=self._after_track(voice_client))
+        scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+        if scrobbler and new_playback:
+            scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position)
 
     def _after_track(self, voice_client: discord.VoiceClient) -> Callable[[Exception | None], None]:
         def callback(error: Exception | None) -> None:
@@ -252,6 +268,12 @@ class GuildMusicPlayer:
                     self._text_channel.send(f"Erro ao tocar a musica: `{error}`"),
                     self._bot.loop,
                 )
+
+            scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+            if scrobbler:
+                position = self.current_position()
+                self._bot.loop.call_soon_threadsafe(partial(scrobbler.ended, self._guild_id, position, error=error))
+            self._current_started_at = None
 
             asyncio.run_coroutine_threadsafe(self._play_next(voice_client), self._bot.loop)
 
@@ -269,7 +291,7 @@ class MusicService:
             self._players[guild_id] = GuildMusicPlayer(self._bot, guild_id)
         return self._players[guild_id]
 
-    async def resolve_tracks(self, query: str, requested_by: str) -> list[Track]:
+    async def resolve_tracks(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
         normalized_query = await self._normalize_query(query)
         info = await asyncio.to_thread(self._extract_best_info, normalized_query)
         entries = self._entries_from_info(info)
@@ -277,7 +299,7 @@ class MusicService:
             raise MusicError("Nao encontrei nenhum resultado para essa busca.")
 
         limit = MAX_PLAYLIST_TRACKS if _is_url(normalized_query) else 1
-        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:limit]]
+        return [self._track_from_info(entry, requested_by, normalized_query, requester_id) for entry in entries[:limit]]
 
     def _extract_best_info(self, query: str) -> dict:
         if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
@@ -332,7 +354,7 @@ class MusicService:
             return [info]
         return [entry for entry in info["entries"] if entry and entry.get("url")]
 
-    def _track_from_info(self, info: dict, requested_by: str, fallback_url: str) -> Track:
+    def _track_from_info(self, info: dict, requested_by: str, fallback_url: str, requester_id: int | None = None) -> Track:
         stream_url = info.get("url")
         if not stream_url:
             raise MusicError("Nao consegui obter o audio dessa fonte.")
@@ -346,6 +368,7 @@ class MusicService:
             artist=info.get("artist") or info.get("creator") or info.get("uploader"),
             album=info.get("album"),
             thumbnail_url=info.get("thumbnail"),
+            requester_id=requester_id,
         )
 
     async def _normalize_query(self, query: str) -> str:

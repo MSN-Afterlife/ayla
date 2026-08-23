@@ -65,6 +65,12 @@ class Settings:
     clickup_workspace_id: str | None = None
     clickup_catalog_cache_seconds: int = 600
     clickup_manual_triage_query: str = "Backlog > Triage Manual"
+    lastfm_api_key: str | None = None
+    lastfm_api_secret: str | None = None
+    lastfm_callback_url: str | None = None
+    lastfm_enabled: bool = False
+    lastfm_database_path: str = "data/lastfm.sqlite3"
+    lastfm_timeout_seconds: float = 10
 
 
 def load_settings() -> Settings:
@@ -131,6 +137,12 @@ def load_settings() -> Settings:
         clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
         clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
         clickup_manual_triage_query=os.getenv("CLICKUP_MANUAL_TRIAGE_QUERY", "Backlog > Triage Manual"),
+        lastfm_api_key=os.getenv("LASTFM_API_KEY"),
+        lastfm_api_secret=os.getenv("LASTFM_API_SECRET"),
+        lastfm_callback_url=os.getenv("LASTFM_CALLBACK_URL"),
+        lastfm_enabled=_load_bool("LASTFM_ENABLED", True),
+        lastfm_database_path=os.getenv("LASTFM_DATABASE_PATH", "data/lastfm.sqlite3"),
+        lastfm_timeout_seconds=float(os.getenv("LASTFM_TIMEOUT_SECONDS", "10")),
     )
 
 

@@ -22,12 +22,17 @@ from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
 from bot.services.site_api import SiteApiServer
+from bot.services.lastfm_service import LastFmService
+from bot.services.lastfm_scrobble import LastFmScrobbler
+from bot.commands.lastfm import setup_lastfm_commands
 
 
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._site_api = SiteApiServer(settings) if settings.site_api_enabled else None
+        self._lastfm = LastFmService(settings)
+        self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
+        self._site_api = SiteApiServer(settings, self._lastfm) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:
@@ -43,6 +48,7 @@ class AylaBot(commands.Bot):
         task_ai_service = getattr(self, "_task_ai_service", None)
         if task_ai_service:
             await task_ai_service.close()
+        await self._lastfm.close()
         await super().close()
 
 
@@ -71,6 +77,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_authdev_commands(bot, settings)
     setup_media_commands(bot, settings)
     setup_music_commands(bot, settings)
+    setup_lastfm_commands(bot, bot._lastfm)
     setup_interaction_commands(bot, settings)
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)

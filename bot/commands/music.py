@@ -51,7 +51,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
             await ctx.defer()
         try:
             voice_client = await _connect_or_move(ctx)
-            tracks = await music.resolve_tracks(query, ctx.author.display_name)
+            tracks = await music.resolve_tracks(query, ctx.author.display_name, ctx.author.id)
             player = music.player_for(ctx.guild.id)
             player.set_now_playing_view_factory(lambda player: MusicNowPlayingView(music, lyrics_service, player))
             position = player.add_many(tracks, ctx.channel)
@@ -77,6 +77,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
             await _send(ctx, "Nao tem nenhuma musica tocando agora.")
             return
 
+        music.player_for(ctx.guild.id).pause() if ctx.guild else None
         voice_client.pause()
         await _send(ctx, "Musica pausada.")
 
@@ -87,6 +88,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
             await _send(ctx, "Nao tem nenhuma musica pausada.")
             return
 
+        music.player_for(ctx.guild.id).resume() if ctx.guild else None
         voice_client.resume()
         await _send(ctx, "Musica retomada.")
 
@@ -427,6 +429,7 @@ class MusicNowPlayingView(discord.ui.View):
         if not voice_client or not voice_client.is_playing():
             await interaction.response.send_message("Nao tem musica tocando agora.", ephemeral=True)
             return
+        self._player.pause()
         voice_client.pause()
         await interaction.response.send_message("Musica pausada.", ephemeral=True)
 
@@ -436,6 +439,7 @@ class MusicNowPlayingView(discord.ui.View):
         if not voice_client or not voice_client.is_paused():
             await interaction.response.send_message("Nao tem musica pausada.", ephemeral=True)
             return
+        self._player.resume()
         voice_client.resume()
         await interaction.response.send_message("Musica retomada.", ephemeral=True)
 

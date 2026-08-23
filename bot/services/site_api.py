@@ -3,14 +3,16 @@ from aiohttp import web
 from bot.config import Settings
 from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
+from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 
 
 class SiteApiServer:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, lastfm: LastFmService | None = None) -> None:
         self._settings = settings
         self._economy = EconomyService(settings)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
+        self._lastfm = lastfm
 
     async def start(self) -> None:
         if self._runner:
@@ -20,6 +22,7 @@ class SiteApiServer:
         app.router.add_get("/api/site", self._site_info)
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
+        app.router.add_get("/auth/lastfm/callback", self._lastfm_callback)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -32,6 +35,27 @@ class SiteApiServer:
             await self._runner.cleanup()
             self._runner = None
             self._site = None
+        if self._lastfm:
+            await self._lastfm.close()
+
+    async def _lastfm_callback(self, request: web.Request) -> web.Response:
+        if not self._lastfm or not self._lastfm.available:
+            return web.Response(text=safe_page("Last.fm indisponível", "A integração não está configurada."), content_type="text/html", status=503)
+        state = request.query.get("state", "")
+        token = request.query.get("token", "")
+        if len(state) > 256 or len(token) > 512:
+            return web.Response(text=safe_page("Falha na vinculação", "Os parâmetros recebidos são inválidos."), content_type="text/html", status=400)
+        if not state or not token:
+            return web.Response(text=safe_page("Falha na vinculação", "O Last.fm não forneceu os dados necessários."), content_type="text/html", status=400)
+        user_id = self._lastfm.repository.consume_state(state)
+        if user_id is None:
+            return web.Response(text=safe_page("Falha na vinculação", "O link expirou ou já foi utilizado."), content_type="text/html", status=400)
+        try:
+            username, session_key = await self._lastfm.exchange_token(token)
+            self._lastfm.repository.save_account(user_id, username, session_key)
+        except LastFmError:
+            return web.Response(text=safe_page("Falha na vinculação", "Não foi possível concluir a autorização. Tente gerar um novo link."), content_type="text/html", status=502)
+        return web.Response(text=safe_page("Last.fm conectado", "Sua conta foi vinculada com sucesso. Você pode fechar esta janela."), content_type="text/html")
 
     async def _site_info(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "service": "ayla-bot", "dailyRoute": "/api/daily-ayla"})

@@ -233,7 +233,15 @@ class GuildMusicPlayer:
 
         if self._text_channel:
             view = self._now_playing_view_factory(self) if self._now_playing_view_factory and self._current else None
-            await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
+            # .fmbot's message-based reader looks for the conventional English
+            # "Started playing ... by ..." announcement used by music bots.
+            # The embed remains the user-facing Ayla UI, while this content gives
+            # compatible readers a stable, unambiguous track announcement.
+            track = self._current
+            announcement = f"Started playing {track.title}"
+            if track.artist:
+                announcement += f" by {track.artist}"
+            await self._text_channel.send(announcement[:1900], embed=build_now_playing_embed(self, automatic=True), view=view)
 
     def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0, new_playback: bool = True) -> None:
         if not self._current:

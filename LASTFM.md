@@ -21,6 +21,11 @@ Administradores podem usar `/lastfm diagnostico [usuario]` para consultar a
 última faixa registrada para um membro, o tempo considerado e o resultado (ou
 o motivo da falha). O histórico é mantido em memória e é perdido ao reiniciar o bot.
 
+A Ayla também publica um anúncio público no formato `Started playing ... by ...`
+para facilitar leitores externos de “Now playing”, como o `.fmbot`. O `.fmbot`,
+porém, mantém uma lista própria de bots suportados; se ele ainda não reconhecer
+a Ayla, somente a integração direta da Ayla com Last.fm será utilizada.
+
 Como o projeto não tinha mecanismo de criptografia, a session key fica isolada
 em `LASTFM_DATABASE_PATH` e nunca vai para os logs. Proteja o arquivo por
 permissões/volume secreto no ambiente de produção; não foi criada criptografia

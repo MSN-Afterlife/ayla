@@ -268,7 +268,8 @@ class GuildMusicPlayer:
         voice_client.play(self._source, after=self._after_track(voice_client))
         scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
         if scrobbler and new_playback:
-            scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position)
+            listeners = tuple(member.id for member in getattr(getattr(voice_client, "channel", None), "members", []) if not member.bot)
+            scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position, listeners)
 
     def _after_track(self, voice_client: discord.VoiceClient) -> Callable[[Exception | None], None]:
         def callback(error: Exception | None) -> None:

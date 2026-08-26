@@ -11,10 +11,15 @@ Configure `LASTFM_API_KEY`, `LASTFM_API_SECRET`, `LASTFM_CALLBACK_URL` e
 - Produção: `https://api.msnafterlife.online/auth/lastfm/callback`
 - Staging: `https://api.luciddreams.fun/auth/lastfm/callback`
 
-O modo inicial é `requested`: somente quem pediu a faixa recebe Now Playing e
-scrobble. A faixa precisa ter duração confiável acima de 30 segundos e ser
+O scrobble é feito para quem pediu a faixa e para os demais membros humanos
+presentes no canal de voz quando ela começa (cada conta é processada
+individualmente). A faixa precisa ter duração confiável acima de 30 segundos e ser
 reproduzida por `min(duração / 2, 240s)`; pausas não contam. Livestreams e
 metadados sem artista/título confiáveis são ignorados.
+
+Administradores podem usar `/lastfm diagnostico [usuario]` para consultar a
+última faixa registrada para um membro, o tempo considerado e o resultado (ou
+o motivo da falha). O histórico é mantido em memória e é perdido ao reiniciar o bot.
 
 Como o projeto não tinha mecanismo de criptografia, a session key fica isolada
 em `LASTFM_DATABASE_PATH` e nunca vai para os logs. Proteja o arquivo por

@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
@@ -27,6 +27,8 @@ class Playback:
     scrobbled: bool = False
     last_position: int = 0
     position_provider: Callable[[], int] | None = None
+    listener_ids: tuple[int, ...] = ()
+    results: dict[int, str] | None = None
 
 
 def eligible_after(duration: int) -> float | None:
@@ -50,8 +52,9 @@ class LastFmScrobbler:
         self._current: dict[int, Playback] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        self._history: deque[Playback] = deque(maxlen=20)
 
-    def started(self, guild_id: int, track, requester_id: int | None, started_at: int, position_provider: Callable[[], int] | None = None) -> str | None:
+    def started(self, guild_id: int, track, requester_id: int | None, started_at: int, position_provider: Callable[[], int] | None = None, listener_ids: tuple[int, ...] = ()) -> str | None:
         if not self.service.available:
             return None
         normalized = normalize_track(track)
@@ -63,8 +66,11 @@ class LastFmScrobbler:
         threshold = eligible_after(duration)
         if threshold is None:
             return None
-        playback = Playback(uuid.uuid4().hex, requester_id, artist, title, album, duration, started_at, eligible_after=threshold, position_provider=position_provider)
+        requester = (requester_id,) if requester_id is not None else ()
+        participants = tuple(dict.fromkeys((*listener_ids, *requester)))
+        playback = Playback(uuid.uuid4().hex, requester_id, artist, title, album, duration, started_at, eligible_after=threshold, position_provider=position_provider, listener_ids=participants, results={})
         self._current[guild_id] = playback
+        self._history.appendleft(playback)
         self._schedule(guild_id, playback)
         asyncio.create_task(self._now_playing(playback))
         return playback.playback_id
@@ -86,6 +92,8 @@ class LastFmScrobbler:
         if playback.last_position >= playback.eligible_after:
             asyncio.create_task(self._scrobble(playback))
         else:
+            for user_id in playback.listener_ids:
+                playback.results[user_id] = f"não: limite não atingido ({playback.last_position}s/{playback.eligible_after:g}s)"
             log.info("lastfm scrobble ignorado playback=%s motivo=limite_nao_atingido", playback.playback_id)
 
     def progress_object(self, playback: Playback, position: int) -> None:
@@ -103,28 +111,46 @@ class LastFmScrobbler:
         self._tasks[playback.playback_id] = asyncio.create_task(wait_and_scrobble())
 
     async def _now_playing(self, playback: Playback) -> None:
-        if playback.requester_id is None or not self.service.available: return
-        account = self.service.repository.get_account(playback.requester_id)
-        if not account or not account.scrobble_enabled: return
-        try:
-            await self.service.update_now_playing(account, {"artist": playback.artist, "track": playback.track, "album": playback.album, "duration": playback.duration})
-            log.info("lastfm now playing aceito playback=%s", playback.playback_id)
-        except LastFmError as error:
-            self._handle_error(account.discord_user_id, error, "now_playing")
+        if not self.service.available: return
+        for user_id in playback.listener_ids:
+            account = self.service.repository.get_account(user_id)
+            if not account:
+                continue
+            if not account.scrobble_enabled:
+                continue
+            try:
+                await self.service.update_now_playing(account, {"artist": playback.artist, "track": playback.track, "album": playback.album, "duration": playback.duration})
+                log.info("lastfm now playing aceito playback=%s user=%s", playback.playback_id, user_id)
+            except LastFmError as error:
+                self._handle_error(account.discord_user_id, error, "now_playing")
 
     async def _scrobble(self, playback: Playback) -> None:
-        if playback.scrobbled or playback.requester_id is None: return
-        lock = self._locks.setdefault(playback.requester_id, asyncio.Lock())
-        async with lock:
-            if playback.scrobbled: return
-            account = self.service.repository.get_account(playback.requester_id)
-            if not account or not account.scrobble_enabled: return
-            try:
-                await self.service.scrobble(account, {"artist": playback.artist, "track": playback.track, "album": playback.album, "duration": playback.duration}, playback.started_at)
-                playback.scrobbled = True
-                log.info("lastfm scrobble aceito playback=%s", playback.playback_id)
-            except LastFmError as error:
-                self._handle_error(account.discord_user_id, error, "scrobble")
+        if playback.scrobbled or not playback.listener_ids: return
+        for user_id in playback.listener_ids:
+            lock = self._locks.setdefault(user_id, asyncio.Lock())
+            async with lock:
+                account = self.service.repository.get_account(user_id)
+                if not account:
+                    playback.results[user_id] = "não: conta Last.fm não vinculada"
+                    continue
+                if not account.scrobble_enabled:
+                    playback.results[user_id] = "não: scrobble desativado"
+                    continue
+                try:
+                    await self.service.scrobble(account, {"artist": playback.artist, "track": playback.track, "album": playback.album, "duration": playback.duration}, playback.started_at)
+                    playback.results[user_id] = f"sim: @{account.username}"
+                    log.info("lastfm scrobble aceito playback=%s user=%s", playback.playback_id, user_id)
+                except LastFmError as error:
+                    playback.results[user_id] = f"não: {error} (código {error.code or 'n/d'})"
+                    self._handle_error(account.discord_user_id, error, "scrobble")
+        playback.scrobbled = True
+
+    def diagnostic(self, guild_id: int, user_id: int) -> dict | None:
+        for playback in self._history:
+            if playback.results is not None and user_id in playback.listener_ids:
+                result = playback.results.get(user_id, "aguardando processamento")
+                return {"playback_id": playback.playback_id, "artist": playback.artist, "track": playback.track, "duration": playback.duration, "played": playback.last_position, "threshold": playback.eligible_after, "result": result}
+        return None
 
     def _handle_error(self, user_id: int, error: LastFmError, operation: str) -> None:
         if error.code in {4, 9, 14, 29}:

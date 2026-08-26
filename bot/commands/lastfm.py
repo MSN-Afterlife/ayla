@@ -11,7 +11,7 @@ def setup_lastfm_commands(bot: commands.Bot, service: LastFmService) -> None:
     @bot.hybrid_group(name="lastfm", description="Vincula e administra seu Last.fm.")
     async def lastfm(ctx: commands.Context) -> None:
         if ctx.invoked_subcommand is None:
-            await ctx.send("Use `/lastfm conectar`, `status`, `ativar`, `desativar`, `desconectar`, `agora` ou `recentes`.", ephemeral=bool(ctx.interaction))
+            await ctx.send("Use `/lastfm conectar`, `status`, `ativar`, `desativar`, `desconectar`, `agora`, `recentes` ou `diagnostico`.", ephemeral=bool(ctx.interaction))
 
     def unavailable(ctx):
         return not service.available
@@ -62,6 +62,25 @@ def setup_lastfm_commands(bot: commands.Bot, service: LastFmService) -> None:
         try: items = await service.recent(account)
         except LastFmError as error: await ctx.send(f"Não foi possível consultar o Last.fm: {error}", ephemeral=True); return
         await ctx.send("\n".join(f"{i}. {_format_item(item)}" for i, item in enumerate(items, 1))[:1900] or "Não há histórico recente.", ephemeral=True)
+
+    @lastfm.command(name="diagnostico", description="Mostra o resultado do último scrobble de um usuário.")
+    @commands.guild_only()
+    @commands.has_permissions(administrator=True)
+    async def diagnostic(ctx: commands.Context, usuario: discord.Member | None = None) -> None:
+        target = usuario or ctx.author
+        result = getattr(bot, "_lastfm_scrobbler").diagnostic(ctx.guild.id, target.id)
+        if not result:
+            await ctx.send(f"Não encontrei uma faixa recente registrada para {target.mention}.", ephemeral=True)
+            return
+        status = result["result"]
+        played = f'{result["played"]}s/{result["threshold"]:g}s'
+        await ctx.send(
+            f"**Diagnóstico Last.fm — {target.display_name}**\n"
+            f"Faixa: **{escape(result['artist'])} — {escape(result['track'])}**\n"
+            f"Reprodução: `{played}`\nResultado: **{escape(status)}**\n"
+            f"ID: `{result['playback_id']}`",
+            ephemeral=True,
+        )
 
 
 def _format_item(item: dict) -> str:

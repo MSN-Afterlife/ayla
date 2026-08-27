@@ -158,6 +158,19 @@ HELP_CATEGORIES = {
         ],
         "color": 0xE74C3C,
     },
+    "bingo": {
+        "label": "Bingo",
+        "title": "Bingo da Ayla",
+        "description": "Partida de Bingo com cartelas privadas e painel visual de numeros sorteados.",
+        "fields": [
+            ("`{prefix}bingo criar` / `{prefix}bingo entrar`", "Cria uma mesa e permite 2+ jogadores entrarem.", False),
+            ("`{prefix}bingo iniciar`", "Inicia a partida e envia a cartela de cada jogador por DM.", False),
+            ("`{prefix}bingo sortear`", "O criador ou moderador sorteia o proximo numero e atualiza o painel.", False),
+            ("`{prefix}bingo marcar 42` / `{prefix}bingo cartela`", "Marca um numero sorteado e reenvia sua cartela privada.", False),
+            ("`{prefix}bingo`", "Declara Bingo quando completar uma linha, coluna ou diagonal.", False),
+        ],
+        "color": 0x5865F2,
+    },
     "admin": {
         "label": "Admin",
         "title": "Ajuda administrativa",

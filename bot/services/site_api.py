@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from aiohttp import web
 
 from bot.config import Settings
@@ -6,8 +8,9 @@ from bot.services.economy_service import EconomyService
 
 
 class SiteApiServer:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, readiness_check: Callable[[], bool]) -> None:
         self._settings = settings
+        self._readiness_check = readiness_check
         self._economy = EconomyService(settings)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -17,6 +20,7 @@ class SiteApiServer:
             return
 
         app = web.Application(middlewares=[_cors_middleware(self._settings.site_api_cors_origin)])
+        app.router.add_get("/health", self._health)
         app.router.add_get("/api/site", self._site_info)
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
@@ -35,6 +39,11 @@ class SiteApiServer:
 
     async def _site_info(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "service": "ayla-bot", "dailyRoute": "/api/daily-ayla"})
+
+    async def _health(self, request: web.Request) -> web.Response:
+        if not self._readiness_check():
+            return web.json_response({"ok": False, "status": "starting"}, status=503)
+        return web.json_response({"ok": True, "status": "ready"})
 
     async def _daily(self, request: web.Request) -> web.Response:
         if self._settings.site_api_key:

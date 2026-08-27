@@ -1,0 +1,12 @@
+.env
+.env.*
+.git
+.gitea
+.github
+data
+deploy
+site-api
+tests
+__pycache__
+**/__pycache__
+*.py[cod]

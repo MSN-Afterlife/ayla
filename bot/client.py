@@ -24,7 +24,7 @@ from bot.services.site_api import SiteApiServer
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._site_api = SiteApiServer(settings) if settings.site_api_enabled else None
+        self._site_api = SiteApiServer(settings, self.is_ready) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:

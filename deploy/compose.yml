@@ -1,0 +1,67 @@
+services:
+  bot:
+    container_name: ayla-${AYLA_ENV:?AYLA_ENV is required}-bot
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ayla-bot:${AYLA_ENV}-${RELEASE_SHA:?RELEASE_SHA is required}
+    restart: unless-stopped
+    env_file:
+      - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}
+    ports:
+      - "127.0.0.1:${BOT_HOST_PORT:?BOT_HOST_PORT is required}:8090"
+    volumes:
+      - ${DATA_DIR:?DATA_DIR is required}:/app/data:rw
+    networks:
+      - ayla
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8090/health', timeout=5); assert response.status == 200"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  site-api:
+    container_name: ayla-${AYLA_ENV:?AYLA_ENV is required}-site-api
+    build:
+      context: ../site-api
+      dockerfile: Dockerfile
+    image: ayla-site-api:${AYLA_ENV}-${RELEASE_SHA:?RELEASE_SHA is required}
+    restart: unless-stopped
+    env_file:
+      - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}
+    ports:
+      - "127.0.0.1:${SITE_API_HOST_PORT:?SITE_API_HOST_PORT is required}:8000"
+    volumes:
+      - ${DATA_DIR:?DATA_DIR is required}:/app/data:ro
+    networks:
+      - ayla
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/health', timeout=5); assert response.status == 200"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  ayla:
+    name: ayla_${AYLA_ENV:?AYLA_ENV is required}
+    driver: bridge

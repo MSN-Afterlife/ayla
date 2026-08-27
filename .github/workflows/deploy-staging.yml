@@ -1,0 +1,67 @@
+name: Deploy staging
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ayla-staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy staging to OVH
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out the pushed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Require a pre-validated OVH host key
+        run: |
+          test -s .github/known_hosts/ovh
+
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.OVH_DEPLOY_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          install -m 600 .github/known_hosts/ovh ~/.ssh/known_hosts
+
+      - name: Package the revision without environment files
+        run: |
+          tar -czf "$RUNNER_TEMP/ayla-${GITHUB_SHA}.tar.gz" \
+            --exclude-vcs \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            .
+
+      - name: Upload release archive
+        env:
+          OVH_DEPLOY_HOST: ${{ vars.OVH_DEPLOY_HOST }}
+          OVH_DEPLOY_USER: ${{ vars.OVH_DEPLOY_USER }}
+          OVH_DEPLOY_PORT: ${{ vars.OVH_DEPLOY_PORT }}
+        run: |
+          scp -i ~/.ssh/id_ed25519 -P "$OVH_DEPLOY_PORT" \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$RUNNER_TEMP/ayla-${GITHUB_SHA}.tar.gz" \
+            "$OVH_DEPLOY_USER@$OVH_DEPLOY_HOST:/tmp/ayla-${GITHUB_SHA}.tar.gz"
+
+      - name: Validate and activate release remotely
+        env:
+          OVH_DEPLOY_HOST: ${{ vars.OVH_DEPLOY_HOST }}
+          OVH_DEPLOY_USER: ${{ vars.OVH_DEPLOY_USER }}
+          OVH_DEPLOY_PORT: ${{ vars.OVH_DEPLOY_PORT }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -p "$OVH_DEPLOY_PORT" \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$OVH_DEPLOY_USER@$OVH_DEPLOY_HOST" \
+            "/opt/ayla/scripts/deploy-remote.sh staging ${GITHUB_SHA} /tmp/ayla-${GITHUB_SHA}.tar.gz"

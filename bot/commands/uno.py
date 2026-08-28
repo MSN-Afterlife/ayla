@@ -84,14 +84,7 @@ class UnoPlayer:
 
 
 class UnoGame:
-    def __init__(
-        self,
-        channel_id: int,
-        host: discord.Member | discord.User,
-        ruleset: str = "normal",
-        ayla_caotica_url: str | None = None,
-        chaos_deck_size: int = CHAOS_DECK_SIZE,
-    ) -> None:
+    def __init__(self, channel_id: int, host: discord.Member | discord.User, cartas_iniciais: int = 7) -> None:
         self.channel_id = channel_id
         self.host_id = host.id
         self.ruleset = ruleset
@@ -105,15 +98,7 @@ class UnoGame:
         self.direction = 1
         self.started = False
         self.awaiting_draw = False
-        self.pending_uno_player_id: int | None = None
-        self.last_character: str | None = None
-        self.last_character_url: str | None = None
-        self.last_character_effect: str | None = None
-        self.last_character_target: str | None = None
-
-    @property
-    def is_chaos(self) -> bool:
-        return self.ruleset == "caos"
+        self.cartas_iniciais = cartas_iniciais
 
     @property
     def current_player(self) -> UnoPlayer:
@@ -131,7 +116,7 @@ class UnoGame:
 
     def start(self) -> None:
         random.shuffle(self.deck)
-        for _ in range(7):
+        for _ in range(self.cartas_iniciais):
             for player in self.players:
                 player.hand.append(self.draw_one())
 
@@ -548,12 +533,12 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
     @bot.group(name="uno", invoke_without_command=True)
     async def uno(ctx: commands.Context) -> None:
         await ctx.send(
-            "UNO: `a!uno criar`, `entrar`, `iniciar`, `mao`, `jogar <numero> [cor]`, "
-            "`comprar`, `passar`, `mesa`, `cancelar`."
+            "UNO: `a!uno criar [numero_de_cartas]`, `entrar`, `iniciar`, `mao`, `jogar <numero> [cor]`, "
+            "`comprar`, `passar`, `uno`, `mesa`, `cancelar`."
         )
 
     @uno.command(name="criar")
-    async def uno_create(ctx: commands.Context) -> None:
+    async def uno_create(ctx: commands.Context, cartas: int = 7) -> None:
         if not ctx.guild:
             await ctx.send("UNO precisa ser criado dentro de um servidor.")
             return
@@ -561,8 +546,8 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await ctx.send("Ja existe uma mesa de UNO neste canal.")
             return
 
-        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, ayla_caotica_url=ayla_caotica_url, chaos_deck_size=chaos_deck_size)
-        await ctx.send(_rules_prompt(games[ctx.channel.id]), view=UnoRulesView(games[ctx.channel.id]))
+        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, cartas_iniciais=cartas)
+        await ctx.send(f"Mesa de UNO criada por {ctx.author.mention} com **{cartas}** cartas iniciais! Use `a!uno entrar` para participar.")
 
     @uno.command(name="entrar")
     async def uno_join(ctx: commands.Context) -> None:

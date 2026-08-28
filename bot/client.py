@@ -17,6 +17,7 @@ from bot.commands.music import setup_music_commands
 from bot.commands.presence import setup_presence_commands
 from bot.commands.presence import start_presence_rotation
 from bot.commands.uno import setup_uno_commands
+from bot.commands.bingo import setup_bingo_commands
 from bot.config import Settings
 from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
@@ -30,9 +31,7 @@ from bot.commands.lastfm import setup_lastfm_commands
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._lastfm = LastFmService(settings)
-        self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
-        self._site_api = SiteApiServer(settings, self._lastfm) if settings.site_api_enabled else None
+        self._site_api = SiteApiServer(settings, self.is_ready) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:
@@ -82,8 +81,8 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)
     setup_economy_commands(bot, settings)
-    setup_uno_commands(bot, settings)
-    setup_presence_commands(bot, settings)
+    setup_uno_commands(bot)
+    setup_bingo_commands(bot)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)
     setup_command_debug(bot)

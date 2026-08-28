@@ -159,6 +159,17 @@ HELP_CATEGORIES = {
         ],
         "color": 0xE74C3C,
     },
+    "bingo": {
+        "label": "Bingo",
+        "title": "Bingo da Ayla",
+        "description": "Partida de Bingo com cartelas privadas e painel visual de numeros sorteados.",
+        "fields": [
+            ("bingo criar", "Abre o painel; entrada, saida e inicio sao feitos por botoes.", False),
+            ("Botoes da mesa", "Escolha modo manual ou automatico e configure o intervalo; o padrao e 25 segundos.", False),
+            ("Botoes do jogo", "Sorteie, marque numeros somente pelo valor e declare BINGO no canal ou no PV.", False),
+        ],
+        "color": 0x5865F2,
+    },
     "admin": {
         "label": "Admin",
         "title": "Ajuda administrativa",

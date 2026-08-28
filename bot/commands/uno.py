@@ -717,8 +717,13 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             chaos_deck_size=chaos_deck_size,
         )
         games[interaction.channel.id] = game
-        await interaction.response.send_message(_rules_prompt(game), view=UnoRulesView(game))
-    @uno_slash.command(name="entrar", description="Entra na mesa de UNO deste canal.")
+
+        embed = discord.Embed(
+            title="🎮 Mesa de UNO Criada!",
+            description=_rules_prompt(game),
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, view=UnoRulesView(game))
     async def uno_join_slash(interaction: discord.Interaction) -> None:
         if not interaction.channel:
             await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)

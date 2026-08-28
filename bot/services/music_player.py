@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import time
 from functools import partial
@@ -339,6 +340,27 @@ class MusicService:
             self._players[guild_id] = GuildMusicPlayer(self._bot, guild_id)
         return self._players[guild_id]
 
+    def validate_youtube_cookies(self) -> tuple[bool, str]:
+        """Valida o caminho e o cabecalho Netscape sem expor o conteudo dos cookies."""
+        cookies_path = self._settings.youtube_cookies_path
+        if not cookies_path:
+            return False, "YOUTUBE_COOKIES_PATH nao foi configurado."
+
+        path = Path(cookies_path)
+        if not path.is_file():
+            return False, f"Arquivo de cookies nao encontrado: {path}"
+
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as cookies_file:
+                first_line = cookies_file.readline().strip()
+        except (OSError, UnicodeError) as error:
+            return False, f"Nao consegui ler o arquivo de cookies: {error}"
+
+        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+            return False, "O arquivo nao esta no formato Mozilla/Netscape (cookies.txt)."
+
+        return True, f"Arquivo de cookies encontrado e com formato valido: {path}"
+
     async def resolve_tracks(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
         normalized_query = await self._normalize_query(query)
         info = await asyncio.to_thread(self._extract_best_info, normalized_query)
@@ -348,6 +370,20 @@ class MusicService:
 
         limit = MAX_PLAYLIST_TRACKS if _is_url(normalized_query) else 1
         return [self._track_from_info(entry, requested_by, normalized_query, requester_id) for entry in entries[:limit]]
+
+    async def test_youtube_cookies(self, query: str) -> tuple[bool, str]:
+        """Testa o arquivo de cookies contra uma URL, sem retornar dados sensiveis."""
+        valid, message = self.validate_youtube_cookies()
+        if not valid:
+            return False, message
+        try:
+            info = await asyncio.to_thread(self._extract_info, query)
+        except MusicError as error:
+            return False, str(error)
+        entries = self._entries_from_info(info)
+        if not entries:
+            return False, "O YouTube nao retornou dados para essa URL."
+        return True, "Cookies aceitos pelo YouTube para essa URL."
 
     def _extract_best_info(self, query: str) -> dict:
         if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
@@ -372,6 +408,8 @@ class MusicService:
         try:
             with yt_dlp.YoutubeDL(self._ytdl_options()) as ytdl:
                 info = ytdl.extract_info(query, download=False)
+        except MusicError:
+            raise
         except Exception as error:
             raise MusicError(_friendly_ytdl_error(error)) from error
 
@@ -390,7 +428,10 @@ class MusicService:
         options["remote_components"] = ["ejs:npm"]
 
         cookies_path = self._settings.youtube_cookies_path
-        if cookies_path and Path(cookies_path).exists():
+        if cookies_path:
+            valid, message = self.validate_youtube_cookies()
+            if not valid:
+                raise MusicError(message)
             options["cookiefile"] = cookies_path
 
         return options
@@ -412,7 +453,7 @@ class MusicService:
             webpage_url=info.get("webpage_url") or fallback_url,
             stream_url=stream_url,
             requested_by=requested_by,
-            duration=info.get("duration"),
+            duration=_coerce_duration(info.get("duration")),
             artist=info.get("artist") or info.get("creator") or info.get("uploader"),
             album=info.get("album"),
             thumbnail_url=info.get("thumbnail"),
@@ -475,7 +516,13 @@ def _is_stream_rejected(error: Exception | None) -> bool:
     if error is None:
         return False
     message = str(error).lower()
-    return "403" in message or "return code of 8" in message or "return code 8" in message
+    return (
+        "403" in message
+        or "http error 400" in message
+        or "server returned 400" in message
+        or "return code of 8" in message
+        or "return code 8" in message
+    )
 
 
 def _friendly_ytdl_error(error: Exception) -> str:
@@ -513,14 +560,30 @@ def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False
     return embed
 
 
-def _format_track_time(position: int, duration: int | None) -> str:
+def _coerce_duration(value: object) -> int | None:
+    """Converte duracoes do yt-dlp (normalmente float) para segundos inteiros."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    if seconds < 0:
+        return 0
+    return int(seconds)
+
+
+def _format_track_time(position: int | float, duration: int | float | None) -> str:
     if duration is None:
         return _format_duration(position)
     return f"{_format_duration(position)} / {_format_duration(duration)}"
 
 
-def _format_duration(seconds: int) -> str:
-    minutes, remaining_seconds = divmod(max(0, seconds), 60)
+def _format_duration(seconds: int | float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours}:{minutes:02d}:{remaining_seconds:02d}"

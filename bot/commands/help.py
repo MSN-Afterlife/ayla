@@ -74,6 +74,7 @@ HELP_CATEGORIES = {
             ("`{prefix}flt bassboost`", "Filtros: none, bassboost, nightcore, vaporwave e soft.", True),
             ("`{prefix}rep one` / `{prefix}sh`", "Controla repeticao e embaralha a fila.", True),
             ("`{prefix}rm 2`, `{prefix}mv 3 1`, `{prefix}c`", "Remove, move ou limpa musicas da fila.", False),
+            ("`{prefix}musiccheck [url]`", "Verifica os cookies do YouTube (somente administradores).", False),
         ],
         "color": 0x1DB954,
     },

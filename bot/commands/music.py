@@ -1,3 +1,5 @@
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,6 +16,7 @@ from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
 
 
+logger = logging.getLogger(__name__)
 REPEAT_CHOICES = [
     app_commands.Choice(name="Desligado", value="off"),
     app_commands.Choice(name="Uma musica", value="one"),
@@ -35,6 +38,8 @@ async def _send(ctx: commands.Context, message: str) -> None:
 def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
     music = MusicService(bot, settings)
     bot._music_service = music
+    cookies_valid, cookies_message = music.validate_youtube_cookies()
+    print(f"[MUSIC] Cookies do YouTube: {'OK' if cookies_valid else 'AVISO'} - {cookies_message}")
     lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")
@@ -58,7 +63,12 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
             position = player.add_many(tracks, ctx.channel)
             await player.start_if_idle(voice_client)
         except MusicError as error:
-            await ctx.send(str(error))
+            logger.warning("Falha ao executar play para %s: %s", ctx.author, error, exc_info=True)
+            await _send(ctx, "Deu erro ao tentar tocar essa musica. Tente outro link ou outra busca.")
+            return
+        except Exception:
+            logger.exception("Erro inesperado ao executar play para %s", ctx.author)
+            await _send(ctx, "Deu erro ao tentar tocar essa musica. Tente novamente mais tarde.")
             return
 
         if len(tracks) == 1:
@@ -70,6 +80,33 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
 
         limited = " " if len(tracks) < MAX_PLAYLIST_TRACKS else f" Limitei em {MAX_PLAYLIST_TRACKS} faixas."
         await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila a partir da posicao `#{position}`.{limited}")
+
+    @bot.hybrid_command(
+        name="musiccheck",
+        aliases=["ytcheck", "checkcookies"],
+        description="Verifica os cookies do YouTube (administradores).",
+    )
+    async def musiccheck(ctx: commands.Context, *, url: str | None = None) -> None:
+        if not ctx.guild:
+            await _send(ctx, "Esse comando so funciona em servidores.")
+            return
+        permissions = getattr(ctx.author, "guild_permissions", None)
+        if not permissions or not permissions.manage_guild:
+            await _send(ctx, "Apenas administradores podem usar esse comando.")
+            return
+
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.defer(ephemeral=True)
+
+        if not url:
+            valid, message = music.validate_youtube_cookies()
+            prefix = "OK" if valid else "ERRO"
+            await ctx.send(f"`{prefix}` {message}", ephemeral=bool(ctx.interaction))
+            return
+
+        valid, message = await music.test_youtube_cookies(url)
+        prefix = "OK" if valid else "ERRO"
+        await ctx.send(f"`{prefix}` {message}", ephemeral=bool(ctx.interaction))
 
     @bot.hybrid_command(name="pause", aliases=["pa"], description="Pausa a musica atual.")
     async def pause(ctx: commands.Context) -> None:

@@ -9,7 +9,7 @@ from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 
 
 class SiteApiServer:
-    def __init__(self, settings: Settings, readiness_check: Callable[[], bool]) -> None:
+    def __init__(self, settings: Settings, readiness_check: Callable[[], bool], lastfm: LastFmService) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
         self._economy = EconomyService(settings)

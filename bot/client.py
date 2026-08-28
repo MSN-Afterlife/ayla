@@ -31,7 +31,9 @@ from bot.commands.lastfm import setup_lastfm_commands
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._site_api = SiteApiServer(settings, self.is_ready) if settings.site_api_enabled else None
+        self._lastfm = LastFmService(settings)
+        self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
+        self._site_api = SiteApiServer(settings, self.is_ready, self._lastfm) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:

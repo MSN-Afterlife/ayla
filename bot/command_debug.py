@@ -96,7 +96,7 @@ def setup_command_debug(bot: commands.Bot) -> None:
                 channel=interaction.channel,
                 user=interaction.user,
                 options=_interaction_options(interaction),
-                elapsed_ms=_elapsed_ms(getattr(interaction, "_ayla_debug_started_at", None)),
+                elapsed_ms=_elapsed_ms(interaction.extras.get("_ayla_debug_started_at") if interaction else None),
                 error=repr(error),
                 traceback="".join(traceback.format_exception(type(error), error, error.__traceback__)),
             )
@@ -126,7 +126,7 @@ def _wrap_app_command(command: app_commands.Command[Any, ..., Any]) -> None:
         interaction = _find_interaction(args, kwargs)
         started_at = time.perf_counter()
         if interaction and _is_debug_guild(interaction.guild):
-            interaction._ayla_debug_started_at = started_at
+            interaction.extras["_ayla_debug_started_at"] = started_at
             _log(
                 "SLASH START",
                 command=command.qualified_name,

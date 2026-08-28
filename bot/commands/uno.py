@@ -556,6 +556,25 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await ctx.send("Ja existe uma mesa de UNO neste canal.")
             return
 
+        if not (1 <= cartas <= 20):
+            await interaction.response.send_message("A quantidade de cartas iniciais deve ser entre 1 e 20.", ephemeral=True)
+            return
+
+        game = UnoGame(
+            interaction.channel.id,
+            interaction.user,
+            cartas_iniciais=cartas,
+            ayla_caotica_url=ayla_caotica_url,
+            chaos_deck_size=chaos_deck_size,
+        )
+        games[interaction.channel.id] = game
+
+        embed = discord.Embed(
+            title="🎮 Mesa de UNO Criada!",
+            description=_rules_prompt(game),
+            color=discord.Color.blue()
+        )
+        
         games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, cartas_iniciais=cartas)
         await ctx.send(f"Mesa de UNO criada por {ctx.author.mention} com **{cartas}** cartas iniciais! Use `a!uno entrar` para participar.")
 

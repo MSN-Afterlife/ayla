@@ -84,14 +84,21 @@ class UnoPlayer:
 
 
 class UnoGame:
-    def __init__(self, channel_id: int, host: discord.Member | discord.User, cartas_iniciais: int = 7) -> None:
+    def __init__(
+        self,
+        channel_id: int,
+        host: discord.Member | discord.User,
+        cartas_iniciais: int = 7,
+        ruleset: str = "normal",
+        ayla_caotica_url: str | None = None,
+        chaos_deck_size: int = CHAOS_DECK_SIZE
+    ) -> None:
         self.channel_id = channel_id
         self.host_id = host.id
         self.ruleset = ruleset
         self.ayla_caotica_url = ayla_caotica_url
         self.chaos_deck_size = max(CLASSIC_DECK_SIZE, chaos_deck_size)
         self.players = [UnoPlayer(host)]
-        self.deck = _new_uno_deck(chaos=self.is_chaos, chaos_deck_size=self.chaos_deck_size)
         self.discard: list[UnoCard] = []
         self.current_color: str | None = None
         self.turn_index = 0
@@ -99,11 +106,14 @@ class UnoGame:
         self.started = False
         self.awaiting_draw = False
         self.cartas_iniciais = cartas_iniciais
+        self.deck = _new_uno_deck(chaos=(ruleset == "caos"), chaos_deck_size=self.chaos_deck_size)
 
+    @property
+    def is_chaos(self) -> bool:
+        return self.ruleset == "caos"
     @property
     def current_player(self) -> UnoPlayer:
         return self.players[self.turn_index]
-
     @property
     def top_card(self) -> UnoCard:
         return self.discard[-1]
@@ -686,7 +696,8 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
         await ctx.send("Mesa de UNO cancelada.")
 
     @uno_slash.command(name="criar", description="Cria uma mesa de UNO neste canal.")
-    async def uno_create_slash(interaction: discord.Interaction) -> None:
+    @app_commands.describe(cartas="Quantidade de cartas iniciais para cada jogador (padrao: 7).")
+    async def uno_create_slash(interaction: discord.Interaction, cartas: int = 7) -> None:
         if not interaction.guild or not interaction.channel:
             await interaction.response.send_message("UNO precisa ser criado dentro de um servidor.", ephemeral=True)
             return
@@ -694,10 +705,19 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await interaction.response.send_message("Ja existe uma mesa de UNO neste canal.", ephemeral=True)
             return
 
-        game = UnoGame(interaction.channel.id, interaction.user, ayla_caotica_url=ayla_caotica_url, chaos_deck_size=chaos_deck_size)
+        if not (1 <= cartas <= 20):
+            await interaction.response.send_message("A quantidade de cartas iniciais deve ser entre 1 e 20.", ephemeral=True)
+            return
+
+        game = UnoGame(
+            interaction.channel.id,
+            interaction.user,
+            cartas_iniciais=cartas,
+            ayla_caotica_url=ayla_caotica_url,
+            chaos_deck_size=chaos_deck_size,
+        )
         games[interaction.channel.id] = game
         await interaction.response.send_message(_rules_prompt(game), view=UnoRulesView(game))
-
     @uno_slash.command(name="entrar", description="Entra na mesa de UNO deste canal.")
     async def uno_join_slash(interaction: discord.Interaction) -> None:
         if not interaction.channel:

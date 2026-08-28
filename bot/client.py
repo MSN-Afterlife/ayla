@@ -83,7 +83,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_level_commands(bot, settings)
     setup_chat_config_commands(bot, chat_config)
     setup_economy_commands(bot, settings)
-    setup_uno_commands(bot)
+    setup_uno_commands(bot, settings)
     setup_bingo_commands(bot)
     setup_help_command(bot, settings)
     setup_message_events(bot, settings, chat_config)

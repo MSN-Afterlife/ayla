@@ -106,6 +106,11 @@ class UnoGame:
         self.started = False
         self.awaiting_draw = False
         self.cartas_iniciais = cartas_iniciais
+        self.pending_uno_player_id: int | None = None
+        self.last_character: str | None = None
+        self.last_character_url: str | None = None
+        self.last_character_effect: str | None = None
+        self.last_character_target: str | None = None
         self.deck = _new_uno_deck(chaos=(ruleset == "caos"), chaos_deck_size=self.chaos_deck_size)
 
     @property
@@ -125,10 +130,18 @@ class UnoGame:
         return True
 
     def start(self) -> None:
+        if self.started:
+            raise RuntimeError("A partida de UNO ja foi iniciada.")
+        if self.is_chaos and (len(self.players) * self.cartas_iniciais + 1 > len(self.deck)):
+            raise RuntimeError("O baralho Caos nao tem cartas suficientes para iniciar esta mesa.")
+
         random.shuffle(self.deck)
         for _ in range(self.cartas_iniciais):
             for player in self.players:
-                player.hand.append(self.draw_one())
+                card = self.draw_one()
+                if card is None:
+                    raise RuntimeError("O baralho nao tem cartas suficientes para distribuir as maos iniciais.")
+                player.hand.append(card)
 
         # Escolhe uma carta inicial valida sem reembaralhar o baralho inteiro.
         # Isso e essencial para baralhos grandes, especialmente com 1 milhao de cartas.
@@ -178,6 +191,9 @@ class UnoGame:
             return False, "Cor invalida. Use `vermelho`, `azul`, `verde` ou `amarelo`.", None
 
         self.current_player.hand.pop(hand_index)
+        # A denuncia de UNO vale somente para a jogada que deixou o jogador
+        # com uma carta; uma nova jogada encerra qualquer denuncia anterior.
+        self.pending_uno_player_id = None
         self.discard.append(card)
         if self.is_chaos:
             self.deck.append(card)
@@ -557,26 +573,22 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             return
 
         if not (1 <= cartas <= 20):
-            await interaction.response.send_message("A quantidade de cartas iniciais deve ser entre 1 e 20.", ephemeral=True)
+            await ctx.send("A quantidade de cartas iniciais deve ser entre 1 e 20.")
             return
 
         game = UnoGame(
-            interaction.channel.id,
-            interaction.user,
+            ctx.channel.id,
+            ctx.author,
             cartas_iniciais=cartas,
             ayla_caotica_url=ayla_caotica_url,
             chaos_deck_size=chaos_deck_size,
         )
-        games[interaction.channel.id] = game
+        games[ctx.channel.id] = game
 
-        embed = discord.Embed(
-            title="🎮 Mesa de UNO Criada!",
-            description=_rules_prompt(game),
-            color=discord.Color.blue()
+        await ctx.send(
+            f"Mesa de UNO criada por {ctx.author.mention} com **{cartas}** cartas iniciais! "
+            "Use `a!uno entrar` para participar e `a!uno iniciar` para começar."
         )
-        
-        games[ctx.channel.id] = UnoGame(ctx.channel.id, ctx.author, cartas_iniciais=cartas)
-        await ctx.send(f"Mesa de UNO criada por {ctx.author.mention} com **{cartas}** cartas iniciais! Use `a!uno entrar` para participar.")
 
     @uno.command(name="entrar")
     async def uno_join(ctx: commands.Context) -> None:
@@ -602,7 +614,11 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await ctx.send("UNO precisa de pelo menos 2 jogadores.")
             return
 
-        game.start()
+        try:
+            game.start()
+        except RuntimeError as error:
+            await ctx.send(str(error))
+            return
         setattr(game, "_images", images)
         failed = await _dm_all_hands(game)
         message = "Nao consegui mandar DM para: " + ", ".join(failed) if failed else None
@@ -743,6 +759,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed, view=UnoRulesView(game))
+    @uno_slash.command(name="entrar", description="Entra na mesa de UNO deste canal.")
     async def uno_join_slash(interaction: discord.Interaction) -> None:
         if not interaction.channel:
             await interaction.response.send_message("Use este comando em um canal.", ephemeral=True)
@@ -772,7 +789,11 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
             await interaction.response.send_message("UNO precisa de pelo menos 2 jogadores.", ephemeral=True)
             return
 
-        game.start()
+        try:
+            game.start()
+        except RuntimeError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
         setattr(game, "_images", images)
         failed = await _dm_all_hands(game)
         message = "Nao consegui mandar DM para: " + ", ".join(failed) if failed else None

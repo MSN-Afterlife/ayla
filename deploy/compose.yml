@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     env_file:
       - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}
+    environment:
+      YOUTUBE_COOKIES_PATH: /run/secrets/cookies.txt
     ports:
       - "127.0.0.1:${BOT_HOST_PORT:?BOT_HOST_PORT is required}:8090"
     volumes:
@@ -91,4 +93,6 @@ networks:
 
 secrets:
   youtube_cookies:
-    file: ${YOUTUBE_COOKIES_HOST_PATH:?YOUTUBE_COOKIES_HOST_PATH is required}
+    # The remote deploy stores the shared cookies file beside prod.env/staging.env.
+    # Keep this path independent from the deploy script version installed on the host.
+    file: /opt/ayla/config/cookies

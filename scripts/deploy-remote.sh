@@ -32,7 +32,7 @@ case "$environment" in
 esac
 
 runtime_env_dir=$(dirname -- "$runtime_env")
-youtube_cookies_host_path="$runtime_env_dir/cookies"
+youtube_cookies_host_path="$runtime_env_dir/cookies.txt"
 
 expected_archive="/tmp/ayla-$release_sha.tar.gz"
 if test "$archive" != "$expected_archive"; then

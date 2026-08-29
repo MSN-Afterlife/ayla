@@ -49,7 +49,7 @@ services:
     networks:
       - ayla
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2333/version || exit 1"]
+      test: ["CMD-SHELL", "wget -q --header=\"Authorization: $${LAVALINK_PASSWORD}\" -O - http://127.0.0.1:2333/version >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 8

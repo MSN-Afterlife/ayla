@@ -49,6 +49,7 @@ YTDL_OPTIONS = {
 
 FFMPEG_RECONNECT_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 LAVALINK_RECONNECT_GRACE_SECONDS = 20
+LAVALINK_STARTUP_RETRY_DELAY_SECONDS = 2
 
 
 class RepeatMode(str, Enum):
@@ -705,23 +706,29 @@ class MusicService:
             return False
         if self._lavalink_connected:
             return True
-        node = None
-        try:
-            node = wavelink.Node(uri=self._settings.lavalink_uri, password=self._settings.lavalink_password, retries=self._settings.lavalink_reconnect_attempts if self._settings.lavalink_reconnect else 0)
-            await asyncio.wait_for(wavelink.Pool.connect(nodes=[node], client=self._bot, cache_capacity=100), timeout=10)
-        except Exception as error:
-            if node is not None:
-                with suppress(Exception):
-                    await node.close(eject=True)
-                session = getattr(node, "_session", None)
-                if session is not None:
+        attempts = 1 + min(self._settings.lavalink_reconnect_attempts, 4) if self._settings.lavalink_reconnect else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            node = None
+            try:
+                node = wavelink.Node(uri=self._settings.lavalink_uri, password=self._settings.lavalink_password, retries=self._settings.lavalink_reconnect_attempts if self._settings.lavalink_reconnect else 0)
+                await asyncio.wait_for(wavelink.Pool.connect(nodes=[node], client=self._bot, cache_capacity=100), timeout=5)
+                self._lavalink_connected = True
+                logger.info("Lavalink conectado em %s", self._settings.lavalink_uri)
+                return True
+            except Exception as error:
+                last_error = error
+                if node is not None:
                     with suppress(Exception):
-                        await session.close()
-            logger.warning("[MUSIC] Lavalink unavailable: %s", _safe_error(error))
-            return False
-        self._lavalink_connected = True
-        logger.info("Lavalink conectado em %s", self._settings.lavalink_uri)
-        return True
+                        await node.close(eject=True)
+                    session = getattr(node, "_session", None)
+                    if session is not None:
+                        with suppress(Exception):
+                            await session.close()
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(LAVALINK_STARTUP_RETRY_DELAY_SECONDS)
+        logger.warning("[MUSIC] Lavalink unavailable after %s attempt(s): %s", attempts, _safe_error(last_error or RuntimeError("unknown error")))
+        return False
 
     def player_for(self, guild_id: int) -> GuildMusicPlayer:
         if guild_id not in self._players:

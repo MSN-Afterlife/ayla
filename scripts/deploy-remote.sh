@@ -31,6 +31,9 @@ case "$environment" in
     ;;
 esac
 
+runtime_env_dir=$(dirname -- "$runtime_env")
+youtube_cookies_host_path="$runtime_env_dir/cookies"
+
 expected_archive="/tmp/ayla-$release_sha.tar.gz"
 if test "$archive" != "$expected_archive"; then
   echo "unexpected archive path" >&2
@@ -58,6 +61,7 @@ compose() {
   RELEASE_SHA="$sha" \
   DATA_DIR="$data_dir" \
   RUNTIME_ENV_FILE="$runtime_env" \
+  YOUTUBE_COOKIES_HOST_PATH="$youtube_cookies_host_path" \
   BOT_HOST_PORT="$bot_port" \
   SITE_API_HOST_PORT="$site_api_port" \
   docker compose --project-name "ayla-$environment" -f "$directory/deploy/compose.yml" "$@"
@@ -137,6 +141,7 @@ prune_releases() {
 require_file "$archive"
 require_directory "$data_dir"
 require_file "$runtime_env"
+require_file "$youtube_cookies_host_path"
 require_directory /opt/ayla/scripts
 docker info >/dev/null
 

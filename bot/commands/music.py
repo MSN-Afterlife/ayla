@@ -56,14 +56,20 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         else:
             await ctx.defer()
         try:
-            voice_client = await _connect_or_move(ctx)
             tracks = await music.resolve_tracks(query, ctx.author.display_name, ctx.author.id)
             player = music.player_for(ctx.guild.id)
+            async with music.voice_lock_for(ctx.guild.id):
+                async with player._advance_lock:
+                    # Nunca troque o backend da faixa atual apenas porque uma nova
+                    # entrada foi enfileirada. A troca ocorre em _play_next_impl,
+                    # quando a faixa corrente termina ou e pulada.
+                    use_lavalink = player.current.provider == "lavalink" if player.current else tracks[0].provider == "lavalink"
+                    voice_client = await _connect_or_move(ctx, use_lavalink=use_lavalink)
             player.set_now_playing_view_factory(lambda player: MusicNowPlayingView(music, lyrics_service, player))
             position = player.add_many(tracks, ctx.channel)
             await player.start_if_idle(voice_client)
         except MusicError as error:
-            logger.warning("Falha ao executar play para %s: %s", ctx.author, error, exc_info=True)
+            logger.warning("Falha ao executar play para %s: %s", ctx.author, error)
             await _send(ctx, "Deu erro ao tentar tocar essa musica. Tente outro link ou outra busca.")
             return
         except Exception:
@@ -111,23 +117,29 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
     @bot.hybrid_command(name="pause", aliases=["pa"], description="Pausa a musica atual.")
     async def pause(ctx: commands.Context) -> None:
         voice_client = ctx.voice_client
-        if not voice_client or not voice_client.is_playing():
+        if not voice_client or not _voice_playing(voice_client):
             await _send(ctx, "Nao tem nenhuma musica tocando agora.")
             return
 
         music.player_for(ctx.guild.id).pause() if ctx.guild else None
-        voice_client.pause()
+        if hasattr(voice_client, "pause") and voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(True)
+        else:
+            voice_client.pause()
         await _send(ctx, "Musica pausada.")
 
     @bot.hybrid_command(name="resume", aliases=["r", "continuar"], description="Continua a musica pausada.")
     async def resume(ctx: commands.Context) -> None:
         voice_client = ctx.voice_client
-        if not voice_client or not voice_client.is_paused():
+        if not voice_client or not _voice_paused(voice_client):
             await _send(ctx, "Nao tem nenhuma musica pausada.")
             return
 
         music.player_for(ctx.guild.id).resume() if ctx.guild else None
-        voice_client.resume()
+        if hasattr(voice_client, "pause") and voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(False)
+        else:
+            voice_client.resume()
         await _send(ctx, "Musica retomada.")
 
     @bot.hybrid_command(name="skip", aliases=["sk"], description="Pula a musica atual.")
@@ -345,12 +357,31 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=_lyrics_embed(result.title, result.artist, pages, 0), view=LyricsView(result.title, result.artist, pages))
 
 
-async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
+def _voice_playing(voice_client) -> bool:
+    return bool(getattr(voice_client, "playing", False)) if voice_client.__class__.__module__.startswith("wavelink") else voice_client.is_playing()
+
+
+def _voice_paused(voice_client) -> bool:
+    return bool(getattr(voice_client, "paused", False)) if voice_client.__class__.__module__.startswith("wavelink") else voice_client.is_paused()
+
+
+async def _connect_or_move(ctx: commands.Context, *, use_lavalink: bool = False) -> discord.VoiceClient:
     channel = ctx.author.voice.channel
     voice_client = ctx.voice_client
 
     try:
         if not voice_client:
+            if use_lavalink:
+                import wavelink
+                return await channel.connect(cls=wavelink.Player)
+            return await channel.connect()
+
+        current_is_lavalink = voice_client.__class__.__module__.startswith("wavelink")
+        if current_is_lavalink != use_lavalink:
+            await voice_client.disconnect()
+            if use_lavalink:
+                import wavelink
+                return await channel.connect(cls=wavelink.Player)
             return await channel.connect()
 
         if voice_client.channel != channel:
@@ -464,21 +495,27 @@ class MusicNowPlayingView(discord.ui.View):
     @discord.ui.button(label="Pausar", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         voice_client = interaction.guild.voice_client if interaction.guild else None
-        if not voice_client or not voice_client.is_playing():
+        if not voice_client or not _voice_playing(voice_client):
             await interaction.response.send_message("Nao tem musica tocando agora.", ephemeral=True)
             return
         self._player.pause()
-        voice_client.pause()
+        if voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(True)
+        else:
+            voice_client.pause()
         await interaction.response.send_message("Musica pausada.", ephemeral=True)
 
     @discord.ui.button(label="Continuar", emoji="▶️", style=discord.ButtonStyle.success, row=0)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         voice_client = interaction.guild.voice_client if interaction.guild else None
-        if not voice_client or not voice_client.is_paused():
+        if not voice_client or not _voice_paused(voice_client):
             await interaction.response.send_message("Nao tem musica pausada.", ephemeral=True)
             return
         self._player.resume()
-        voice_client.resume()
+        if voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(False)
+        else:
+            voice_client.resume()
         await interaction.response.send_message("Musica retomada.", ephemeral=True)
 
     @discord.ui.button(label="Pular", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)

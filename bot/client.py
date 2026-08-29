@@ -38,6 +38,9 @@ class AylaBot(commands.Bot):
     async def setup_hook(self) -> None:
         if self._site_api:
             await self._site_api.start()
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.connect_lavalink()
         self.loop.create_task(start_presence_rotation(self))
 
     async def close(self) -> None:
@@ -51,6 +54,41 @@ class AylaBot(commands.Bot):
             await task_ai_service.close()
         await self._lastfm.close()
         await super().close()
+
+    async def on_wavelink_track_end(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.handle_lavalink_end(payload.player, event_track=payload.track)
+
+    async def on_wavelink_node_ready(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.handle_lavalink_node_ready()
+
+    async def on_wavelink_node_closed(self, node, disconnected) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            music_service.handle_lavalink_node_lost("node closed")
+
+    async def on_wavelink_node_disconnected(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            music_service.handle_lavalink_node_lost("node disconnected")
+
+    async def on_wavelink_track_exception(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.handle_lavalink_end(payload.player, error=payload.exception, event_track=payload.track)
+
+    async def on_wavelink_track_stuck(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.handle_lavalink_end(payload.player, error=RuntimeError("Lavalink track stuck"), event_track=payload.track)
+
+    async def on_wavelink_websocket_closed(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service and payload.player:
+            await music_service.handle_lavalink_voice_closed(payload.player, payload.reason)
 
 
 def create_bot(settings: Settings) -> commands.Bot:

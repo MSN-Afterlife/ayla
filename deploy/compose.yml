@@ -12,6 +12,9 @@ services:
       - "127.0.0.1:${BOT_HOST_PORT:?BOT_HOST_PORT is required}:8090"
     volumes:
       - ${DATA_DIR:?DATA_DIR is required}:/app/data:rw
+    secrets:
+      - source: youtube_cookies
+        target: cookies.txt
     networks:
       - ayla
     healthcheck:
@@ -29,6 +32,26 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  lavalink:
+    container_name: ayla-${AYLA_ENV:?AYLA_ENV is required}-lavalink
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    restart: unless-stopped
+    env_file:
+      - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}
+    environment:
+      SERVER_PORT: 2333
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - ${DATA_DIR:?DATA_DIR is required}/lavalink:/opt/Lavalink/data:rw
+    networks:
+      - ayla
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2333/version || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
 
   site-api:
     container_name: ayla-${AYLA_ENV:?AYLA_ENV is required}-site-api
@@ -65,3 +88,7 @@ networks:
   ayla:
     name: ayla_${AYLA_ENV:?AYLA_ENV is required}
     driver: bridge
+
+secrets:
+  youtube_cookies:
+    file: ${YOUTUBE_COOKIES_HOST_PATH:?YOUTUBE_COOKIES_HOST_PATH is required}

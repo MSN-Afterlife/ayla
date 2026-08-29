@@ -37,7 +37,7 @@ services:
 
   lavalink:
     container_name: ayla-${AYLA_ENV:?AYLA_ENV is required}-lavalink
-    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2-alpine
     restart: unless-stopped
     env_file:
       - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}

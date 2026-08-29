@@ -2,7 +2,10 @@ import asyncio
 from contextlib import suppress
 import logging
 import math
+import os
 import random
+import shutil
+import tempfile
 import time
 from functools import partial
 import shlex
@@ -685,6 +688,8 @@ class MusicService:
         self._players: dict[int, GuildMusicPlayer] = {}
         self._voice_locks: dict[int, asyncio.Lock] = {}
         self._lavalink_connected = False
+        self._youtube_cookies_runtime_path: Path | None = None
+        self._youtube_cookies_source_signature: tuple[int, int] | None = None
         self._ytdlp = YtdlpProvider(self)
         self._lavalink = LavalinkProvider(self)
 
@@ -863,9 +868,45 @@ class MusicService:
             valid, message = self.validate_youtube_cookies()
             if not valid:
                 raise MusicError(message)
-            options["cookiefile"] = cookies_path
+            options["cookiefile"] = self._writable_youtube_cookies_path()
 
         return options
+
+    def _writable_youtube_cookies_path(self) -> str:
+        """Returns a writable private copy, keeping the Docker secret read-only."""
+        source = Path(self._settings.youtube_cookies_path or "")
+        try:
+            signature = (source.stat().st_mtime_ns, source.stat().st_size)
+        except OSError as error:
+            raise MusicError(f"Nao consegui acessar o arquivo de cookies: {error}") from error
+
+        if self._youtube_cookies_runtime_path and self._youtube_cookies_source_signature == signature:
+            return str(self._youtube_cookies_runtime_path)
+
+        runtime_path = Path(tempfile.gettempdir()) / "ayla-youtube-cookies.txt"
+        temporary_path = runtime_path.with_name(f".{runtime_path.name}.tmp")
+        try:
+            shutil.copyfile(source, temporary_path)
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, runtime_path)
+            os.chmod(runtime_path, 0o600)
+        except OSError as error:
+            with suppress(OSError):
+                temporary_path.unlink()
+            raise MusicError(f"Nao consegui preparar uma copia gravavel dos cookies: {error}") from error
+
+        self._youtube_cookies_runtime_path = runtime_path
+        self._youtube_cookies_source_signature = signature
+        return str(runtime_path)
+
+    def prepare_youtube_cookies(self) -> None:
+        """Refreshes the writable copy when a cookie secret is available."""
+        if not self._settings.youtube_cookies_path or not Path(self._settings.youtube_cookies_path).is_file():
+            return
+        try:
+            self._writable_youtube_cookies_path()
+        except MusicError as error:
+            logger.warning("[MUSIC] Could not prepare writable YouTube cookies: %s", _safe_error(error))
 
     def _entries_from_info(self, info: dict | None) -> list[dict]:
         if not info:

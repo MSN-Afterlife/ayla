@@ -1,4 +1,6 @@
 import asyncio
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -218,6 +220,24 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await service.connect_lavalink())
             connect.assert_awaited_once()
         self.assertTrue(service.lavalink_available)
+
+    async def test_ytdlp_uses_private_writable_cookie_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "cookies.txt")
+            with open(source, "w", encoding="utf-8") as cookie_file:
+                cookie_file.write("# Netscape HTTP Cookie File\n")
+            service = MusicService(
+                SimpleNamespace(loop=asyncio.get_running_loop()),
+                Settings(discord_token="test", youtube_cookies_path=source),
+            )
+            options = service._ytdl_options("ytsearch1:test")
+            runtime_path = options["cookiefile"]
+            self.assertNotEqual(runtime_path, source)
+            self.assertTrue(os.path.isfile(runtime_path))
+            if os.name != "nt":
+                self.assertEqual(os.stat(runtime_path).st_mode & 0o777, 0o600)
+            with open(runtime_path, "a", encoding="utf-8") as cookie_file:
+                cookie_file.write("# writable\n")
 
     async def test_lavalink_disconnect_reconnect_cancels_recovery(self):
         service = self.make_service()

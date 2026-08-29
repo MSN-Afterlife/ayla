@@ -40,6 +40,7 @@ class AylaBot(commands.Bot):
             await self._site_api.start()
         music_service = getattr(self, "_music_service", None)
         if music_service:
+            music_service.prepare_youtube_cookies()
             await music_service.connect_lavalink()
         self.loop.create_task(start_presence_rotation(self))
 

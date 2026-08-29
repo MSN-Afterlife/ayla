@@ -115,6 +115,24 @@ class LastFmService:
         items = (data.get("toptracks") or {}).get("track") or []
         return [item for item in items if isinstance(item, dict) and item.get("name")][:limit]
 
+    async def similar_artists(self, artist: str, limit: int = 3) -> list[dict]:
+        data = await self._request({
+            "method": "artist.getSimilar",
+            "artist": artist,
+            "limit": str(max(1, min(limit, 5))),
+        })
+        items = (data.get("similarartists") or {}).get("artist") or []
+        return [item for item in items if isinstance(item, dict) and item.get("name")][:limit]
+
+    async def artist_top_tracks(self, artist: str, limit: int = 3) -> list[dict]:
+        data = await self._request({
+            "method": "artist.getTopTracks",
+            "artist": artist,
+            "limit": str(max(1, min(limit, 5))),
+        })
+        items = (data.get("toptracks") or {}).get("track") or []
+        return [item for item in items if isinstance(item, dict) and item.get("name")][:limit]
+
 
 def safe_page(title: str, message: str) -> str:
     return f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title><main><h1>{html.escape(title)}</h1><p>{html.escape(message)}</p></main>"

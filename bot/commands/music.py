@@ -50,6 +50,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         if not ctx.author.voice or not ctx.author.voice.channel:
             await _send(ctx, "Entre em um canal de voz primeiro.")
             return
+        music.player_for(ctx.guild.id).cancel_autoplay()
 
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
@@ -186,16 +187,29 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
     @bot.hybrid_command(
         name="autoplay",
         aliases=["autoqueue", "playqueue", "filaauto"],
-        description="Monta uma fila com as musicas mais ouvidas do seu Last.fm.",
+        description="Controla o autoplay ou monta uma fila com seu Last.fm.",
     )
-    async def autoplay(ctx: commands.Context, quantidade: int = 5) -> None:
+    async def autoplay(ctx: commands.Context, modo: str = "status") -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")
+            return
+        player = music.player_for(ctx.guild.id)
+        normalized = modo.lower()
+        if normalized in {"on", "off", "status"}:
+            if normalized == "status":
+                await _send(ctx, f"Autoplay: `{'ativado' if player.autoplay_enabled else 'desativado'}`.")
+            else:
+                enabled = player.set_autoplay(normalized == "on")
+                await _send(ctx, f"Autoplay {'ativado' if enabled else 'desativado'}.")
             return
         if not ctx.author.voice or not ctx.author.voice.channel:
             await _send(ctx, "Entre em um canal de voz primeiro.")
             return
-        quantidade = max(1, min(10, quantidade))
+        try:
+            quantidade = max(1, min(10, int(normalized)))
+        except ValueError:
+            await _send(ctx, "Use `on`, `off`, `status` ou uma quantidade entre 1 e 10.")
+            return
         recommendations = await music.recommendations_for_user(ctx.author.id, quantidade)
         if not recommendations:
             await _send(ctx, "Nao encontrei recomendacoes. Vincule/ative seu Last.fm primeiro.")
@@ -220,7 +234,6 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
             await _send(ctx, "O Last.fm retornou recomendacoes, mas nao consegui resolver nenhuma para reproducao.")
             return
 
-        player = music.player_for(ctx.guild.id)
         async with music.voice_lock_for(ctx.guild.id):
             async with player._advance_lock:
                 use_lavalink = player.current.provider == "lavalink" if player.current else tracks[0].provider == "lavalink"

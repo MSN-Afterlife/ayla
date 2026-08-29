@@ -45,6 +45,9 @@ class AylaBot(commands.Bot):
         self.loop.create_task(start_presence_rotation(self))
 
     async def close(self) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service:
+            await music_service.close()
         if self._site_api:
             await self._site_api.stop()
         clickup_service = getattr(self, "_clickup_service", None)

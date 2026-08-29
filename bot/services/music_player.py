@@ -27,6 +27,7 @@ except ImportError:  # Lavalink e opcional durante desenvolvimento local.
     wavelink = None
 
 from bot.config import Settings
+from bot.services.spotify_service import SpotifyError, SpotifyService, SpotifyTrack
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,13 @@ class Track:
     source_query: str | None = None
     fallback_attempted: bool = False
     identifier: str | None = None
+    source: str | None = None
+    source_id: str | None = None
+    source_url: str | None = None
+    original_title: str | None = None
+    original_artist: str | None = None
+    disc_number: int | None = None
+    track_number: int | None = None
 
 
 class AudioProvider:
@@ -109,9 +117,16 @@ class YtdlpProvider(AudioProvider):
     def __init__(self, service: "MusicService") -> None:
         self.service = service
 
-    async def resolve(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+    async def resolve(
+        self,
+        query: str,
+        requested_by: str,
+        requester_id: int | None = None,
+        *,
+        expected: SpotifyTrack | None = None,
+    ) -> list[Track]:
         try:
-            info = await asyncio.to_thread(self.service._extract_best_info, query)
+            info = await asyncio.to_thread(self.service._extract_best_info, query, expected)
         except MusicError as error:
             raise ProviderError(str(error), recoverable=_is_recoverable_provider_error(str(error))) from error
         entries = self.service._entries_from_info(info)
@@ -181,6 +196,11 @@ class GuildMusicPlayer:
         self._lavalink_track_started = False
         self._lavalink_resume_state: bool | None = None
         self._play_generation = 0
+        self._autoplay_enabled = False
+        self._autoplay_generation = 0
+        self._autoplay_task: asyncio.Task | None = None
+        self._autoplay_suppressed_once = False
+        self._recent_tracks: deque[str] = deque(maxlen=20)
 
     @property
     def current(self) -> Track | None:
@@ -216,6 +236,7 @@ class GuildMusicPlayer:
             self._current_started_at = monotonic()
 
     def add_many(self, tracks: list[Track], text_channel: discord.abc.Messageable) -> int:
+        self.cancel_autoplay()
         self._text_channel = text_channel
         first_position = self.queue_size(include_current=True) + 1
         self._queue.extend(tracks)
@@ -238,8 +259,10 @@ class GuildMusicPlayer:
                 raise MusicError("Nao tem nenhuma musica tocando agora.")
             if _is_lavalink_voice(voice_client):
                 self._cancel_lavalink_reconnect_watchdog()
+                self._autoplay_suppressed_once = True
                 await voice_client.skip(force=True)
             else:
+                self._autoplay_suppressed_once = True
                 voice_client.stop()
 
     async def seek(self, voice_client: discord.VoiceClient, seconds: int) -> None:
@@ -273,6 +296,7 @@ class GuildMusicPlayer:
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
         async with self._advance_lock:
+            self.cancel_autoplay()
             self._cancel_lavalink_reconnect_watchdog()
             self._bot._lastfm_scrobbler.ended(self._guild_id, self.current_position()) if hasattr(self._bot, "_lastfm_scrobbler") else None
             self.clear()
@@ -291,6 +315,8 @@ class GuildMusicPlayer:
     def clear(self) -> int:
         removed = len(self._queue)
         self._queue.clear()
+        if self._current:
+            self._autoplay_suppressed_once = True
         return removed
 
     def shuffle(self) -> int:
@@ -329,6 +355,85 @@ class GuildMusicPlayer:
     def set_repeat(self, mode: RepeatMode) -> RepeatMode:
         self._repeat = mode
         return self._repeat
+
+    @property
+    def autoplay_enabled(self) -> bool:
+        return self._autoplay_enabled
+
+    def set_autoplay(self, enabled: bool) -> bool:
+        self._autoplay_enabled = enabled
+        if not enabled:
+            self.cancel_autoplay()
+        return enabled
+
+    def cancel_autoplay(self) -> None:
+        self._autoplay_generation += 1
+        task = self._autoplay_task
+        self._autoplay_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    @staticmethod
+    def _track_key(artist: str | None, title: str | None) -> str:
+        return " ".join(f"{artist or ''} {title or ''}".lower().split())
+
+    def _remember_track(self, track: Track) -> None:
+        self._recent_tracks.append(self._track_key(track.artist or track.original_artist, track.title or track.original_title))
+
+    async def _run_autoplay(self, seed: Track, voice_client: Any, generation: int) -> None:
+        try:
+            recommendations = await self._bot._music_service.recommendations_for_track(seed, limit=5)
+            for recommendation in recommendations:
+                artist_data = recommendation.get("artist")
+                artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+                title = recommendation.get("name")
+                key = self._track_key(str(artist) if artist else None, str(title) if title else None)
+                if not artist or not title or key == self._track_key(seed.artist, seed.title) or key in self._recent_tracks:
+                    continue
+                try:
+                    candidate_tracks = await self._bot._music_service.resolve_tracks(
+                        f"{artist} - {title}", seed.requested_by, seed.requester_id
+                    )
+                except MusicError as error:
+                    logger.info("[LASTFM AUTOPLAY] candidate failed: %s", _safe_error(error))
+                    continue
+                if not candidate_tracks:
+                    continue
+                async with self._advance_lock:
+                    if generation != self._autoplay_generation or not self._autoplay_enabled:
+                        return
+                    connected = getattr(voice_client, "connected", None)
+                    if connected is None:
+                        is_connected = getattr(voice_client, "is_connected", None)
+                        connected = is_connected() if callable(is_connected) else True
+                    if self._current or self._queue or not connected:
+                        return
+                    candidate = candidate_tracks[0]
+                    candidate.source_query = f"{artist} - {title}"
+                    self._queue.append(candidate)
+                    logger.info("[LASTFM AUTOPLAY] Recommendation: %s - %s", artist, title)
+                    await self._play_next_impl(voice_client)
+                return
+            logger.info("[LASTFM AUTOPLAY] No valid recommendation found")
+            await self._announce_queue_finished(seed, recommendations)
+        except asyncio.CancelledError:
+            return
+        except Exception as error:
+            logger.warning("[LASTFM AUTOPLAY] recommendation failed: %s", _safe_error(error))
+            await self._announce_queue_finished(seed, [])
+        finally:
+            if self._autoplay_task is asyncio.current_task():
+                self._autoplay_task = None
+
+    async def _announce_queue_finished(self, track: Track, recommendations: list[dict] | None = None) -> None:
+        if not self._text_channel:
+            return
+        try:
+            if recommendations is None:
+                recommendations = await self._bot._music_service.recommendations_for_track(track)
+            await self._text_channel.send(embed=build_queue_finished_embed(track, recommendations))
+        except Exception as error:
+            logger.info("[MUSIC] queue finished announcement failed: %s", _safe_error(error))
 
     async def set_filter(self, voice_client: discord.VoiceClient | None, name: str) -> str:
         normalized = name.lower()
@@ -369,12 +474,18 @@ class GuildMusicPlayer:
             finished_track = self._current
             self._current = None
             self._current_started_at = None
-            if finished_track and self._text_channel:
-                recommendations = await self._bot._music_service.recommendations_for_track(finished_track)
-                await self._text_channel.send(embed=build_queue_finished_embed(finished_track, recommendations))
+            if finished_track:
+                if self._autoplay_enabled and not getattr(self, "_autoplay_suppressed_once", False):
+                    generation = self._autoplay_generation + 1
+                    self._autoplay_generation = generation
+                    self._autoplay_task = asyncio.create_task(self._run_autoplay(finished_track, voice_client, generation))
+                else:
+                    self._autoplay_suppressed_once = False
+                    await self._announce_queue_finished(finished_track)
             return
 
         self._current = self._queue.popleft()
+        self._autoplay_suppressed_once = False
         self._stream_retry_attempted = False
         self._cancel_lavalink_reconnect_watchdog()
         try:
@@ -387,6 +498,7 @@ class GuildMusicPlayer:
                 return
             if self._text_channel:
                 await self._text_channel.send("Nao consegui iniciar essa musica; pulando para a proxima.")
+            self._autoplay_suppressed_once = True
             self._current = None
             await self._play_next_impl(voice_client)
             return
@@ -408,6 +520,7 @@ class GuildMusicPlayer:
             return
         self._voice_client = voice_client
         self._play_generation += 1
+        self._remember_track(self._current)
         self._log_state("play_request", voice_client)
 
         if self._current.provider == "lavalink":
@@ -512,6 +625,8 @@ class GuildMusicPlayer:
             if self._ending:
                 return
             self._ending = True
+            if error:
+                self._autoplay_suppressed_once = True
             scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
             if scrobbler:
                 position = self.current_position()
@@ -595,6 +710,7 @@ class GuildMusicPlayer:
             logger.info("[MUSIC] guild=%s Lavalink resolved track successfully", self._guild_id)
         except Exception as error:
             logger.warning("[MUSIC] guild=%s Lavalink fallback failed: %s", self._guild_id, _safe_error(error))
+            self._autoplay_suppressed_once = True
             if self._text_channel:
                 await self._text_channel.send("Nao consegui tocar essa musica; tente outro link ou outra busca.")
             self._current_started_at = None
@@ -620,6 +736,8 @@ class GuildMusicPlayer:
             return
         if error and self._text_channel:
             await self._text_channel.send("O Lavalink nao conseguiu reproduzir essa musica; pulando para a proxima.")
+        if error:
+            self._autoplay_suppressed_once = True
         scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
         if scrobbler:
             scrobbler.ended(self._guild_id, self.current_position(), error=error)
@@ -678,6 +796,7 @@ class GuildMusicPlayer:
                     logger.info("[MUSIC] guild=%s Lavalink playback recovered", self._guild_id)
                     return
                 self._ending = True
+                self._autoplay_suppressed_once = True
                 scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
                 if scrobbler:
                     scrobbler.ended(self._guild_id, self.current_position(), error=MusicError("Lavalink connection timeout"))
@@ -753,6 +872,7 @@ class MusicService:
     def __init__(self, bot, settings: Settings) -> None:
         self._bot = bot
         self._settings = settings
+        self._spotify = SpotifyService(settings)
         self._players: dict[int, GuildMusicPlayer] = {}
         self._voice_locks: dict[int, asyncio.Lock] = {}
         self._lavalink_connected = False
@@ -821,6 +941,9 @@ class MusicService:
             self._players[guild_id] = GuildMusicPlayer(self._bot, guild_id)
         return self._players[guild_id]
 
+    async def close(self) -> None:
+        await self._spotify.close()
+
     def voice_lock_for(self, guild_id: int) -> asyncio.Lock:
         return self._voice_locks.setdefault(guild_id, asyncio.Lock())
 
@@ -846,24 +969,28 @@ class MusicService:
         return True, f"Arquivo de cookies encontrado e com formato valido: {path}"
 
     async def resolve_tracks(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
-        spotify_queries = await self._spotify_collection_queries(query)
-        if spotify_queries is not None:
-            tracks: list[Track] = []
-            for spotify_query in spotify_queries:
-                try:
-                    tracks.extend(await self.resolve_tracks(spotify_query, requested_by, requester_id))
-                except MusicError as error:
-                    logger.info("[MUSIC] Spotify item could not be resolved: %s", _safe_error(error))
-                if len(tracks) >= MAX_PLAYLIST_TRACKS:
-                    break
-            if tracks:
-                return tracks[:MAX_PLAYLIST_TRACKS]
-            raise MusicError("Nao consegui resolver nenhuma faixa desse link Spotify.")
+        try:
+            spotify_result = await self._spotify.resolve_url(query)
+        except SpotifyError as error:
+            raise MusicError(str(error)) from error
+        if spotify_result is not None:
+            kind, identifier, spotify_tracks = spotify_result
+            return await self._resolve_spotify_tracks(kind, identifier, spotify_tracks, requested_by, requester_id)
 
+        return await self._resolve_standard_tracks(query, requested_by, requester_id)
+
+    async def _resolve_standard_tracks(
+        self,
+        query: str,
+        requested_by: str,
+        requester_id: int | None = None,
+        *,
+        expected: SpotifyTrack | None = None,
+    ) -> list[Track]:
         normalized_query = await self._normalize_query(query)
         logger.info("[MUSIC] resolving with yt-dlp")
         try:
-            return await self._ytdlp.resolve(normalized_query, requested_by, requester_id)
+            return await self._ytdlp.resolve(normalized_query, requested_by, requester_id, expected=expected)
         except (ProviderError, MusicError) as error:
             logger.info("[MUSIC] yt-dlp failed: %s", _safe_error(error))
             recoverable = error.recoverable if isinstance(error, ProviderError) else _is_recoverable_provider_error(str(error))
@@ -873,9 +1000,69 @@ class MusicService:
                 raise MusicError("Nao consegui carregar essa musica nos provedores disponiveis.") from error
             logger.info("[MUSIC] falling back to Lavalink")
             try:
-                return await self.resolve_with_lavalink(normalized_query, requested_by, requester_id)
+                fallback_tracks = await self.resolve_with_lavalink(normalized_query, requested_by, requester_id)
+                if expected and fallback_tracks:
+                    fallback = fallback_tracks[0]
+                    score = _spotify_match_score({
+                        "title": fallback.title,
+                        "artist": fallback.artist,
+                        "duration": fallback.duration,
+                    }, expected)
+                    if score < 0.35:
+                        raise ProviderError("Lavalink retornou uma faixa que nao corresponde aos metadados Spotify.")
+                return fallback_tracks
             except (ProviderError, MusicError) as fallback_error:
                 raise MusicError("Nao consegui carregar essa musica nos provedores disponiveis.") from fallback_error
+
+    async def _resolve_spotify_tracks(
+        self,
+        kind: str,
+        identifier: str,
+        spotify_tracks: list[SpotifyTrack],
+        requested_by: str,
+        requester_id: int | None,
+    ) -> list[Track]:
+        resolved: list[Track] = []
+        failed = 0
+        batch_size = 4
+        unique_tracks: list[SpotifyTrack] = []
+        seen_ids: set[str] = set()
+        for item in spotify_tracks:
+            if item.spotify_id in seen_ids:
+                continue
+            seen_ids.add(item.spotify_id)
+            unique_tracks.append(item)
+        for start in range(0, len(unique_tracks), batch_size):
+            batch = unique_tracks[start:start + batch_size]
+            results = await asyncio.gather(
+                *(self._resolve_standard_tracks(item.search_query, requested_by, requester_id, expected=item) for item in batch),
+                return_exceptions=True,
+            )
+            for item, result in zip(batch, results):
+                if isinstance(result, Exception) or not result:
+                    if isinstance(result, Exception) and not isinstance(result, (MusicError, ProviderError)):
+                        raise result
+                    failed += 1
+                    continue
+                track = result[0]
+                track.source = "spotify"
+                track.source_id = item.spotify_id
+                track.source_url = item.spotify_url
+                track.original_title = item.title
+                track.original_artist = ", ".join(item.artists)
+                track.disc_number = item.disc_number
+                track.track_number = item.track_number
+                if item.duration_ms is not None:
+                    track.duration = round(item.duration_ms / 1000)
+                if item.album:
+                    track.album = item.album
+                resolved.append(track)
+            if len(resolved) >= MAX_PLAYLIST_TRACKS and kind == "track":
+                break
+        logger.info("[SPOTIFY] %s %s: %s resolved, %s failed", kind, identifier, len(resolved), failed)
+        if not resolved:
+            raise MusicError("Nao consegui resolver nenhuma faixa desse conteudo Spotify.")
+        return resolved
 
     async def resolve_with_lavalink(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
         return await self._lavalink.resolve(query, requested_by, requester_id)
@@ -927,11 +1114,12 @@ class MusicService:
             return False, "O YouTube nao retornou dados para essa URL."
         return True, "Cookies aceitos pelo YouTube para essa URL."
 
-    def _extract_best_info(self, query: str) -> dict:
+    def _extract_best_info(self, query: str, expected: SpotifyTrack | None = None) -> dict:
         if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
             return self._extract_info(query)
 
         errors: list[str] = []
+        candidates: list[dict] = []
         for candidate in (*(f"{provider}:{query}" for provider in SEARCH_PROVIDERS), query):
             try:
                 info = self._extract_info(candidate)
@@ -941,7 +1129,15 @@ class MusicService:
 
             entries = self._entries_from_info(info)
             if entries:
-                return entries[0]
+                candidates.extend(entries)
+
+        if candidates:
+            if expected is None:
+                return candidates[0]
+            best = max(candidates, key=lambda item: _spotify_match_score(item, expected))
+            if _spotify_match_score(best, expected) >= 0.35:
+                return best
+            errors.append("nenhum resultado correspondeu suficientemente aos metadados Spotify")
 
         detail = "; ".join(errors[-2:])
         raise MusicError(f"Nao encontrei musica nas fontes disponiveis. {detail}")
@@ -1057,7 +1253,7 @@ class MusicService:
             return query
 
         host = urlparse(query).netloc.lower()
-        if "spotify.com" in host or "deezer.com" in host:
+        if "deezer.com" in host:
             title = await self._resolve_oembed_title(query)
             if title:
                 return f"ytsearch1:{title}"
@@ -1086,103 +1282,27 @@ class MusicService:
                 if isinstance(title, str) and title.strip():
                     return title.strip()
 
-        if "spotify.com" in parsed.netloc.lower() and self._settings.spotify_client_id and self._settings.spotify_client_secret:
-            parts = [part for part in parsed.path.split("/") if part]
-            if len(parts) >= 2 and parts[0] == "track":
-                try:
-                    async with aiohttp.ClientSession() as spotify_session:
-                        async with spotify_session.post(
-                            "https://accounts.spotify.com/api/token",
-                            data={"grant_type": "client_credentials"},
-                            auth=aiohttp.BasicAuth(self._settings.spotify_client_id, self._settings.spotify_client_secret),
-                            timeout=10,
-                        ) as token_response:
-                            if token_response.status != 200:
-                                return None
-                            token_data = await token_response.json(content_type=None)
-                        access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
-                        if not access_token:
-                            return None
-                        async with spotify_session.get(
-                            f"https://api.spotify.com/v1/tracks/{parts[1]}",
-                            headers={"Authorization": f"Bearer {access_token}"},
-                            timeout=10,
-                        ) as track_response:
-                            if track_response.status != 200:
-                                return None
-                            track_data = await track_response.json(content_type=None)
-                    artists = ", ".join(
-                        str(item.get("name")) for item in track_data.get("artists", []) if isinstance(item, dict) and item.get("name")
-                    )
-                    name = track_data.get("name")
-                    if name:
-                        return f"{artists} - {name}" if artists else str(name)
-                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
-                    return None
-
         return None
-
-    async def _spotify_collection_queries(self, query: str) -> list[str] | None:
-        if not _is_url(query):
-            return None
-        parsed = urlparse(query)
-        if "spotify.com" not in parsed.netloc.lower():
-            return None
-        parts = [part for part in parsed.path.split("/") if part]
-        kind_index = next((index for index, part in enumerate(parts) if part in {"playlist", "album"}), None)
-        if kind_index is None or kind_index + 1 >= len(parts):
-            return None
-        if not self._settings.spotify_client_id or not self._settings.spotify_client_secret:
-            raise MusicError("Links de playlist/album Spotify precisam de SPOTIFY_CLIENT_ID e SPOTIFY_CLIENT_SECRET.")
-
-        kind, identifier = parts[kind_index], parts[kind_index + 1]
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://accounts.spotify.com/api/token",
-                    data={"grant_type": "client_credentials"},
-                    auth=aiohttp.BasicAuth(self._settings.spotify_client_id, self._settings.spotify_client_secret),
-                    timeout=10,
-                ) as token_response:
-                    if token_response.status != 200:
-                        raise MusicError("Nao consegui autenticar na API do Spotify.")
-                    token_data = await token_response.json(content_type=None)
-                access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
-                if not access_token:
-                    raise MusicError("A API do Spotify nao retornou um token valido.")
-                endpoint = f"https://api.spotify.com/v1/{kind}s/{identifier}/tracks"
-                async with session.get(
-                    endpoint,
-                    params={"limit": MAX_PLAYLIST_TRACKS},
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10,
-                ) as response:
-                    if response.status != 200:
-                        raise MusicError("Nao consegui ler as faixas desse link Spotify.")
-                    data = await response.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
-            raise MusicError("Falha temporaria ao consultar o Spotify.") from error
-
-        items = data.get("items", []) if isinstance(data, dict) else []
-        queries = []
-        for item in items:
-            track = item.get("track") if kind == "playlist" and isinstance(item, dict) else item
-            if not isinstance(track, dict) or not track.get("name"):
-                continue
-            artists = ", ".join(
-                str(artist.get("name"))
-                for artist in track.get("artists", [])
-                if isinstance(artist, dict) and artist.get("name")
-            )
-            queries.append(f"{artists} - {track['name']}" if artists else str(track["name"]))
-        return queries
 
     async def recommendations_for_track(self, track: Track, limit: int = 5) -> list[dict]:
         lastfm = getattr(self._bot, "_lastfm", None)
         if not lastfm or not lastfm.available or not track.artist:
             return []
         try:
-            return await lastfm.similar(track.artist, track.title, limit)
+            similar = await lastfm.similar(track.artist, track.title, limit)
+            if similar:
+                return similar
+            recommendations: list[dict] = []
+            for artist in await lastfm.similar_artists(track.artist, limit=3):
+                artist_name = artist.get("name")
+                if not artist_name:
+                    continue
+                for item in await lastfm.artist_top_tracks(str(artist_name), limit=2):
+                    item["artist"] = {"name": artist_name}
+                    recommendations.append(item)
+                    if len(recommendations) >= limit:
+                        return recommendations
+            return recommendations
         except Exception as error:
             logger.info("[MUSIC] Last.fm recommendations unavailable: %s", _safe_error(error))
             return []
@@ -1234,6 +1354,44 @@ def _voice_is_paused(voice_client: Any) -> bool:
 
 def _safe_error(error: Exception) -> str:
     return str(error).replace("\r", " ").replace("\n", " ")[:500]
+
+
+def _music_text(value: str | None) -> str:
+    return " ".join((value or "").lower().replace("-", " ").split())
+
+
+def _spotify_match_score(info: dict, expected: SpotifyTrack) -> float:
+    """Small deterministic score; Spotify remains metadata-only."""
+    expected_title = _music_text(expected.title)
+    actual_title = _music_text(info.get("track") or info.get("title"))
+    expected_artists = [_music_text(artist) for artist in expected.artists if artist]
+    actual_artist = _music_text(info.get("artist") or info.get("creator") or info.get("uploader"))
+    if not expected_title or not actual_title:
+        return 0.0
+
+    title_tokens = set(expected_title.split())
+    actual_tokens = set(actual_title.split())
+    title_score = len(title_tokens & actual_tokens) / max(len(title_tokens), 1)
+    if expected_title == actual_title:
+        title_score = 1.0
+    artist_score = 1.0 if any(artist and (artist in actual_artist or actual_artist in artist) for artist in expected_artists) else 0.0
+
+    expected_duration = expected.duration_ms / 1000 if expected.duration_ms else None
+    actual_duration = _coerce_duration(info.get("duration"))
+    duration_score = 0.5
+    if expected_duration and actual_duration:
+        difference = abs(actual_duration - expected_duration) / max(expected_duration, 1)
+        duration_score = 1.0 if difference <= 0.08 else 0.6 if difference <= 0.20 else 0.0
+
+    score = title_score * 0.55 + artist_score * 0.30 + duration_score * 0.15
+    undesired = ("cover", "karaoke", "tribute")
+    original_terms = set(expected_title.split())
+    if any(term in actual_title.split() and term not in original_terms for term in undesired):
+        score -= 0.25
+    for term in ("remix", "live"):
+        if term in actual_title.split() and term not in original_terms:
+            score -= 0.15
+    return max(0.0, score)
 
 
 def _friendly_lavalink_error(error: Exception) -> str:

@@ -10,7 +10,8 @@ import discord
 import wavelink
 
 from bot.config import Settings
-from bot.services.music_player import MusicError, MusicService, RepeatMode, Track
+from bot.services.music_player import GuildMusicPlayer, MusicError, MusicService, RepeatMode, Track
+from bot.services.spotify_service import SpotifyTrack
 
 
 class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
@@ -38,7 +39,11 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
             Track("one", "url-1", "stream-1", "user"),
             Track("two", "url-2", "stream-2", "user"),
         ]
-        with patch.object(service, "_spotify_collection_queries", new=AsyncMock(side_effect=[["Artist - One", "Artist - Two"], None, None])), \
+        spotify_items = [
+            SpotifyTrack("id-1", "https://open.spotify.com/track/id-1", "One", ("Artist",), 100000),
+            SpotifyTrack("id-2", "https://open.spotify.com/track/id-2", "Two", ("Artist",), 120000),
+        ]
+        with patch.object(service._spotify, "resolve_url", new=AsyncMock(side_effect=[("playlist", "playlist-id", spotify_items), None, None])), \
              patch.object(service._ytdlp, "resolve", new=AsyncMock(side_effect=[[tracks[0]], [tracks[1]]])) as ytdlp:
             result = await service.resolve_tracks("https://open.spotify.com/playlist/test", "user")
         self.assertEqual(result, tracks)
@@ -49,6 +54,52 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MusicError) as raised:
             await service.resolve_tracks("https://open.spotify.com/playlist/test", "user")
         self.assertIn("SPOTIFY_CLIENT_ID", str(raised.exception))
+
+    async def test_spotify_duplicate_items_resolve_once_and_keep_order(self):
+        service = self.make_service()
+        spotify_items = [
+            SpotifyTrack("id-1", "https://open.spotify.com/track/id-1", "One", ("Artist",), 100000),
+            SpotifyTrack("id-1", "https://open.spotify.com/track/id-1", "One", ("Artist",), 100000),
+            SpotifyTrack("id-2", "https://open.spotify.com/track/id-2", "Two", ("Artist",), 120000),
+        ]
+
+        async def resolve(query, requested_by, requester_id=None, *, expected=None):
+            return [Track(expected.title, query, "stream", requested_by)]
+
+        with patch.object(service._spotify, "resolve_url", new=AsyncMock(return_value=("playlist", "pl", spotify_items))), \
+             patch.object(service._ytdlp, "resolve", new=AsyncMock(side_effect=resolve)) as ytdlp:
+            result = await service.resolve_tracks("https://open.spotify.com/playlist/pl", "user")
+
+        self.assertEqual([track.title for track in result], ["One", "Two"])
+        self.assertEqual(ytdlp.await_count, 2)
+
+    async def test_spotify_matching_prefers_original_over_cover_and_wrong_duration(self):
+        service = self.make_service()
+        expected = SpotifyTrack("id", "spotify:url", "Numb", ("Linkin Park",), 185000)
+        candidates = {
+            "ytsearch5:Linkin Park - Numb": {"title": "Numb cover karaoke", "artist": "Unknown", "duration": 185, "url": "cover"},
+            "scsearch5:Linkin Park - Numb": {"title": "Numb", "artist": "Linkin Park", "duration": 185, "url": "original"},
+            "gvsearch5:Linkin Park - Numb": {"title": "Numb live", "artist": "Linkin Park", "duration": 900, "url": "live"},
+            "Linkin Park - Numb": {"title": "Numb", "artist": "Linkin Park", "duration": 185, "url": "direct"},
+        }
+
+        with patch.object(service, "_extract_info", side_effect=lambda query: candidates[query]):
+            info = service._extract_best_info(expected.search_query, expected)
+
+        self.assertEqual(info["url"], "original")
+
+    async def test_spotify_resolution_has_one_directional_fallback_only(self):
+        service = self.make_service()
+        expected = SpotifyTrack("id", "spotify:url", "Numb", ("Linkin Park",), 185000)
+        fallback = Track("Numb", "lavalink:url", None, "user", provider="lavalink", provider_track=object())
+        with patch.object(service._ytdlp, "resolve", new=AsyncMock(side_effect=MusicError("no matching source"))), \
+             patch.object(service._lavalink, "resolve", new=AsyncMock(return_value=[fallback])) as lavalink, \
+             patch.object(service, "resolve_tracks", wraps=service.resolve_tracks) as resolve:
+            result = await service._resolve_standard_tracks(expected.search_query, "user", expected=expected)
+
+        self.assertEqual(result, [fallback])
+        lavalink.assert_awaited_once()
+        resolve.assert_not_called()
 
     async def test_ytdlp_failure_falls_back_once(self):
         service = self.make_service()
@@ -166,6 +217,25 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(player.current)
         self.assertEqual(player.queue_size(), 0)
         player._play_current.assert_not_awaited()
+
+    async def test_autoplay_natural_end_resolves_recommendation_once(self):
+        service = self.make_service()
+        player = service.player_for(133)
+        player._current = Track("seed", "url", "stream", "u", artist="Artist")
+        player.set_autoplay(True)
+        voice = SimpleNamespace(connected=True)
+        recommendation = {"name": "Next", "artist": {"name": "Other"}}
+        candidate = Track("next", "url", "stream", "u")
+        player._text_channel = None
+        player._play_next_impl = AsyncMock()
+        with patch.object(service, "recommendations_for_track", new=AsyncMock(return_value=[recommendation])), \
+             patch.object(service, "_resolve_standard_tracks", new=AsyncMock(return_value=[candidate])) as resolve:
+            player._current = Track("seed", "url", "stream", "u", artist="Artist")
+            await GuildMusicPlayer._play_next_impl(player, voice)
+            await asyncio.sleep(0.05)
+        resolve.assert_awaited_once()
+        player._play_next_impl.assert_awaited_once_with(voice)
+        self.assertIs(player._queue[0], candidate)
 
     async def test_queue_end_sends_recommendation_embed_without_requeuing_track(self):
         service = self.make_service()

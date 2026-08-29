@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 from time import monotonic
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse, urlunsplit
 
 import aiohttp
 import discord
@@ -366,8 +366,12 @@ class GuildMusicPlayer:
             self._queue.append(self._current)
 
         if not self._queue:
+            finished_track = self._current
             self._current = None
             self._current_started_at = None
+            if finished_track and self._text_channel:
+                recommendations = await self._bot._music_service.recommendations_for_track(finished_track)
+                await self._text_channel.send(embed=build_queue_finished_embed(finished_track, recommendations))
             return
 
         self._current = self._queue.popleft()
@@ -842,6 +846,20 @@ class MusicService:
         return True, f"Arquivo de cookies encontrado e com formato valido: {path}"
 
     async def resolve_tracks(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+        spotify_queries = await self._spotify_collection_queries(query)
+        if spotify_queries is not None:
+            tracks: list[Track] = []
+            for spotify_query in spotify_queries:
+                try:
+                    tracks.extend(await self.resolve_tracks(spotify_query, requested_by, requester_id))
+                except MusicError as error:
+                    logger.info("[MUSIC] Spotify item could not be resolved: %s", _safe_error(error))
+                if len(tracks) >= MAX_PLAYLIST_TRACKS:
+                    break
+            if tracks:
+                return tracks[:MAX_PLAYLIST_TRACKS]
+            raise MusicError("Nao consegui resolver nenhuma faixa desse link Spotify.")
+
         normalized_query = await self._normalize_query(query)
         logger.info("[MUSIC] resolving with yt-dlp")
         try:
@@ -1048,6 +1066,8 @@ class MusicService:
         return query
 
     async def _resolve_oembed_title(self, url: str) -> str | None:
+        parsed = urlparse(url)
+        canonical_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         endpoints = [
             "https://open.spotify.com/oembed",
             "https://noembed.com/embed",
@@ -1055,7 +1075,7 @@ class MusicService:
         async with aiohttp.ClientSession() as session:
             for endpoint in endpoints:
                 try:
-                    async with session.get(endpoint, params={"url": url}, timeout=10) as response:
+                    async with session.get(endpoint, params={"url": canonical_url}, timeout=10) as response:
                         if response.status != 200:
                             continue
                         data = await response.json(content_type=None)
@@ -1066,7 +1086,119 @@ class MusicService:
                 if isinstance(title, str) and title.strip():
                     return title.strip()
 
+        if "spotify.com" in parsed.netloc.lower() and self._settings.spotify_client_id and self._settings.spotify_client_secret:
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 2 and parts[0] == "track":
+                try:
+                    async with aiohttp.ClientSession() as spotify_session:
+                        async with spotify_session.post(
+                            "https://accounts.spotify.com/api/token",
+                            data={"grant_type": "client_credentials"},
+                            auth=aiohttp.BasicAuth(self._settings.spotify_client_id, self._settings.spotify_client_secret),
+                            timeout=10,
+                        ) as token_response:
+                            if token_response.status != 200:
+                                return None
+                            token_data = await token_response.json(content_type=None)
+                        access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
+                        if not access_token:
+                            return None
+                        async with spotify_session.get(
+                            f"https://api.spotify.com/v1/tracks/{parts[1]}",
+                            headers={"Authorization": f"Bearer {access_token}"},
+                            timeout=10,
+                        ) as track_response:
+                            if track_response.status != 200:
+                                return None
+                            track_data = await track_response.json(content_type=None)
+                    artists = ", ".join(
+                        str(item.get("name")) for item in track_data.get("artists", []) if isinstance(item, dict) and item.get("name")
+                    )
+                    name = track_data.get("name")
+                    if name:
+                        return f"{artists} - {name}" if artists else str(name)
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                    return None
+
         return None
+
+    async def _spotify_collection_queries(self, query: str) -> list[str] | None:
+        if not _is_url(query):
+            return None
+        parsed = urlparse(query)
+        if "spotify.com" not in parsed.netloc.lower():
+            return None
+        parts = [part for part in parsed.path.split("/") if part]
+        kind_index = next((index for index, part in enumerate(parts) if part in {"playlist", "album"}), None)
+        if kind_index is None or kind_index + 1 >= len(parts):
+            return None
+        if not self._settings.spotify_client_id or not self._settings.spotify_client_secret:
+            raise MusicError("Links de playlist/album Spotify precisam de SPOTIFY_CLIENT_ID e SPOTIFY_CLIENT_SECRET.")
+
+        kind, identifier = parts[kind_index], parts[kind_index + 1]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://accounts.spotify.com/api/token",
+                    data={"grant_type": "client_credentials"},
+                    auth=aiohttp.BasicAuth(self._settings.spotify_client_id, self._settings.spotify_client_secret),
+                    timeout=10,
+                ) as token_response:
+                    if token_response.status != 200:
+                        raise MusicError("Nao consegui autenticar na API do Spotify.")
+                    token_data = await token_response.json(content_type=None)
+                access_token = token_data.get("access_token") if isinstance(token_data, dict) else None
+                if not access_token:
+                    raise MusicError("A API do Spotify nao retornou um token valido.")
+                endpoint = f"https://api.spotify.com/v1/{kind}s/{identifier}/tracks"
+                async with session.get(
+                    endpoint,
+                    params={"limit": MAX_PLAYLIST_TRACKS},
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10,
+                ) as response:
+                    if response.status != 200:
+                        raise MusicError("Nao consegui ler as faixas desse link Spotify.")
+                    data = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            raise MusicError("Falha temporaria ao consultar o Spotify.") from error
+
+        items = data.get("items", []) if isinstance(data, dict) else []
+        queries = []
+        for item in items:
+            track = item.get("track") if kind == "playlist" and isinstance(item, dict) else item
+            if not isinstance(track, dict) or not track.get("name"):
+                continue
+            artists = ", ".join(
+                str(artist.get("name"))
+                for artist in track.get("artists", [])
+                if isinstance(artist, dict) and artist.get("name")
+            )
+            queries.append(f"{artists} - {track['name']}" if artists else str(track["name"]))
+        return queries
+
+    async def recommendations_for_track(self, track: Track, limit: int = 5) -> list[dict]:
+        lastfm = getattr(self._bot, "_lastfm", None)
+        if not lastfm or not lastfm.available or not track.artist:
+            return []
+        try:
+            return await lastfm.similar(track.artist, track.title, limit)
+        except Exception as error:
+            logger.info("[MUSIC] Last.fm recommendations unavailable: %s", _safe_error(error))
+            return []
+
+    async def recommendations_for_user(self, user_id: int, limit: int = 5) -> list[dict]:
+        lastfm = getattr(self._bot, "_lastfm", None)
+        if not lastfm or not lastfm.available:
+            return []
+        account = lastfm.repository.get_account(user_id)
+        if not account:
+            return []
+        try:
+            return await lastfm.top_tracks(account, limit)
+        except Exception as error:
+            logger.info("[MUSIC] Last.fm user recommendations unavailable: %s", _safe_error(error))
+            return []
 
 
 def _is_url(value: str) -> bool:
@@ -1190,10 +1322,29 @@ def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False
     return embed
 
 
+def build_queue_finished_embed(track: Track, recommendations: list[dict] | None = None) -> discord.Embed:
+    embed = discord.Embed(title="Fila finalizada", color=0x5865F2)
+    embed.description = f"A fila terminou após **{track.title}**."
+    items = []
+    for item in recommendations or []:
+        artist_data = item.get("artist")
+        artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+        artist = str(artist or "Artista desconhecido")
+        title = str(item.get("name") or "Musica")
+        url = item.get("url") or f"https://www.youtube.com/results?search_query={quote_plus(f'{artist} {title}')}"
+        items.append(f"[{title} — {artist}]({url})")
+    if items:
+        embed.add_field(name="Sugestões do Last.fm", value="\n".join(items[:5]), inline=False)
+    else:
+        embed.add_field(name="Sugestões", value="Use `a!autoplay` para montar uma fila com seu Last.fm.", inline=False)
+    return embed
+
+
 def _coerce_duration(value: object) -> int | None:
     """Converte duracoes do yt-dlp (normalmente float) para segundos inteiros."""
     if value is None:
         return None
+
     try:
         seconds = float(value)
     except (TypeError, ValueError, OverflowError):

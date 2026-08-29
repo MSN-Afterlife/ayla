@@ -21,6 +21,8 @@ class Settings:
     apileague_api_key: str | None = None
     giphy_api_key: str | None = None
     youtube_api_key: str | None = None
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
     google_search_api_key: str | None = None
     google_search_engine_id: str | None = None
     image_provider_order: list[str] | None = None
@@ -100,6 +102,8 @@ def load_settings() -> Settings:
         apileague_api_key=os.getenv("APILEAGUE_API_KEY"),
         giphy_api_key=os.getenv("GIPHY_API_KEY"),
         youtube_api_key=os.getenv("YOUTUBE_API_KEY"),
+        spotify_client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+        spotify_client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
         google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY"),
         google_search_engine_id=os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
         image_provider_order=_load_list(

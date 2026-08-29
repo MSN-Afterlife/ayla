@@ -95,6 +95,26 @@ class LastFmService:
         tracks = await self.recent(account)
         return tracks[0] if tracks else None
 
+    async def similar(self, artist: str, track: str, limit: int = 5) -> list[dict]:
+        data = await self._request({
+            "method": "track.getSimilar",
+            "artist": artist,
+            "track": track,
+            "limit": str(max(1, min(limit, 10))),
+        })
+        items = (data.get("similartracks") or {}).get("track") or []
+        return [item for item in items if isinstance(item, dict) and item.get("name")][:limit]
+
+    async def top_tracks(self, account: LastFmAccount, limit: int = 10) -> list[dict]:
+        data = await self._request({
+            "method": "user.getTopTracks",
+            "user": account.username,
+            "period": "overall",
+            "limit": str(max(1, min(limit, 50))),
+        })
+        items = (data.get("toptracks") or {}).get("track") or []
+        return [item for item in items if isinstance(item, dict) and item.get("name")][:limit]
+
 
 def safe_page(title: str, message: str) -> str:
     return f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title><main><h1>{html.escape(title)}</h1><p>{html.escape(message)}</p></main>"

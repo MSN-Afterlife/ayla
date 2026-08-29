@@ -183,6 +183,53 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
 
         await _send(ctx, "\n".join(lines) if lines else "A fila esta vazia.")
 
+    @bot.hybrid_command(
+        name="autoplay",
+        aliases=["autoqueue", "playqueue", "filaauto"],
+        description="Monta uma fila com as musicas mais ouvidas do seu Last.fm.",
+    )
+    async def autoplay(ctx: commands.Context, quantidade: int = 5) -> None:
+        if not ctx.guild:
+            await _send(ctx, "Esse comando so funciona em servidores.")
+            return
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            await _send(ctx, "Entre em um canal de voz primeiro.")
+            return
+        quantidade = max(1, min(10, quantidade))
+        recommendations = await music.recommendations_for_user(ctx.author.id, quantidade)
+        if not recommendations:
+            await _send(ctx, "Nao encontrei recomendacoes. Vincule/ative seu Last.fm primeiro.")
+            return
+
+        tracks = []
+        for item in recommendations:
+            artist_data = item.get("artist")
+            artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+            title = item.get("name")
+            if not title:
+                continue
+            query = f"{artist} {title}" if artist else str(title)
+            try:
+                resolved = await music.resolve_tracks(query, ctx.author.display_name, ctx.author.id)
+            except MusicError:
+                continue
+            if resolved:
+                tracks.append(resolved[0])
+
+        if not tracks:
+            await _send(ctx, "O Last.fm retornou recomendacoes, mas nao consegui resolver nenhuma para reproducao.")
+            return
+
+        player = music.player_for(ctx.guild.id)
+        async with music.voice_lock_for(ctx.guild.id):
+            async with player._advance_lock:
+                use_lavalink = player.current.provider == "lavalink" if player.current else tracks[0].provider == "lavalink"
+                voice_client = await _connect_or_move(ctx, use_lavalink=use_lavalink)
+                position = player.add_many(tracks, ctx.channel)
+                await player.start_if_idle(voice_client)
+
+        await ctx.send(f"Adicionei `{len(tracks)}` recomendacao(oes) do seu Last.fm a partir da posicao `#{position}`.")
+
     @bot.hybrid_command(name="nowplaying", aliases=["np"], description="Mostra a musica atual.")
     async def nowplaying(ctx: commands.Context) -> None:
         if not ctx.guild:

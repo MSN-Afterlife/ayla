@@ -32,6 +32,24 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
         ytdlp.assert_awaited_once()
         lavalink.assert_not_awaited()
 
+    async def test_spotify_collection_expands_items_through_existing_resolver(self):
+        service = self.make_service()
+        tracks = [
+            Track("one", "url-1", "stream-1", "user"),
+            Track("two", "url-2", "stream-2", "user"),
+        ]
+        with patch.object(service, "_spotify_collection_queries", new=AsyncMock(side_effect=[["Artist - One", "Artist - Two"], None, None])), \
+             patch.object(service._ytdlp, "resolve", new=AsyncMock(side_effect=[[tracks[0]], [tracks[1]]])) as ytdlp:
+            result = await service.resolve_tracks("https://open.spotify.com/playlist/test", "user")
+        self.assertEqual(result, tracks)
+        self.assertEqual([call.args[0] for call in ytdlp.await_args_list], ["Artist - One", "Artist - Two"])
+
+    async def test_spotify_collection_without_credentials_fails_clearly(self):
+        service = self.make_service()
+        with self.assertRaises(MusicError) as raised:
+            await service.resolve_tracks("https://open.spotify.com/playlist/test", "user")
+        self.assertIn("SPOTIFY_CLIENT_ID", str(raised.exception))
+
     async def test_ytdlp_failure_falls_back_once(self):
         service = self.make_service()
         fallback = Track("lavalink", "https://example.test/yt", None, "user", provider="lavalink", provider_track=object())
@@ -135,6 +153,41 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
         await player._play_next(voice)
         self.assertEqual(player._play_current.await_count, 2)
         self.assertEqual(len(player.queue_snapshot()), 0)
+
+    async def test_repeat_off_finishes_queue_without_replaying_last_track(self):
+        service = self.make_service()
+        player = service.player_for(131)
+        player._current = Track("last", "url", "stream", "u")
+        player._play_current = AsyncMock()
+
+        await player._play_next_impl(SimpleNamespace())
+
+        self.assertEqual(player.repeat, RepeatMode.OFF)
+        self.assertIsNone(player.current)
+        self.assertEqual(player.queue_size(), 0)
+        player._play_current.assert_not_awaited()
+
+    async def test_queue_end_sends_recommendation_embed_without_requeuing_track(self):
+        service = self.make_service()
+        player = service.player_for(132)
+        channel = SimpleNamespace(send=AsyncMock())
+        player._text_channel = channel
+        player._current = Track("last", "url", "stream", "u", artist="Artist")
+        service.recommendations_for_track = AsyncMock(return_value=[{
+            "name": "Suggested",
+            "artist": {"name": "Other Artist"},
+            "url": "https://www.last.fm/music/Other+Artist/_/Suggested",
+        }])
+
+        await player._play_next_impl(SimpleNamespace())
+
+        self.assertIsNone(player.current)
+        self.assertEqual(player.queue_size(), 0)
+        service.recommendations_for_track.assert_awaited_once()
+        channel.send.assert_awaited_once()
+        embed = channel.send.call_args.kwargs["embed"]
+        self.assertEqual(embed.title, "Fila finalizada")
+        self.assertIn("Suggested", embed.fields[0].value)
 
     async def test_lastfm_lavalink_start_and_end_are_not_duplicated(self):
         scrobbler = SimpleNamespace(started=unittest.mock.Mock(), ended=unittest.mock.Mock())

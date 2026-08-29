@@ -178,6 +178,9 @@ class GuildMusicPlayer:
         self._advance_lock = asyncio.Lock()
         self._ending = False
         self._lavalink_reconnect_task: asyncio.Task | None = None
+        self._lavalink_track_started = False
+        self._lavalink_resume_state: bool | None = None
+        self._play_generation = 0
 
     @property
     def current(self) -> Track | None:
@@ -400,10 +403,13 @@ class GuildMusicPlayer:
         if not self._current:
             return
         self._voice_client = voice_client
+        self._play_generation += 1
+        self._log_state("play_request", voice_client)
 
         if self._current.provider == "lavalink":
             if not _is_lavalink_voice(voice_client) or not self._current.provider_track:
                 raise MusicError("O player Lavalink nao esta conectado para esta faixa.")
+            self._lavalink_track_started = False
             await voice_client.play(self._current.provider_track, start=seek * 1000, volume=round(self._volume * 100))
             self._cancel_lavalink_reconnect_watchdog()
             self._ending = False
@@ -411,6 +417,7 @@ class GuildMusicPlayer:
             self._current_started_at = monotonic()
             self._log_provider()
             self._start_scrobble(voice_client, new_playback)
+            self._log_state("play_accepted", voice_client)
             return
 
         before_options = FFMPEG_RECONNECT_OPTIONS
@@ -422,7 +429,8 @@ class GuildMusicPlayer:
                 if key and value and key.lower() in {"user-agent", "referer", "origin", "accept", "accept-language"}:
                     header_lines.append(f"{key}: {value}")
             if header_lines:
-                before_options += f" -headers {shlex.quote(chr(13) + chr(10).join(header_lines) + chr(13) + chr(10))}"
+                header_block = "\r\n".join(header_lines) + "\r\n"
+                before_options += f" -headers {shlex.quote(header_block)}"
         if seek:
             before_options = f"-ss {seek} {before_options}"
 
@@ -446,6 +454,7 @@ class GuildMusicPlayer:
             listeners = tuple(member.id for member in getattr(getattr(voice_client, "channel", None), "members", []) if not member.bot)
             scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position, listeners)
         self._log_provider()
+        self._log_state("play_accepted", voice_client)
 
     def _start_scrobble(self, voice_client: discord.VoiceClient, new_playback: bool) -> None:
         scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
@@ -593,9 +602,10 @@ class GuildMusicPlayer:
 
     async def _handle_lavalink_end_impl(self, voice_client: Any, error: Exception | None = None, event_track: Any = None) -> None:
         """Avança a fila para eventos emitidos pelo backend Lavalink."""
+        self._log_state("track_end_event", voice_client, event_track)
         if not self._current or self._current.provider != "lavalink":
             return
-        if event_track is not None and self._current.provider_track is not event_track:
+        if event_track is not None and not _lavalink_tracks_match(self._current.provider_track, event_track):
             return
         if self._ending:
             return
@@ -622,6 +632,8 @@ class GuildMusicPlayer:
         """Starts a bounded recovery window for the current Lavalink track."""
         if not self._current or self._current.provider != "lavalink":
             return
+        self._lavalink_resume_state = None
+        self._log_state("connection_lost", self._voice_client)
         if self._lavalink_reconnect_task and not self._lavalink_reconnect_task.done():
             return
         track = self._current
@@ -648,8 +660,16 @@ class GuildMusicPlayer:
                 # Wavelink/Lavalink may restore the player without a new play call.
                 # Only keep the track when the node is back and playback is active.
                 music_service = getattr(self._bot, "_music_service", None)
-                if music_service and music_service.lavalink_available and (
-                    _voice_is_playing(voice_client) or _voice_is_paused(voice_client)
+                remote_track = getattr(voice_client, "current", None)
+                player_connected = bool(getattr(voice_client, "connected", False))
+                if (
+                    music_service
+                    and music_service.lavalink_available
+                    and self._lavalink_resume_state is not False
+                    and self._lavalink_track_started
+                    and player_connected
+                    and remote_track is not None
+                    and _lavalink_tracks_match(track.provider_track, remote_track)
                 ):
                     logger.info("[MUSIC] guild=%s Lavalink playback recovered", self._guild_id)
                     return
@@ -665,6 +685,50 @@ class GuildMusicPlayer:
         finally:
             if self._lavalink_reconnect_task is asyncio.current_task():
                 self._lavalink_reconnect_task = None
+
+    def handle_lavalink_node_ready(self, resumed: bool | None = None) -> None:
+        self._lavalink_resume_state = resumed
+        self._log_state("node_ready", self._voice_client)
+
+    def handle_lavalink_start(self, event_track: Any) -> None:
+        if not self._current or self._current.provider != "lavalink":
+            return
+        if not _lavalink_tracks_match(self._current.provider_track, event_track):
+            return
+        self._lavalink_track_started = True
+        self._log_state("track_start", self._voice_client, event_track)
+        logger.info("[MUSIC] guild=%s Lavalink TrackStart confirmed", self._guild_id)
+
+    def _log_state(self, event: str, voice_client: Any = None, event_track: Any = None) -> None:
+        current = self._current
+        player = voice_client or self._voice_client
+        try:
+            playing = _voice_is_playing(player) if player else False
+            paused = _voice_is_paused(player) if player else False
+        except (AttributeError, TypeError):
+            playing = paused = False
+        node = getattr(player, "node", None)
+        event_identifier = getattr(event_track, "identifier", None) if event_track else None
+        logger.info(
+            "[MUSIC_STATE] guild=%s event=%s player=%s node=%s track=%r provider=%s identifier=%s "
+            "generation=%s current=%s playing=%s paused=%s connected=%s ending=%s queue=%s watchdog=%s event_identifier=%s",
+            self._guild_id,
+            event,
+            id(player) if player else None,
+            getattr(getattr(node, "status", None), "name", None),
+            current.title if current else None,
+            current.provider if current else None,
+            current.identifier if current else None,
+            self._play_generation,
+            bool(current),
+            playing,
+            paused,
+            bool(getattr(player, "connected", False)) if player else False,
+            self._ending,
+            len(self._queue),
+            bool(self._lavalink_reconnect_task and not self._lavalink_reconnect_task.done()),
+            event_identifier,
+        )
 
     async def _ensure_voice_backend(self, voice_client: Any) -> Any:
         if not self._current:
@@ -688,6 +752,7 @@ class MusicService:
         self._players: dict[int, GuildMusicPlayer] = {}
         self._voice_locks: dict[int, asyncio.Lock] = {}
         self._lavalink_connected = False
+        self._lavalink_ready_event = asyncio.Event()
         self._youtube_cookies_runtime_path: Path | None = None
         self._youtube_cookies_source_signature: tuple[int, int] | None = None
         self._ytdlp = YtdlpProvider(self)
@@ -703,6 +768,10 @@ class MusicService:
 
     def set_lavalink_connected(self, value: bool) -> None:
         self._lavalink_connected = value
+        if value:
+            self._lavalink_ready_event.set()
+        else:
+            self._lavalink_ready_event.clear()
 
     async def connect_lavalink(self) -> bool:
         """Conecta ao Lavalink sem impedir o bot de iniciar se o servico estiver fora."""
@@ -717,7 +786,15 @@ class MusicService:
             node = None
             try:
                 node = wavelink.Node(uri=self._settings.lavalink_uri, password=self._settings.lavalink_password, retries=self._settings.lavalink_reconnect_attempts if self._settings.lavalink_reconnect else 0)
-                await asyncio.wait_for(wavelink.Pool.connect(nodes=[node], client=self._bot, cache_capacity=100), timeout=5)
+                connected_nodes = await asyncio.wait_for(
+                    wavelink.Pool.connect(nodes=[node], client=self._bot, cache_capacity=100),
+                    timeout=5,
+                )
+                if node.identifier not in connected_nodes or node.status is wavelink.NodeStatus.DISCONNECTED:
+                    raise wavelink.NodeException("Lavalink nao confirmou a conexao do node")
+                if node.status is not wavelink.NodeStatus.CONNECTED:
+                    self._lavalink_ready_event.clear()
+                    await asyncio.wait_for(self._lavalink_ready_event.wait(), timeout=5)
                 self._lavalink_connected = True
                 logger.info("Lavalink conectado em %s", self._settings.lavalink_uri)
                 return True
@@ -793,17 +870,28 @@ class MusicService:
         if music_player:
             await music_player.handle_lavalink_end(player, error, event_track)
 
+    async def handle_lavalink_start(self, player: Any, event_track: Any) -> None:
+        guild = getattr(getattr(player, "guild", None), "id", None)
+        if guild is None:
+            return
+        music_player = self._players.get(guild)
+        if music_player:
+            music_player.handle_lavalink_start(event_track)
+
     async def handle_lavalink_voice_closed(self, player: Any, reason: str) -> None:
         guild = getattr(getattr(player, "guild", None), "id", None)
         if guild is not None and guild in self._players:
             self._players[guild].handle_lavalink_connection_lost(reason)
             logger.warning("[MUSIC] guild=%s Lavalink voice websocket closed: %s; aguardando reconexao", guild, _safe_error(RuntimeError(reason)))
 
-    async def handle_lavalink_node_ready(self) -> None:
-        self._lavalink_connected = True
+    async def handle_lavalink_node_ready(self, resumed: bool | None = None) -> None:
+        self.set_lavalink_connected(True)
+        self._lavalink_ready_event.set()
+        for player in self._players.values():
+            player.handle_lavalink_node_ready(resumed)
 
     def handle_lavalink_node_lost(self, reason: str) -> None:
-        self._lavalink_connected = False
+        self.set_lavalink_connected(False)
         for player in self._players.values():
             player.handle_lavalink_connection_lost(reason)
 
@@ -988,6 +1076,20 @@ def _is_url(value: str) -> bool:
 
 def _is_lavalink_voice(voice_client: Any) -> bool:
     return bool(wavelink is not None and isinstance(voice_client, wavelink.Player))
+
+
+def _lavalink_tracks_match(expected: Any, received: Any) -> bool:
+    if expected is received:
+        return True
+    if expected is None or received is None:
+        return False
+    expected_encoded = getattr(expected, "encoded", None)
+    received_encoded = getattr(received, "encoded", None)
+    if expected_encoded and received_encoded:
+        return expected_encoded == received_encoded
+    expected_identifier = getattr(expected, "identifier", None)
+    received_identifier = getattr(received, "identifier", None)
+    return bool(expected_identifier and received_identifier and expected_identifier == received_identifier)
 
 
 def _voice_is_playing(voice_client: Any) -> bool:

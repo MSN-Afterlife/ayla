@@ -1,11 +1,13 @@
 import asyncio
 import os
+import shlex
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
+import wavelink
 
 from bot.config import Settings
 from bot.services.music_player import MusicError, MusicService, RepeatMode, Track
@@ -89,12 +91,37 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_lavalink_events_advance_only_once(self):
         service = self.make_service()
         player = service.player_for(12)
-        playable = object()
+        playable = SimpleNamespace(encoded="encoded-track", identifier="track-12")
+        event_track = SimpleNamespace(encoded="encoded-track", identifier="track-12")
         player._current = Track("one", "url", None, "u", provider="lavalink", provider_track=playable)
         player._play_next_impl = AsyncMock()
         voice = SimpleNamespace()
-        await player.handle_lavalink_end(voice, event_track=playable)
-        await player.handle_lavalink_end(voice, error=RuntimeError("stuck"), event_track=playable)
+        await player.handle_lavalink_end(voice, event_track=event_track)
+        await player.handle_lavalink_end(voice, error=RuntimeError("stuck"), event_track=event_track)
+        player._play_next_impl.assert_awaited_once_with(voice)
+
+    async def test_late_event_from_previous_lavalink_track_is_ignored(self):
+        service = self.make_service()
+        player = service.player_for(121)
+        current = SimpleNamespace(encoded="new-track", identifier="new")
+        old_event = SimpleNamespace(encoded="old-track", identifier="old")
+        player._current = Track("new", "url", None, "u", provider="lavalink", provider_track=current)
+        player._play_next_impl = AsyncMock()
+        await player.handle_lavalink_end(SimpleNamespace(), event_track=old_event)
+        player._play_next_impl.assert_not_awaited()
+
+    async def test_concurrent_lavalink_end_events_advance_once(self):
+        service = self.make_service()
+        player = service.player_for(122)
+        playable = SimpleNamespace(encoded="same-track", identifier="same")
+        event_track = SimpleNamespace(encoded="same-track", identifier="same")
+        player._current = Track("one", "url", None, "u", provider="lavalink", provider_track=playable)
+        player._play_next_impl = AsyncMock()
+        voice = SimpleNamespace()
+        await asyncio.gather(
+            player.handle_lavalink_end(voice, event_track=event_track),
+            player.handle_lavalink_end(voice, error=RuntimeError("stuck"), event_track=event_track),
+        )
         player._play_next_impl.assert_awaited_once_with(voice)
 
     async def test_repeat_lavalink_replays_same_track_without_queue_duplication(self):
@@ -135,6 +162,39 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, "resolve_with_lavalink", new=AsyncMock()) as fallback:
             await player._play_next(SimpleNamespace())
         fallback.assert_not_awaited()
+
+    async def test_ffmpeg_headers_use_valid_crlf_block_without_leading_cr(self):
+        service = self.make_service()
+        player = service.player_for(151)
+        player._current = Track(
+            "soundcloud",
+            "https://soundcloud.example/track",
+            "https://cdn.soundcloud.example/audio",
+            "u",
+            http_headers={
+                "User-Agent": "AylaTest/1.0",
+                "Accept": "audio/*",
+                "Accept-Language": "pt-BR",
+            },
+        )
+        voice = SimpleNamespace(play=Mock())
+        fake_audio = SimpleNamespace()
+        fake_source = SimpleNamespace()
+
+        with patch("bot.services.music_player.discord.FFmpegPCMAudio", return_value=fake_audio) as ffmpeg, \
+             patch("bot.services.music_player.discord.PCMVolumeTransformer", return_value=fake_source):
+            await player._play_current(voice)
+
+        before_options = ffmpeg.call_args.kwargs["before_options"]
+        ffmpeg_args = shlex.split(before_options)
+        header_block = ffmpeg_args[ffmpeg_args.index("-headers") + 1]
+        self.assertFalse(header_block.startswith(("\r", "\n")))
+        self.assertEqual(
+            header_block,
+            "User-Agent: AylaTest/1.0\r\nAccept: audio/*\r\nAccept-Language: pt-BR\r\n",
+        )
+        self.assertTrue(header_block.endswith("\r\n"))
+        self.assertNotIn("\rUser-Agent", header_block)
 
     async def test_stop_lavalink_clears_state_and_late_event_is_ignored(self):
         service = self.make_service()
@@ -210,16 +270,31 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_lavalink_connection_failure_is_non_fatal_and_can_reconnect(self):
         service = self.make_service()
         service._lavalink_connected = False
-        fake_node = SimpleNamespace(close=AsyncMock())
+        fake_node = SimpleNamespace(close=AsyncMock(), identifier="test-node", status=wavelink.NodeStatus.CONNECTED)
         with patch("bot.services.music_player.wavelink.Node", return_value=fake_node), \
              patch("bot.services.music_player.wavelink.Pool.connect", new=AsyncMock(side_effect=OSError("offline"))) as connect:
             self.assertFalse(await service.connect_lavalink())
         self.assertFalse(service.lavalink_available)
         with patch("bot.services.music_player.wavelink.Node", return_value=fake_node), \
-             patch("bot.services.music_player.wavelink.Pool.connect", new=AsyncMock()) as connect:
+             patch("bot.services.music_player.wavelink.Pool.connect", new=AsyncMock(return_value={fake_node.identifier: fake_node})) as connect:
             self.assertTrue(await service.connect_lavalink())
             connect.assert_awaited_once()
         self.assertTrue(service.lavalink_available)
+
+    async def test_lavalink_pool_empty_result_is_not_marked_connected(self):
+        service = self.make_service()
+        service._lavalink_connected = False
+        fake_node = SimpleNamespace(
+            close=AsyncMock(),
+            identifier="empty-node",
+            status=wavelink.NodeStatus.DISCONNECTED,
+        )
+        with patch("bot.services.music_player.wavelink.Node", return_value=fake_node), \
+             patch("bot.services.music_player.wavelink.Pool.connect", new=AsyncMock(return_value={})) as connect, \
+             patch("bot.services.music_player.asyncio.sleep", new=AsyncMock()):
+            self.assertFalse(await service.connect_lavalink())
+        self.assertFalse(service.lavalink_available)
+        self.assertEqual(connect.await_count, 5)
 
     async def test_ytdlp_uses_private_writable_cookie_copy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -242,13 +317,22 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_lavalink_disconnect_reconnect_cancels_recovery(self):
         service = self.make_service()
         player = service.player_for(30)
-        player._current = Track("one", "url", None, "u", provider="lavalink", provider_track=object())
-        voice = SimpleNamespace(playing=True, paused=False, is_playing=lambda: True, is_paused=lambda: False)
+        playable = SimpleNamespace(encoded="encoded-30", identifier="track-30")
+        player._current = Track("one", "url", None, "u", provider="lavalink", provider_track=playable)
+        voice = SimpleNamespace(
+            playing=True,
+            paused=False,
+            connected=True,
+            current=SimpleNamespace(encoded="encoded-30", identifier="track-30"),
+            is_playing=lambda: True,
+            is_paused=lambda: False,
+        )
         player._voice_client = voice
+        player._lavalink_track_started = True
         with patch("bot.services.music_player.LAVALINK_RECONNECT_GRACE_SECONDS", 0.02):
             service.handle_lavalink_node_lost("network")
             self.assertIsNotNone(player._lavalink_reconnect_task)
-            await service.handle_lavalink_node_ready()
+            await service.handle_lavalink_node_ready(True)
             await asyncio.sleep(0.03)
         self.assertEqual(player.current.provider, "lavalink")
 
@@ -307,6 +391,21 @@ class MusicFallbackTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.03)
             await player.handle_lavalink_end(voice, event_track=playable)
         player._play_next_impl.assert_awaited_once_with(voice)
+
+    async def test_node_ready_without_restored_voice_does_not_preserve_track(self):
+        service = self.make_service()
+        service._lavalink_connected = False
+        player = service.player_for(35)
+        playable = SimpleNamespace(encoded="encoded-35", identifier="track-35")
+        player._current = Track("one", "url", None, "u", provider="lavalink", provider_track=playable)
+        player._voice_client = SimpleNamespace(connected=False, current=None)
+        player._lavalink_track_started = True
+        player._play_next_impl = AsyncMock()
+        with patch("bot.services.music_player.LAVALINK_RECONNECT_GRACE_SECONDS", 0.01):
+            service.handle_lavalink_node_lost("network")
+            await service.handle_lavalink_node_ready(False)
+            await asyncio.sleep(0.03)
+        player._play_next_impl.assert_awaited_once_with(player._voice_client)
 
 
 if __name__ == "__main__":

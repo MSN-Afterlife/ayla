@@ -61,10 +61,15 @@ class AylaBot(commands.Bot):
         if music_service:
             await music_service.handle_lavalink_end(payload.player, event_track=payload.track)
 
+    async def on_wavelink_track_start(self, payload) -> None:
+        music_service = getattr(self, "_music_service", None)
+        if music_service and payload.player:
+            await music_service.handle_lavalink_start(payload.player, payload.track)
+
     async def on_wavelink_node_ready(self, payload) -> None:
         music_service = getattr(self, "_music_service", None)
         if music_service:
-            await music_service.handle_lavalink_node_ready()
+            await music_service.handle_lavalink_node_ready(payload.resumed)
 
     async def on_wavelink_node_closed(self, node, disconnected) -> None:
         music_service = getattr(self, "_music_service", None)

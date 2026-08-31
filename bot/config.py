@@ -43,6 +43,7 @@ class Settings:
     levels_xp_max: int = 25
     levels_cooldown_seconds: int = 60
     uno_chaos_deck_size: int = 500
+    uno_monsters_path: str = "data/monsters_catalog.json"
     chat_config_path: str = "data/chat_config.json"
     presence_config_path: str = "data/presence_config.json"
     site_api_enabled: bool = True
@@ -127,6 +128,7 @@ def load_settings() -> Settings:
         levels_xp_max=int(os.getenv("LEVELS_XP_MAX", "25")),
         levels_cooldown_seconds=int(os.getenv("LEVELS_COOLDOWN_SECONDS", "60")),
         uno_chaos_deck_size=min(1_000_000, max(108, int(os.getenv("UNO_CHAOS_DECK_SIZE", "500")))),
+        uno_monsters_path=os.getenv("UNO_MONSTERS_PATH", "data/monsters_catalog.json"),
         chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
         presence_config_path=os.getenv("PRESENCE_CONFIG_PATH", "data/presence_config.json"),
         site_api_enabled=_load_bool("SITE_API_ENABLED", True),

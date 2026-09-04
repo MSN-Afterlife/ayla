@@ -2,6 +2,7 @@ import tempfile
 import threading
 import unittest
 import json
+import discord
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from bot.config import Settings
+from bot.client import AylaBot, create_bot
 from bot.services.minecraft_identity import (
     MinecraftConflict,
     MinecraftIdentityStore,
@@ -128,6 +130,34 @@ class MinecraftApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.server._minecraft_java_lookup(request)
         self.assertEqual(response.status, 200)
         self.assertIn('"linked": false', response.text)
+
+
+class MinecraftStartupTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        self.settings = Settings(
+            "test-token",
+            levels_database_path=str(root / "ayla.sqlite3"),
+            chat_config_path=str(root / "chat_config.json"),
+            uno_monsters_path=str(root / "monsters.json"),
+            site_api_enabled=True,
+            ayla_minecraft_internal_token="internal-secret",
+            openai_api_key="test-only-key",
+        )
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_ayla_bot_initializes_identity_store_before_site_api(self):
+        bot = AylaBot(self.settings, command_prefix="a!", intents=discord.Intents.none(), help_command=None)
+        self.assertIsInstance(bot._minecraft_identity_store, MinecraftIdentityStore)
+        self.assertIs(bot._site_api._minecraft, bot._minecraft_identity_store)
+
+    def test_create_bot_smoke_registers_minecraft_with_same_store(self):
+        bot = create_bot(self.settings)
+        self.assertIs(bot._site_api._minecraft, bot._minecraft_identity_store)
+        self.assertIsNotNone(bot.get_command("minecraft"))
 
 
 if __name__ == "__main__":

@@ -19,12 +19,14 @@ from bot.commands.bingo import setup_bingo_commands
 from bot.config import Settings
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
+from bot.services.minecraft_identity import MinecraftIdentityStore
 from bot.services.site_api import SiteApiServer
 
 
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._minecraft_identity_store = MinecraftIdentityStore(settings)
         self._site_api = SiteApiServer(settings, self.is_ready, self._minecraft_identity_store) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:

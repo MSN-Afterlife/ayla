@@ -19,8 +19,10 @@ Content-Type: application/json
 
 Nova conta: `{"linked":false,"code":"K7F2Q9","expires_in":600}`.
 Conta existente retorna `linked=true` e a identidade. O lookup
-`GET /internal/minecraft/account/java/{external_id}` retorna `{"linked":false}`
-ou `linked`, `enabled`, `identity` e `minecraft_account`.
+`GET /internal/minecraft/account/{platform}/{external_id}` retorna
+`{"linked":false}` ou `linked`, `enabled`, `identity` e `minecraft_account`.
+As plataformas aceitas são somente `java` e `bedrock`. A rota Java antiga
+`/internal/minecraft/account/java/{external_id}` continua disponível.
 
 O token usa comparação constante, nunca é logado e não deve ser commitado.
 
@@ -31,6 +33,10 @@ SQLite. `a!minecraft status` também está disponível. Códigos têm seis
 caracteres sem `O/0` e `I/1`, expiram em dez minutos, são single-use e têm
 limites por conta/IP. Conflitos de conta ou Discord são bloqueados.
 
+Java usa UUID Mojang normalizado. Bedrock usa XUID decimal positivo, validado
+como unsigned 64-bit e persistido em decimal canônico; não é convertido para
+UUID. Uma identidade pode ter no máximo uma conta de cada plataforma.
+
 `canonical_uuid` é UUID aleatório persistido. `canonical_name` é derivado do
 display name, mantém apenas caracteres Minecraft-safe até 16 posições e não
 translitera caracteres incompatíveis; colisões usam sufixo determinístico.
@@ -38,4 +44,4 @@ translitera caracteres incompatíveis; colisões usam sufixo determinístico.
 automaticamente UUID ou nome canônico.
 
 Ainda não há plugin Velocity, substituição de UUID/nickname, autorização no
-login, Bedrock, unlink ou migração de playerdata.
+login, integração Geyser/Floodgate, unlink ou migração de playerdata.

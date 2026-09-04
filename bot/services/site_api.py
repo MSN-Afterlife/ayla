@@ -58,6 +58,7 @@ class SiteApiServer:
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
         app.router.add_post("/internal/minecraft/link/request", self._minecraft_link_request)
+        app.router.add_get("/internal/minecraft/account/{platform}/{external_id}", self._minecraft_account_lookup)
         app.router.add_get("/internal/minecraft/account/java/{external_id}", self._minecraft_java_lookup)
 
         self._runner = web.AppRunner(app)
@@ -263,10 +264,14 @@ class SiteApiServer:
             return web.json_response({"ok": False, "message": str(error)}, status=400)
 
     async def _minecraft_java_lookup(self, request: web.Request) -> web.Response:
+        return await self._minecraft_account_lookup(request, forced_platform="java")
+
+    async def _minecraft_account_lookup(self, request: web.Request, forced_platform: str | None = None) -> web.Response:
         if not self._internal_authorized(request):
             return web.json_response({"ok": False, "message": "Nao autorizado."}, status=401)
         try:
-            return web.json_response(self._minecraft.lookup_java(request.match_info["external_id"]))
+            platform = forced_platform or request.match_info["platform"]
+            return web.json_response(self._minecraft.lookup_account(platform, request.match_info["external_id"]))
         except MinecraftLinkError as error:
             return web.json_response({"ok": False, "message": str(error)}, status=400)
 

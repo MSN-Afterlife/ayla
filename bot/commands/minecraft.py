@@ -1,4 +1,5 @@
 import logging
+from contextlib import closing
 
 import discord
 from discord import app_commands
@@ -49,19 +50,22 @@ async def _link(target, store: MinecraftIdentityStore, code: str) -> None:
         return
     account = result["minecraft_account"]
     identity = result["identity"]
-    await _reply(target, f"✅ Conta Minecraft vinculada com sucesso.\n\nMinecraft: {account['current_username']}\nIdentidade: {identity['canonical_name']}")
+    await _reply(target, f"✅ Conta Minecraft vinculada com sucesso.\n\nPlataforma: {account['platform'].title()}\nMinecraft: {account['current_username']}\nIdentidade: {identity['canonical_name']}")
 
 
 async def _status(target, store: MinecraftIdentityStore) -> None:
     user = target.user if isinstance(target, discord.Interaction) else target.author
     # This query intentionally exposes only Discord-owned status, never internal UUIDs.
-    with store._connect() as connection:
+    with closing(store._connect()) as connection:
         identity = connection.execute("SELECT * FROM minecraft_identities WHERE discord_user_id=?", (str(user.id),)).fetchone()
-        account = connection.execute("SELECT * FROM minecraft_accounts WHERE identity_id=? AND platform='java'", (identity["id"],)).fetchone() if identity else None
-    if not account:
-        await _reply(target, "Sua conta Java ainda nao esta vinculada.")
+        accounts = connection.execute("SELECT * FROM minecraft_accounts WHERE identity_id=? ORDER BY CASE platform WHEN 'java' THEN 0 ELSE 1 END", (identity["id"],)).fetchall() if identity else []
+    if not accounts:
+        await _reply(target, "Nenhuma conta Minecraft esta vinculada.")
         return
-    await _reply(target, f"Conta Java: vinculada\nMinecraft: {account['current_username']}\nIdentidade: {identity['canonical_name']}\nStatus: {'enabled' if identity['enabled'] else 'disabled'}")
+    lines = [f"Identidade: {identity['canonical_name']}", f"Status: {'enabled' if identity['enabled'] else 'disabled'}"]
+    for account in accounts:
+        lines.extend(["", f"{account['platform'].title()}:", account["current_username"]])
+    await _reply(target, "\n".join(lines))
 
 
 async def _reply(target, message: str) -> None:

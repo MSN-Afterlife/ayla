@@ -11,6 +11,7 @@ from bot.commands.economy import setup_economy_commands
 from bot.commands.help import setup_help_command
 from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
+from bot.commands.minecraft import setup_minecraft_commands
 from bot.commands.media import setup_media_commands
 from bot.commands.music import setup_music_commands
 from bot.commands.uno import setup_uno_commands
@@ -24,7 +25,7 @@ from bot.services.site_api import SiteApiServer
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._site_api = SiteApiServer(settings, self.is_ready) if settings.site_api_enabled else None
+        self._site_api = SiteApiServer(settings, self.is_ready, self._minecraft_identity_store) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:
@@ -73,6 +74,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_uno_commands(bot)
     setup_bingo_commands(bot)
     setup_help_command(bot, settings)
+    setup_minecraft_commands(bot, bot._minecraft_identity_store)
     setup_message_events(bot, settings, chat_config)
     return bot
 

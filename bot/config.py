@@ -40,6 +40,7 @@ class Settings:
     site_api_port: int = 8090
     site_api_cors_origin: str = "*"
     site_api_key: str | None = None
+    ayla_minecraft_internal_token: str | None = None
     daily_site_url: str = "https://msnafterlife.online/daily"
     youtube_cookies_path: str | None = None
     youtube_js_runtime_path: str = "node"
@@ -91,6 +92,7 @@ def load_settings() -> Settings:
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),
         site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
         site_api_key=os.getenv("SITE_API_KEY"),
+        ayla_minecraft_internal_token=os.getenv("AYLA_MINECRAFT_INTERNAL_TOKEN"),
         daily_site_url=os.getenv("DAILY_SITE_URL", "https://msnafterlife.online/daily"),
         youtube_cookies_path=os.getenv("YOUTUBE_COOKIES_PATH"),
         youtube_js_runtime_path=os.getenv("YOUTUBE_JS_RUNTIME_PATH", "node"),

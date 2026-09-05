@@ -10,9 +10,12 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     service=BingoService(bot._settings.levels_database_path); bot._bingo_service=service; tasks={}
     async def create(ctx, entry=500):
         if not ctx.guild: return await ctx.send("O Bingo precisa acontecer em um servidor.")
-        try: gid=service.create(ctx.guild.id,ctx.channel.id,ctx.author.id,entry)
+        try:
+            gid=service.create(ctx.guild.id,ctx.channel.id,ctx.author.id,entry)
+            view=LobbyView(service,None,tasks)
+            msg=await ctx.send(embed=embed(service.game(game_id=gid)),view=view)
+            view.message=msg; service.set_message(gid,msg.id)
         except BingoError as e: return await ctx.send(str(e))
-        msg=await ctx.send(embed=embed(service.game(game_id=gid)),view=LobbyView(service,None,tasks)); service.set_message(gid,msg.id); await msg.edit(view=LobbyView(service,msg,tasks))
     @bot.group(name="bingo",invoke_without_command=True)
     async def bingo(ctx): await ctx.send(f"Use `{bot.command_prefix}bingo criar 500` ou `/bingo criar`.")
     @bingo.command(name="criar")
@@ -40,7 +43,13 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     @group.command(name="criar")
     async def s_criar(i:discord.Interaction,entrada:int=500):
         if not i.guild: return await i.response.send_message("O Bingo precisa acontecer em um servidor.",ephemeral=True)
-        try: gid=service.create(i.guild.id,i.channel.id,i.user.id,entrada); await i.response.send_message(embed=embed(service.game(game_id=gid)),view=LobbyView(service,None,tasks)); service.set_message(gid,i.original_response().id if False else 0)
+        try:
+            gid=service.create(i.guild.id,i.channel.id,i.user.id,entrada)
+            view=LobbyView(service,None,tasks)
+            await i.response.send_message(embed=embed(service.game(game_id=gid)),view=view)
+            msg=await i.original_response()
+            view.message=msg
+            service.set_message(gid,msg.id)
         except BingoError as e: await i.response.send_message(str(e),ephemeral=True)
     @group.command(name="entrar")
     async def s_entrar(i:discord.Interaction): await action(service,i,"join")
@@ -57,10 +66,13 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     @group.command(name="bingo")
     async def s_bingo(i:discord.Interaction): await action(service,i,"claim",tasks=tasks)
     bot.tree.add_command(group)
+    bot.add_view(LobbyView(service,None,tasks))
+    bot.add_view(GameView(service,None,tasks))
     async def restore_bingo():
         for row in service.recoverable():
             channel=bot.get_channel(row["channel_id"])
             if not channel or not row["message_id"]: continue
+            if row["game_id"] in tasks and not tasks[row["game_id"]].done(): continue
             try: message=await channel.fetch_message(row["message_id"])
             except discord.HTTPException: continue
             bot.add_view(GameView(service,message,tasks),message_id=row["message_id"])
@@ -70,20 +82,27 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
 class LobbyView(discord.ui.View):
     def __init__(self,service,message,tasks): super().__init__(timeout=None); self.service=service; self.message=message; self.tasks=tasks
     async def go(self,i,kind):
+        message=self.message or i.message
+        self.message=message
         g=self.service.game(channel_id=i.channel.id)
+        if not g: return await i.response.send_message("Não há uma sala ativa neste canal.",ephemeral=True)
+        if message and not g["message_id"]: self.service.set_message(g["game_id"],message.id)
         try:
             if kind=="join": self.service.join(g["game_id"],i.user.id); msg="Você entrou! Sua cartela foi reservada."
             else:
-                self.service.start(g["game_id"],i.user.id); msg="🎱 O Bingo começou!"; self.tasks[g["game_id"]]=asyncio.create_task(draw_loop(self.service,self.message,self.tasks,g["game_id"]))
-            await i.response.send_message(msg,ephemeral=True); await self.message.edit(embed=embed(self.service.game(game_id=g["game_id"])),view=GameView(self.service,self.message,self.tasks) if kind=="start" else self)
+                self.service.start(g["game_id"],i.user.id); msg="🎱 O Bingo começou!"; self.tasks[g["game_id"]]=asyncio.create_task(draw_loop(self.service,message,self.tasks,g["game_id"]))
+            await i.response.send_message(msg,ephemeral=True)
+            if message: await message.edit(embed=embed(self.service.game(game_id=g["game_id"])),view=GameView(self.service,message,self.tasks) if kind=="start" else self)
         except (BingoError,TypeError) as e: await i.response.send_message(str(e),ephemeral=True)
-    @discord.ui.button(label="🎟️ Entrar",style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🎟️ Entrar",style=discord.ButtonStyle.success,custom_id="ayla_bingo_join")
     async def join(self,i,b): await self.go(i,"join")
     @discord.ui.button(label="▶️ Iniciar",style=discord.ButtonStyle.primary,custom_id="ayla_bingo_start")
     async def start(self,i,b): await self.go(i,"start")
     @discord.ui.button(label="🚪 Cancelar",style=discord.ButtonStyle.danger,custom_id="ayla_bingo_cancel")
     async def cancel(self,i,b):
-        try: self.service.cancel(self.service.game(channel_id=i.channel.id)["game_id"],i.user.id); await i.response.edit_message(content="Sala cancelada e entradas devolvidas.",embed=None,view=None)
+        g=self.service.game(channel_id=i.channel.id)
+        if not g: return await i.response.send_message("Não há uma sala ativa neste canal.",ephemeral=True)
+        try: self.service.cancel(g["game_id"],i.user.id); await i.response.edit_message(content="Sala cancelada e entradas devolvidas.",embed=None,view=None)
         except BingoError as e: await i.response.send_message(str(e),ephemeral=True)
 
 class GameView(discord.ui.View):
@@ -99,14 +118,19 @@ class NumberModal(discord.ui.Modal,title="Marcar numero"):
     number=discord.ui.TextInput(label="Numero sorteado",max_length=2)
     def __init__(self,service): super().__init__(); self.service=service
     async def on_submit(self,i):
-        try: await action(self.service,i,"mark",int(str(self.number.value)))
+        try: await action(self.service,i,"mark",int(str(self.number.value).strip()))
         except ValueError: await i.response.send_message("Digite um número válido.",ephemeral=True)
 
 async def draw_loop(service,message,tasks,gid):
+    if not message: return
     try:
         while True:
             await asyncio.sleep(10); number=service.draw(gid)
-            if number is None: return
+            if number is None:
+                g=service.game(game_id=gid)
+                if g and g["state"]=="RUNNING" and g["draw_position"]>=75:
+                    await message.edit(embed=embed(g,"🎱 Todos os números foram sorteados e ninguém completou uma linha a tempo!"),view=None)
+                return
             await message.edit(embed=embed(service.game(game_id=gid),f"🔴 Saiu o número **{number}**!"),view=GameView(service,message,tasks))
     except (asyncio.CancelledError,discord.HTTPException): return
 
@@ -121,7 +145,9 @@ async def action(service,target,kind,number=None,tasks=None):
         elif kind=="card":
             file=discord.File(render_card(service.card(g["game_id"],user.id)),filename="cartela.png"); return await (target.response.send_message(file=file,ephemeral=True) if interaction else target.send(file=file))
         elif kind=="claim":
-            prize,card=service.claim(g["game_id"],user.id); tasks.get(g["game_id"]) and tasks[g["game_id"]].cancel(); file=discord.File(render_card(card,"🏆 CARTELA VENCEDORA"),filename="bingo-vencedor.png"); text=f"🔔 BINGO!!! {user.mention} venceu e levou **{prize} winks**!"; return await (target.response.send_message(text,file=file,ephemeral=False) if interaction else target.send(text,file=file))
+            prize,card=service.claim(g["game_id"],user.id)
+            if tasks and tasks.get(g["game_id"]): tasks[g["game_id"]].cancel()
+            file=discord.File(render_card(card,"🏆 CARTELA VENCEDORA"),filename="bingo-vencedor.png"); text=f"🔔 BINGO!!! {user.mention} venceu e levou **{prize} winks**!"; return await (target.response.send_message(text,file=file,ephemeral=False) if interaction else target.send(text,file=file))
         else: text="Estado consultado."
     except BingoError as e: text=str(e)
     return await (target.response.send_message(text,ephemeral=True) if interaction else target.send(text))

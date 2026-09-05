@@ -51,4 +51,11 @@ class BingoPersistenceTests(unittest.TestCase):
     def test_recovery_lists_running_without_money_mutation(self):
         g=self.game(); self.s.join(g,1); self.s.join(g,2); self.s.start(g,1); self.assertEqual([r['game_id'] for r in self.s.recoverable()],[g])
 
+    def test_host_survives_service_restart(self):
+        g=self.game(); self.s.join(g,1); self.s.join(g,2)
+        restarted=BingoService(self.s.path)
+        with self.assertRaises(BingoError): restarted.start(g,2)
+        restarted.start(g,1)
+        self.assertEqual(restarted.game(game_id=g)['state'], 'RUNNING')
+
 if __name__=='__main__': unittest.main()

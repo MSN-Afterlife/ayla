@@ -40,7 +40,7 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     @bingo.command(name="cancelar")
     async def cancelar(ctx):
         g=service.game(channel_id=ctx.channel.id)
-        try: service.cancel(g["game_id"],ctx.author.id,force=is_server_admin(ctx.author)); await ctx.send("Sala cancelada e entradas devolvidas.")
+        try: service.cancel(g["game_id"],ctx.author.id,force=is_server_admin(ctx.author,ctx.guild)); await ctx.send("Sala cancelada e entradas devolvidas.")
         except (BingoError,TypeError) as e: await ctx.send(str(e))
     group=app_commands.Group(name="bingo",description="Bingo competitivo da Ayla")
     @group.command(name="criar")
@@ -145,7 +145,7 @@ class LobbyView(discord.ui.View):
             await interaction.response.send_message("Não há uma sala ativa neste canal.", ephemeral=True)
             return
         try:
-            self.service.cancel(g["game_id"], interaction.user.id, force=is_server_admin(interaction.user))
+            self.service.cancel(g["game_id"], interaction.user.id, force=is_server_admin(interaction.user, interaction.guild))
             await interaction.response.edit_message(content="Sala cancelada e entradas devolvidas.", embed=None, view=None)
         except BingoError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
@@ -203,7 +203,7 @@ async def action(service,target,kind,number=None,tasks=None):
         if not g: raise BingoError("Não há uma sala neste canal.")
         if kind=="join": service.join(g["game_id"],user.id); text="🎟️ Você entrou no Bingo!"
         elif kind=="leave": service.leave(g["game_id"],user.id); text="Você saiu e recebeu a entrada de volta."
-        elif kind=="cancel": service.cancel(g["game_id"],user.id,force=is_server_admin(user)); text="Sala cancelada e entradas devolvidas."
+        elif kind=="cancel": service.cancel(g["game_id"],user.id,force=is_server_admin(user, target.guild)); text="Sala cancelada e entradas devolvidas."
         elif kind in ("mark","unmark"): service.mark(g["game_id"],user.id,number,kind=="mark"); text="Cartela atualizada!"
         elif kind=="card":
             file=discord.File(render_card(service.card(g["game_id"],user.id)),filename="cartela.png"); return await (target.response.send_message(file=file,ephemeral=True) if interaction else target.send(file=file))
@@ -215,8 +215,13 @@ async def action(service,target,kind,number=None,tasks=None):
     except BingoError as e: text=str(e)
     return await (target.response.send_message(text,ephemeral=True) if interaction else target.send(text))
 
-def is_server_admin(user) -> bool:
-    return bool(getattr(getattr(user, "guild_permissions", None), "administrator", False))
+def is_server_admin(user, guild=None) -> bool:
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(
+        getattr(permissions, "administrator", False)
+        or getattr(permissions, "manage_guild", False)
+        or (guild is not None and getattr(guild, "owner_id", None) == getattr(user, "id", None))
+    )
 
 def embed(game,note=None):
     if not game: return discord.Embed(title="🎱 BINGO DA AYLA",description="Sala encerrada.")

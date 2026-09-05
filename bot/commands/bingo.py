@@ -7,7 +7,10 @@ from bot.services.bingo_service import BingoError, BingoService
 from bot.services.bingo_renderer import render_card
 
 def setup_bingo_commands(bot: commands.Bot) -> None:
-    service=BingoService(bot._settings.levels_database_path); bot._bingo_service=service; tasks={}
+    settings = getattr(bot, "_settings")
+    service = BingoService(settings.levels_database_path)
+    setattr(bot, "_bingo_service", service)
+    tasks: dict = {}
     async def create(ctx, entry=500):
         if not ctx.guild: return await ctx.send("O Bingo precisa acontecer em um servidor.")
         try:
@@ -42,7 +45,7 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     group=app_commands.Group(name="bingo",description="Bingo competitivo da Ayla")
     @group.command(name="criar")
     async def s_criar(i:discord.Interaction,entrada:int=500):
-        if not i.guild: return await i.response.send_message("O Bingo precisa acontecer em um servidor.",ephemeral=True)
+        if not i.guild or not i.channel: return await i.response.send_message("O Bingo precisa acontecer em um canal de servidor.",ephemeral=True)
         try:
             gid=service.create(i.guild.id,i.channel.id,i.user.id,entrada)
             view=LobbyView(service,None,tasks)
@@ -71,7 +74,7 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     async def restore_bingo():
         for row in service.recoverable():
             channel=bot.get_channel(row["channel_id"])
-            if not channel or not row["message_id"]: continue
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)) or not row["message_id"]: continue
             if row["game_id"] in tasks and not tasks[row["game_id"]].done(): continue
             try: message=await channel.fetch_message(row["message_id"])
             except discord.HTTPException: continue
@@ -80,46 +83,98 @@ def setup_bingo_commands(bot: commands.Bot) -> None:
     bot.add_listener(restore_bingo,"on_ready")
 
 class LobbyView(discord.ui.View):
-    def __init__(self,service,message,tasks): super().__init__(timeout=None); self.service=service; self.message=message; self.tasks=tasks
-    async def go(self,i,kind):
-        message=self.message or i.message
-        self.message=message
-        g=self.service.game(channel_id=i.channel.id)
-        if not g: return await i.response.send_message("Não há uma sala ativa neste canal.",ephemeral=True)
-        if message and not g["message_id"]: self.service.set_message(g["game_id"],message.id)
+    def __init__(self, service: BingoService, message: discord.Message | None, tasks: dict) -> None:
+        super().__init__(timeout=None)
+        self.service = service
+        self.message = message
+        self.tasks = tasks
+
+    async def go(self, interaction: discord.Interaction, kind: str) -> None:
+        message = self.message or interaction.message
+        self.message = message
+        if not interaction.channel:
+            await interaction.response.send_message("Canal não encontrado.", ephemeral=True)
+            return
+        g = self.service.game(channel_id=interaction.channel.id)
+        if not g:
+            await interaction.response.send_message("Não há uma sala ativa neste canal.", ephemeral=True)
+            return
+        if message and not g["message_id"]:
+            self.service.set_message(g["game_id"], message.id)
         try:
-            if kind=="join": self.service.join(g["game_id"],i.user.id); msg="Você entrou! Sua cartela foi reservada."
+            if kind == "join":
+                self.service.join(g["game_id"], interaction.user.id)
+                msg = "Você entrou! Sua cartela foi reservada."
             else:
-                self.service.start(g["game_id"],i.user.id); msg="🎱 O Bingo começou!"; self.tasks[g["game_id"]]=asyncio.create_task(draw_loop(self.service,message,self.tasks,g["game_id"]))
-            await i.response.send_message(msg,ephemeral=True)
-            if message: await message.edit(embed=embed(self.service.game(game_id=g["game_id"])),view=GameView(self.service,message,self.tasks) if kind=="start" else self)
-        except (BingoError,TypeError) as e: await i.response.send_message(str(e),ephemeral=True)
-    @discord.ui.button(label="🎟️ Entrar",style=discord.ButtonStyle.success,custom_id="ayla_bingo_join")
-    async def join(self,i,b): await self.go(i,"join")
-    @discord.ui.button(label="▶️ Iniciar",style=discord.ButtonStyle.primary,custom_id="ayla_bingo_start")
-    async def start(self,i,b): await self.go(i,"start")
-    @discord.ui.button(label="🚪 Cancelar",style=discord.ButtonStyle.danger,custom_id="ayla_bingo_cancel")
-    async def cancel(self,i,b):
-        g=self.service.game(channel_id=i.channel.id)
-        if not g: return await i.response.send_message("Não há uma sala ativa neste canal.",ephemeral=True)
-        try: self.service.cancel(g["game_id"],i.user.id); await i.response.edit_message(content="Sala cancelada e entradas devolvidas.",embed=None,view=None)
-        except BingoError as e: await i.response.send_message(str(e),ephemeral=True)
+                self.service.start(g["game_id"], interaction.user.id)
+                msg = "🎱 O Bingo começou!"
+                self.tasks[g["game_id"]] = asyncio.create_task(
+                    draw_loop(self.service, message, self.tasks, g["game_id"])
+                )
+            await interaction.response.send_message(msg, ephemeral=True)
+            if message:
+                await message.edit(
+                    embed=embed(self.service.game(game_id=g["game_id"])),
+                    view=GameView(self.service, message, self.tasks) if kind == "start" else self
+                )
+        except (BingoError, TypeError) as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+
+    @discord.ui.button(label="🎟️ Entrar", style=discord.ButtonStyle.success, custom_id="ayla_bingo_join")
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.go(interaction, "join")
+
+    @discord.ui.button(label="▶️ Iniciar", style=discord.ButtonStyle.primary, custom_id="ayla_bingo_start")
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.go(interaction, "start")
+
+    @discord.ui.button(label="🚪 Cancelar", style=discord.ButtonStyle.danger, custom_id="ayla_bingo_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.channel:
+            return
+        g = self.service.game(channel_id=interaction.channel.id)
+        if not g:
+            await interaction.response.send_message("Não há uma sala ativa neste canal.", ephemeral=True)
+            return
+        try:
+            self.service.cancel(g["game_id"], interaction.user.id)
+            await interaction.response.edit_message(content="Sala cancelada e entradas devolvidas.", embed=None, view=None)
+        except BingoError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+
 
 class GameView(discord.ui.View):
-    def __init__(self,service,message,tasks): super().__init__(timeout=None); self.service=service; self.message=message; self.tasks=tasks
-    @discord.ui.button(label="🎴 Minha cartela",style=discord.ButtonStyle.secondary,custom_id="ayla_bingo_card")
-    async def card(self,i,b): await action(self.service,i,"card")
-    @discord.ui.button(label="✏️ Marcar",style=discord.ButtonStyle.primary,custom_id="ayla_bingo_mark")
-    async def mark(self,i,b): await i.response.send_modal(NumberModal(self.service))
-    @discord.ui.button(label="🔔 BINGO!",style=discord.ButtonStyle.success,custom_id="ayla_bingo_claim")
-    async def claim(self,i,b): await action(self.service,i,"claim",tasks=self.tasks)
+    def __init__(self, service: BingoService, message: discord.Message | None, tasks: dict) -> None:
+        super().__init__(timeout=None)
+        self.service = service
+        self.message = message
+        self.tasks = tasks
 
-class NumberModal(discord.ui.Modal,title="Marcar numero"):
-    number=discord.ui.TextInput(label="Numero sorteado",max_length=2)
-    def __init__(self,service): super().__init__(); self.service=service
-    async def on_submit(self,i):
-        try: await action(self.service,i,"mark",int(str(self.number.value).strip()))
-        except ValueError: await i.response.send_message("Digite um número válido.",ephemeral=True)
+    @discord.ui.button(label="🎴 Minha cartela", style=discord.ButtonStyle.secondary, custom_id="ayla_bingo_card")
+    async def card(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await action(self.service, interaction, "card")
+
+    @discord.ui.button(label="✏️ Marcar", style=discord.ButtonStyle.primary, custom_id="ayla_bingo_mark")
+    async def mark(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(NumberModal(self.service))
+
+    @discord.ui.button(label="🔔 BINGO!", style=discord.ButtonStyle.success, custom_id="ayla_bingo_claim")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await action(self.service, interaction, "claim", tasks=self.tasks)
+
+
+class NumberModal(discord.ui.Modal, title="Marcar numero"):
+    number = discord.ui.TextInput(label="Numero sorteado", max_length=2)
+
+    def __init__(self, service: BingoService) -> None:
+        super().__init__(title="Marcar numero")
+        self.service = service
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            await action(self.service, interaction, "mark", int(str(self.number.value).strip()))
+        except ValueError:
+            await interaction.response.send_message("Digite um número válido.", ephemeral=True)
 
 async def draw_loop(service,message,tasks,gid):
     if not message: return

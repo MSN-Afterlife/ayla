@@ -57,10 +57,10 @@ class BingoService:
     def set_message(self, game_id, message_id):
         with closing(self._connect()) as db:
             db.execute("UPDATE bingo_games SET message_id=? WHERE game_id=?", (message_id, game_id)); db.commit()
-    def cancel(self, game_id, actor_id):
+    def cancel(self, game_id, actor_id, force=False):
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE"); g=db.execute("SELECT * FROM bingo_games WHERE game_id=?",(game_id,)).fetchone()
-            if not g or g['state'] != 'WAITING' or g['host_id'] != actor_id: raise BingoError("A sala so pode ser cancelada pelo host enquanto aguarda jogadores.")
+            if not g or g['state'] != 'WAITING' or (not force and g['host_id'] != actor_id): raise BingoError("A sala so pode ser cancelada pelo host ou por um administrador enquanto aguarda jogadores.")
             now=int(time.time())
             for p in db.execute("SELECT * FROM bingo_players WHERE game_id=? AND refunded=0",(game_id,)).fetchall():
                 key=f"bingo:{game_id}:refund:{p['user_id']}"; db.execute("UPDATE economy_profiles SET balance=balance+?,updated_at=? WHERE user_id=?",(g['entry'],now,p['user_id'])); db.execute("INSERT OR IGNORE INTO economy_transactions VALUES(?,?,?,?,?)",(key,p['user_id'],g['entry'],'credit',now)); db.execute("UPDATE bingo_players SET refunded=1 WHERE game_id=? AND user_id=?",(game_id,p['user_id']))

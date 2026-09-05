@@ -58,4 +58,9 @@ class BingoPersistenceTests(unittest.TestCase):
         restarted.start(g,1)
         self.assertEqual(restarted.game(game_id=g)['state'], 'RUNNING')
 
+    def test_force_cancel_can_be_used_by_admin(self):
+        g=self.game(); self.s.join(g,1)
+        self.s.cancel(g,999,force=True)
+        self.assertEqual(self.s.game(game_id=g)['state'], 'CANCELLED')
+
 if __name__=='__main__': unittest.main()

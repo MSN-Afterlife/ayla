@@ -50,6 +50,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     intents.message_content = True
 
     bot = AylaBot(settings, command_prefix=settings.command_prefix, intents=intents, help_command=None)
+    bot._settings = settings
     bot._slash_synced = False
     bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)

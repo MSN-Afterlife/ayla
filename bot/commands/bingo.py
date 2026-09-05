@@ -90,8 +90,17 @@ class LobbyView(discord.ui.View):
         self.tasks = tasks
 
     async def go(self, interaction: discord.Interaction, kind: str) -> None:
+        # Persistent views are reconstructed with message=None after a restart.
+        # Component interactions always carry the source message, so use it as
+        # the canonical fallback instead of dereferencing self.message directly.
         message = self.message or interaction.message
         self.message = message
+        if message is None:
+            await interaction.response.send_message(
+                "Não foi possível localizar o painel do Bingo. Crie uma nova sala.",
+                ephemeral=True,
+            )
+            return
         if not interaction.channel:
             await interaction.response.send_message("Canal não encontrado.", ephemeral=True)
             return
@@ -112,11 +121,10 @@ class LobbyView(discord.ui.View):
                     draw_loop(self.service, message, self.tasks, g["game_id"])
                 )
             await interaction.response.send_message(msg, ephemeral=True)
-            if message:
-                await message.edit(
-                    embed=embed(self.service.game(game_id=g["game_id"])),
-                    view=GameView(self.service, message, self.tasks) if kind == "start" else self
-                )
+            await message.edit(
+                embed=embed(self.service.game(game_id=g["game_id"])),
+                view=GameView(self.service, message, self.tasks) if kind == "start" else self
+            )
         except (BingoError, TypeError) as e:
             await interaction.response.send_message(str(e), ephemeral=True)
 

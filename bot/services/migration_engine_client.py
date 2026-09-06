@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -185,11 +186,43 @@ class MigrationStatus:
 
 
 @dataclass(frozen=True)
+class MigrationReference:
+    migration_id: str
+    state: MigrationState
+    canonical_uuid: str | None = None
+    player_name: str | None = None
+    discord_user_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    rollback_available: bool = False
+
+    def label(self) -> str:
+        owner = self.player_name or self.canonical_uuid or self.discord_user_id or "migration"
+        age = self.updated_at or self.created_at or "sem data"
+        return f"{owner} | {self.state.value} | {age} | {self.migration_id[:18]}"
+
+
+@dataclass(frozen=True)
+class PlayerReference:
+    canonical_uuid: str
+    player_name: str
+    discord_user_id: str | None = None
+    java_external_id: str | None = None
+    bedrock_external_id: str | None = None
+    confidence: float | None = None
+
+    def label(self) -> str:
+        score = f" | {self.confidence:.0%}" if self.confidence is not None else ""
+        return f"{self.player_name} | {self.canonical_uuid[:8]}{score}"
+
+
+@dataclass(frozen=True)
 class MigrationInspectRequest:
     discord_user_id: str | None = None
     canonical_uuid: str | None = None
     platform: str | None = None
     external_id: str | None = None
+    player_name: str | None = None
 
     def payload(self) -> dict[str, str]:
         result = {
@@ -197,6 +230,7 @@ class MigrationInspectRequest:
             "canonical_uuid": self.canonical_uuid,
             "platform": self.platform,
             "external_id": self.external_id,
+            "player_name": self.player_name,
         }
         return {key: value for key, value in result.items() if value}
 
@@ -253,6 +287,40 @@ class MigrationEngineClient:
     async def status(self, migration_id: str) -> MigrationStatus:
         payload = await self._request("GET", f"/api/v1/migrations/{_path_id(migration_id)}")
         return _parse_status(payload)
+
+    async def list_migrations(
+        self,
+        *,
+        query: str | None = None,
+        selector: MigrationInspectRequest | None = None,
+        state: MigrationState | None = None,
+        rollback_available: bool | None = None,
+        limit: int = 25,
+    ) -> tuple[MigrationReference, ...]:
+        params: dict[str, str] = {"limit": str(max(1, min(limit, 25)))}
+        if query:
+            params["query"] = query
+        if selector:
+            params.update(selector.payload())
+        if state:
+            params["state"] = state.value
+        if rollback_available is not None:
+            params["rollback_available"] = "true" if rollback_available else "false"
+        payload = await self._request("GET", f"/api/v1/migrations?{urlencode(params)}")
+        data = _require_dict(payload)
+        migrations = data.get("migrations")
+        if not isinstance(migrations, list):
+            raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: migrations.")
+        return tuple(_parse_reference(item) for item in migrations)
+
+    async def search_players(self, query: str, *, limit: int = 10) -> tuple[PlayerReference, ...]:
+        params = urlencode({"query": query, "limit": str(max(1, min(limit, 25)))})
+        payload = await self._request("GET", f"/api/v1/minecraft/players?{params}")
+        data = _require_dict(payload)
+        players = data.get("players")
+        if not isinstance(players, list):
+            raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: players.")
+        return tuple(_parse_player_reference(item) for item in players)
 
     async def _request(
         self,
@@ -379,6 +447,32 @@ def _parse_status(payload: object) -> MigrationStatus:
     )
 
 
+def _parse_reference(payload: object) -> MigrationReference:
+    data = _require_dict(payload)
+    return MigrationReference(
+        migration_id=_required_str(data, "migration_id"),
+        state=_parse_enum(MigrationState, data.get("state"), "state"),
+        canonical_uuid=_optional_str(data.get("canonical_uuid") or data.get("canonical_target")),
+        player_name=_optional_str(data.get("player_name") or data.get("canonical_name")),
+        discord_user_id=_optional_str(data.get("discord_user_id")),
+        created_at=_optional_str(data.get("created_at")),
+        updated_at=_optional_str(data.get("updated_at")),
+        rollback_available=bool(data.get("rollback_available")),
+    )
+
+
+def _parse_player_reference(payload: object) -> PlayerReference:
+    data = _require_dict(payload)
+    return PlayerReference(
+        canonical_uuid=_required_str(data, "canonical_uuid"),
+        player_name=_required_str(data, "player_name"),
+        discord_user_id=_optional_str(data.get("discord_user_id")),
+        java_external_id=_optional_str(data.get("java_external_id")),
+        bedrock_external_id=_optional_str(data.get("bedrock_external_id")),
+        confidence=_optional_float(data.get("confidence")),
+    )
+
+
 def _parse_identity(data: dict[str, Any]) -> IdentitySummary:
     return IdentitySummary(
         canonical_uuid=_required_str(data, "canonical_uuid"),
@@ -437,6 +531,10 @@ def _optional_str(value: object) -> str | None:
 
 def _optional_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_float(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _tuple_str(value: object) -> tuple[str, ...]:

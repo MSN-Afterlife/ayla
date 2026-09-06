@@ -108,6 +108,76 @@ Response:
 }
 ```
 
+`GET /api/v1/migrations`
+
+Used by Discord UX for autocomplete and safe identity-based resolution. The
+canonical key remains `migration_id`; this endpoint only returns references.
+
+Query parameters:
+
+- `query`: free text for operator autocomplete.
+- `discord_user_id`, `canonical_uuid`, or `platform` + `external_id`: identity selector.
+- `state`: optional migration state filter.
+- `rollback_available`: optional `true`/`false`.
+- `limit`: maximum references, capped by the server.
+
+Response:
+
+```json
+{
+  "migrations": [
+    {
+      "migration_id": "mig_123",
+      "state": "EXECUTED",
+      "canonical_uuid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      "player_name": "Player",
+      "discord_user_id": "123456789",
+      "created_at": "2026-09-06T12:00:00Z",
+      "updated_at": "2026-09-06T12:03:00Z",
+      "rollback_available": true
+    }
+  ]
+}
+```
+
+For identity-based status, return migrations ordered newest/relevant first. For
+rollback by identity, the Discord client will only auto-select when exactly one
+reference matches `state=EXECUTED` and `rollback_available=true`; multiple
+matches are treated as ambiguous and require explicit operator selection.
+
+`GET /api/v1/minecraft/players`
+
+Used by Discord UX to search players by nick/name with approximate matching.
+Staff must not need VPS access, UUID lookup, or manual file inspection.
+
+Query parameters:
+
+- `query`: partial or approximate nick typed by staff.
+- `limit`: maximum references, capped by the server.
+
+The server should search known canonical names, Java usernames, Bedrock
+gamertags, and any safe indexed aliases available to the migration stack. It
+must return likely matches ordered by confidence/relevance. The Discord client
+only auto-selects when exactly one player is returned; multiple matches are
+treated as ambiguous.
+
+Response:
+
+```json
+{
+  "players": [
+    {
+      "canonical_uuid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      "player_name": "Player",
+      "discord_user_id": "123456789",
+      "java_external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "bedrock_external_id": "2533274791234567",
+      "confidence": 0.94
+    }
+  ]
+}
+```
+
 `POST /api/v1/migrations/{migration_id}/execute`
 
 Headers include `Idempotency-Key`. Request:

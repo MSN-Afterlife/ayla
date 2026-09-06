@@ -173,6 +173,50 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MigrationEngineNotConfigured):
             await client.status("mig-1")
 
+    async def test_list_migrations_success(self):
+        FakeSession.responses = [
+            (
+                200,
+                {
+                    "migrations": [
+                        {
+                            "migration_id": "mig_bf4cb82cf767d195",
+                            "state": "EXECUTED",
+                            "canonical_uuid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                            "player_name": "Mounk",
+                            "updated_at": "2026-09-06T12:00:00Z",
+                            "rollback_available": True,
+                        }
+                    ]
+                },
+            )
+        ]
+        result = await self.client.list_migrations(query="moun", state=MigrationState.EXECUTED, rollback_available=True)
+        self.assertEqual(result[0].migration_id, "mig_bf4cb82cf767d195")
+        self.assertIn("Mounk", result[0].label())
+        self.assertIn("rollback_available=true", FakeSession.calls[0][1])
+
+    async def test_search_players_success(self):
+        FakeSession.responses = [
+            (
+                200,
+                {
+                    "players": [
+                        {
+                            "canonical_uuid": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                            "player_name": "Mounk",
+                            "discord_user_id": "123",
+                            "java_external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                            "confidence": 0.92,
+                        }
+                    ]
+                },
+            )
+        ]
+        result = await self.client.search_players("mou")
+        self.assertEqual(result[0].player_name, "Mounk")
+        self.assertIn("query=mou", FakeSession.calls[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

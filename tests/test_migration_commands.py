@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import discord
 
 from bot.client import create_bot
-from bot.commands.migration import _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _request_confirmation, _resolve_target, _rollback_by_selector, _status, _status_by_selector
+from bot.commands.migration import _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _reply, _request_confirmation, _resolve_target, _rollback_by_selector, _status, _status_by_selector
 from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationStore
@@ -305,14 +305,38 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(choices[0].value, "player:bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
         self.assertIn("Mounk", choices[0].name)
 
+    async def test_reply_normal_sem_view_nao_envia_view_none(self):
+        interaction = fake_interaction(42, self.confirmations, deferred=False)
+        await _reply(interaction, "ok")
+        self.assertNotIn("view", interaction.response.send_message.await_args.kwargs)
+        self.assertTrue(interaction.response.send_message.await_args.kwargs["ephemeral"])
+
+    async def test_reply_deferred_sem_view_nao_envia_view_none(self):
+        interaction = fake_interaction(42, self.confirmations, deferred=True)
+        await _reply(interaction, "ok")
+        self.assertNotIn("view", interaction.followup.send.await_args.kwargs)
+        self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+
+    async def test_reply_normal_com_view_preserva_view(self):
+        interaction = fake_interaction(42, self.confirmations, deferred=False)
+        view = discord.ui.View()
+        await _reply(interaction, "ok", view=view)
+        self.assertIs(interaction.response.send_message.await_args.kwargs["view"], view)
+
+    async def test_reply_deferred_com_view_preserva_view(self):
+        interaction = fake_interaction(42, self.confirmations, deferred=True)
+        view = discord.ui.View()
+        await _reply(interaction, "ok", view=view)
+        self.assertIs(interaction.followup.send.await_args.kwargs["view"], view)
+
 
 if __name__ == "__main__":
     unittest.main()
 
 
-def fake_interaction(user_id, confirmations, *, admin=True, manage_guild=True):
+def fake_interaction(user_id, confirmations, *, admin=True, manage_guild=True, deferred=False):
     permissions = SimpleNamespace(administrator=admin, manage_guild=manage_guild)
-    response = SimpleNamespace(is_done=lambda: False, send_message=AsyncMock())
+    response = SimpleNamespace(is_done=lambda: deferred, send_message=AsyncMock())
     followup = SimpleNamespace(send=AsyncMock())
     client = SimpleNamespace(_migration_confirmations=confirmations)
     return SimpleNamespace(user=SimpleNamespace(id=user_id, guild_permissions=permissions), response=response, followup=followup, client=client)

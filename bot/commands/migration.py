@@ -527,13 +527,17 @@ def _user_id(target) -> str:
 
 async def _reply(target, message: str, *, view: discord.ui.View | None = None) -> None:
     message = message[:1900]
+    kwargs = {"ephemeral": True}
+    if view is not None:
+        kwargs["view"] = view
     if _is_interaction_like(target):
         if target.response.is_done():
-            await target.followup.send(message, ephemeral=True, view=view)
+            await target.followup.send(message, **kwargs)
         else:
-            await target.response.send_message(message, ephemeral=True, view=view)
+            await target.response.send_message(message, **kwargs)
     else:
-        await target.send(message, view=view)
+        kwargs = {"view": view} if view is not None else {}
+        await target.send(message, **kwargs)
 
 
 def _is_interaction_like(target) -> bool:

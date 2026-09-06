@@ -1,0 +1,6 @@
+# AylaAuth staging configuration
+# Do not commit a real api_token.
+api_base_url = ""
+api_token = ""
+request_timeout_ms = 3000
+fail_open = false

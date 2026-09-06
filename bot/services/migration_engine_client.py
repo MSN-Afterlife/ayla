@@ -322,6 +322,22 @@ class MigrationEngineClient:
             raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: players.")
         return tuple(_parse_player_reference(item) for item in players)
 
+    async def staging_auth_bypass_status(self) -> bool:
+        payload = await self._request("GET", "/api/v1/staging/auth-bypass")
+        data = _require_dict(payload)
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: enabled.")
+        return enabled
+
+    async def set_staging_auth_bypass(self, enabled: bool) -> bool:
+        payload = await self._request("POST", "/api/v1/staging/auth-bypass", json_payload={"enabled": enabled})
+        data = _require_dict(payload)
+        value = data.get("enabled")
+        if not isinstance(value, bool):
+            raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: enabled.")
+        return value
+
     async def _request(
         self,
         method: str,

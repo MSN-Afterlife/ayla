@@ -217,6 +217,20 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0].player_name, "Mounk")
         self.assertIn("query=mou", FakeSession.calls[0][1])
 
+    async def test_staging_auth_bypass_status_success(self):
+        FakeSession.responses = [(200, {"enabled": True})]
+        result = await self.client.staging_auth_bypass_status()
+        self.assertTrue(result)
+        self.assertEqual(FakeSession.calls[0][0], "GET")
+        self.assertTrue(FakeSession.calls[0][1].endswith("/api/v1/staging/auth-bypass"))
+
+    async def test_set_staging_auth_bypass_success(self):
+        FakeSession.responses = [(200, {"enabled": False})]
+        result = await self.client.set_staging_auth_bypass(False)
+        self.assertFalse(result)
+        self.assertEqual(FakeSession.calls[0][0], "POST")
+        self.assertEqual(FakeSession.calls[0][2], {"enabled": False})
+
 
 if __name__ == "__main__":
     unittest.main()

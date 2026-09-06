@@ -12,6 +12,7 @@ CLICKUP_DESTINATION_KEYS = {
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
+    ayla_env: str = "production"
     command_prefix: str = "a!"
     character_file: str = "bot/characters/default.json"
     memory_limit: int = 12
@@ -68,6 +69,7 @@ def load_settings() -> Settings:
 
     return Settings(
         discord_token=token,
+        ayla_env=os.getenv("AYLA_ENV", os.getenv("APP_ENV", "production")).strip().lower(),
         command_prefix=os.getenv("COMMAND_PREFIX", "a!"),
         character_file=os.getenv("CHARACTER_FILE", "bot/characters/default.json"),
         memory_limit=int(os.getenv("MEMORY_LIMIT", "12")),

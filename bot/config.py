@@ -41,6 +41,10 @@ class Settings:
     site_api_cors_origin: str = "*"
     site_api_key: str | None = None
     ayla_minecraft_internal_token: str | None = None
+    migration_engine_base_url: str | None = None
+    migration_engine_token: str | None = None
+    migration_engine_timeout_seconds: float = 10
+    migration_confirmation_ttl_seconds: int = 120
     daily_site_url: str = "https://msnafterlife.online/daily"
     youtube_cookies_path: str | None = None
     youtube_js_runtime_path: str = "node"
@@ -93,6 +97,10 @@ def load_settings() -> Settings:
         site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
         site_api_key=os.getenv("SITE_API_KEY"),
         ayla_minecraft_internal_token=os.getenv("AYLA_MINECRAFT_INTERNAL_TOKEN"),
+        migration_engine_base_url=os.getenv("MIGRATION_ENGINE_BASE_URL"),
+        migration_engine_token=os.getenv("MIGRATION_ENGINE_TOKEN"),
+        migration_engine_timeout_seconds=float(os.getenv("MIGRATION_ENGINE_TIMEOUT_SECONDS", "10")),
+        migration_confirmation_ttl_seconds=int(os.getenv("MIGRATION_CONFIRMATION_TTL_SECONDS", "120")),
         daily_site_url=os.getenv("DAILY_SITE_URL", "https://msnafterlife.online/daily"),
         youtube_cookies_path=os.getenv("YOUTUBE_COOKIES_PATH"),
         youtube_js_runtime_path=os.getenv("YOUTUBE_JS_RUNTIME_PATH", "node"),

@@ -13,6 +13,7 @@ from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
 from bot.commands.minecraft import setup_minecraft_commands
 from bot.commands.media import setup_media_commands
+from bot.commands.migration import setup_migration_commands
 from bot.commands.music import setup_music_commands
 from bot.commands.uno import setup_uno_commands
 from bot.commands.bingo import setup_bingo_commands
@@ -78,6 +79,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_bingo_commands(bot)
     setup_help_command(bot, settings)
     setup_minecraft_commands(bot, bot._minecraft_identity_store)
+    setup_migration_commands(bot, settings)
     setup_message_events(bot, settings, chat_config)
     return bot
 

@@ -120,6 +120,7 @@ def create_bot(settings: Settings) -> commands.Bot:
         print(f"Bot conectado como {bot.user}")
 
     setup_basic_commands(bot)
+    setup_presence_commands(bot, settings)
     bot._clickup_service = setup_clickup_commands(bot, settings)
     setup_announcement_commands(bot)
     setup_authdev_commands(bot, settings)

@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -97,64 +98,56 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
         return await _player_autocomplete(client, current)
 
     @group.command(name="inspect", description="Inspeciona uma identidade Minecraft sem alterar dados")
-    @app_commands.describe(target="Nick Minecraft, Discord ID, canonical UUID ou java:uuid/bedrock:xuid")
-    @app_commands.autocomplete(target=autocomplete_player)
-    async def inspect_slash(interaction: discord.Interaction, target: str) -> None:
+    @app_commands.describe(nick="Nick Minecraft do jogador")
+    @app_commands.autocomplete(nick=autocomplete_player)
+    async def inspect_slash(interaction: discord.Interaction, nick: str) -> None:
         if not _is_staff(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para inspecionar migrations.")
             return
-        request = await _resolve_target(interaction, client, target)
+        await _defer(interaction)
+        request = await _resolve_target(interaction, client, nick)
         if request:
             await _inspect(interaction, client, audit, request)
 
     @group.command(name="plan", description="Gera um plano de migration sem executar alteracoes")
-    @app_commands.describe(target="Nick Minecraft, Discord ID, canonical UUID ou java:uuid/bedrock:xuid", reason="Motivo administrativo opcional")
-    @app_commands.autocomplete(target=autocomplete_player)
-    async def plan_slash(interaction: discord.Interaction, target: str, reason: str = "") -> None:
+    @app_commands.describe(nick="Nick Minecraft do jogador", reason="Motivo administrativo opcional")
+    @app_commands.autocomplete(nick=autocomplete_player)
+    async def plan_slash(interaction: discord.Interaction, nick: str, reason: str = "") -> None:
         if not _is_staff(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para planejar migrations.")
             return
-        request = await _resolve_target(interaction, client, target)
+        await _defer(interaction)
+        request = await _resolve_target(interaction, client, nick)
         if request:
             await _plan(interaction, client, audit, _plan_request_from_request(request, reason or None))
 
     @group.command(name="status", description="Consulta o estado de uma migration")
-    @app_commands.autocomplete(migration_id=autocomplete_migration_id)
     @app_commands.autocomplete(nick=autocomplete_player)
-    async def status_slash(interaction: discord.Interaction, migration_id: str = "", jogador: discord.User | None = None, nick: str = "") -> None:
+    async def status_slash(interaction: discord.Interaction, nick: str) -> None:
         if not _is_staff(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para consultar migrations.")
             return
-        if jogador:
-            await _status_by_selector(interaction, client, audit, MigrationInspectRequest(discord_user_id=str(jogador.id)))
-            return
-        if nick:
-            await _status_target(interaction, client, audit, nick)
-            return
-        await _status_target(interaction, client, audit, migration_id)
+        await _defer(interaction)
+        await _status_target(interaction, client, audit, nick)
 
-    @group.command(name="execute", description="Cria uma confirmacao para executar migration")
-    @app_commands.autocomplete(migration_id=autocomplete_migration_id)
-    async def execute_slash(interaction: discord.Interaction, migration_id: str) -> None:
+    @group.command(name="execute", description="Cria uma confirmacao para executar a migration planejada de um jogador")
+    @app_commands.describe(nick="Nick Minecraft do jogador")
+    @app_commands.autocomplete(nick=autocomplete_player)
+    async def execute_slash(interaction: discord.Interaction, nick: str) -> None:
         if not _is_admin(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para executar migrations.")
             return
-        await _request_confirmation(interaction, client, audit, confirmations, "execute", migration_id)
+        await _defer(interaction)
+        await _execute_target(interaction, client, audit, confirmations, nick)
 
     @group.command(name="rollback", description="Cria uma confirmacao para rollback de migration")
-    @app_commands.autocomplete(migration_id=autocomplete_rollback_id)
     @app_commands.autocomplete(nick=autocomplete_player)
-    async def rollback_slash(interaction: discord.Interaction, migration_id: str = "", jogador: discord.User | None = None, nick: str = "") -> None:
+    async def rollback_slash(interaction: discord.Interaction, nick: str) -> None:
         if not _is_admin(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para fazer rollback de migrations.")
             return
-        if jogador:
-            await _rollback_by_selector(interaction, client, audit, confirmations, MigrationInspectRequest(discord_user_id=str(jogador.id)))
-            return
-        if nick:
-            await _rollback_target(interaction, client, audit, confirmations, nick)
-            return
-        await _rollback_target(interaction, client, audit, confirmations, migration_id)
+        await _defer(interaction)
+        await _rollback_target(interaction, client, audit, confirmations, nick)
 
     @group.command(name="confirm", description="Confirma uma execute/rollback pendente")
     @app_commands.autocomplete(migration_id=autocomplete_migration_id)
@@ -162,6 +155,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
         if not _is_admin(interaction.user):
             await _reply(interaction, "Voce nao tem permissao para confirmar migrations.")
             return
+        await _defer(interaction)
         await _confirm(interaction, client, audit, confirmations, action, migration_id, token)
 
     bot.tree.add_command(group)
@@ -302,13 +296,48 @@ async def _request_confirmation(
         target,
         "\n".join(
             [
-                f"Confirmacao criada para `{action}` da migration `{status.migration_id}`.",
+                f"Confirmacao criada para `{action}`.",
+                f"Migration: `{status.migration_id}`",
                 "Nada foi executado ainda.",
-                f"Para confirmar, use `migration confirm {action} {status.migration_id} {pending.token}`.",
+                "Clique em confirmar para continuar.",
                 f"Expira em {confirmations.ttl_seconds}s e so vale para voce.",
             ]
         ),
+        view=_ConfirmationView(client, audit, confirmations, action, status.migration_id, user_id, pending.token),
     )
+
+
+async def _execute_target(
+    target,
+    client: MigrationEngineClient,
+    audit: MigrationAuditStore,
+    confirmations: MigrationConfirmationStore,
+    value: str,
+) -> None:
+    if not str(value or "").strip():
+        await _reply(target, "Informe o nick do jogador.")
+        return
+    if _looks_like_migration_id(value):
+        await _request_confirmation(target, client, audit, confirmations, "execute", value)
+        return
+    request = await _resolve_target(target, client, value)
+    if not request:
+        return
+    user_id = _user_id(target)
+    try:
+        matches = await client.list_migrations(selector=request, state=MigrationState.PLANNED, limit=5)
+    except MigrationEngineError as error:
+        audit.record("MIGRATION_EXECUTE_REQUESTED", discord_user_id=user_id, result="failed", error=str(error))
+        await _reply(target, _error_message(error))
+        return
+    if not matches:
+        await _reply(target, "Nenhuma migration planejada foi encontrada para esse jogador. Gere um plan primeiro.")
+        return
+    if len(matches) > 1:
+        await _reply(target, "Ha mais de uma migration planejada. Abra o plan/status correto e use o botao dele:\n" + _format_reference_list(matches))
+        return
+    await _reply(target, f"Migration planejada encontrada: `{matches[0].migration_id}` ({matches[0].label()}). Vou pedir confirmacao agora.")
+    await _request_confirmation(target, client, audit, confirmations, "execute", matches[0].migration_id)
 
 
 async def _rollback_target(
@@ -511,6 +540,11 @@ def _is_interaction_like(target) -> bool:
     return hasattr(target, "user") and hasattr(target, "response") and hasattr(target, "followup")
 
 
+async def _defer(interaction) -> None:
+    if _is_interaction_like(interaction) and not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+
 def _format_inspection(result) -> str:
     identity: IdentitySummary = result.identity
     lines = [
@@ -633,8 +667,11 @@ async def _migration_id_autocomplete(
     rollback_available: bool | None = None,
 ) -> list[app_commands.Choice[str]]:
     try:
-        matches = await client.list_migrations(query=current, state=state, rollback_available=rollback_available, limit=10)
-    except MigrationEngineError:
+        matches = await asyncio.wait_for(
+            client.list_migrations(query=current, state=state, rollback_available=rollback_available, limit=10),
+            timeout=1.5,
+        )
+    except (MigrationEngineError, asyncio.TimeoutError):
         return []
     return [app_commands.Choice(name=item.label()[:100], value=item.migration_id) for item in matches[:10]]
 
@@ -644,8 +681,8 @@ async def _player_autocomplete(client: MigrationEngineClient, current: str) -> l
     if not text or _looks_like_advanced_target(text):
         return []
     try:
-        matches = await client.search_players(text, limit=10)
-    except MigrationEngineError:
+        matches = await asyncio.wait_for(client.search_players(text, limit=10), timeout=1.5)
+    except (MigrationEngineError, asyncio.TimeoutError):
         return []
     return [app_commands.Choice(name=item.label()[:100], value=f"player:{item.canonical_uuid}") for item in matches[:10]]
 
@@ -754,3 +791,39 @@ class _ExecutionActionView(_OperatorBoundView):
         if not await self._allowed(interaction, admin_required=True):
             return
         await _request_confirmation(interaction, self.client, self.audit, self.confirmations, "rollback", self.migration_id)
+
+
+class _ConfirmationView(_OperatorBoundView):
+    def __init__(
+        self,
+        client: MigrationEngineClient,
+        audit: MigrationAuditStore,
+        confirmations: MigrationConfirmationStore,
+        action: str,
+        migration_id: str,
+        operator_id: str,
+        token: str,
+    ) -> None:
+        super().__init__(operator_id)
+        self.client = client
+        self.audit = audit
+        self.confirmations = confirmations
+        self.action = action
+        self.migration_id = migration_id
+        self.token = token
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.danger)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._allowed(interaction, admin_required=True):
+            return
+        for child in self.children:
+            child.disabled = True
+        await _confirm(interaction, self.client, self.audit, self.confirmations, self.action, self.migration_id, self.token)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._allowed(interaction, admin_required=True):
+            return
+        for child in self.children:
+            child.disabled = True
+        await _reply(interaction, "Confirmacao cancelada. Nada foi executado.")

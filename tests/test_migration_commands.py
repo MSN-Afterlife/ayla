@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import discord
 
 from bot.client import create_bot
-from bot.commands.migration import _confirm, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _request_confirmation, _resolve_target, _rollback_by_selector, _status, _status_by_selector
+from bot.commands.migration import _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _request_confirmation, _resolve_target, _rollback_by_selector, _status, _status_by_selector
 from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationStore
@@ -253,6 +253,33 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(status())
         await _status(self.target, client, self.audit, "mig-explicita")
         self.assertEqual(client.status_calls, ["mig-explicita"])
+
+    async def test_execute_por_nick_usa_migration_planejada_unica(self):
+        client = FakeClient(status())
+        client.players = [PlayerReference(canonical_uuid="bbbbbbbb-cccc-dddd-eeee-ffffffffffff", player_name="Mounk")]
+        client.migrations = [MigrationReference(migration_id="mig-plan", state=MigrationState.PLANNED, player_name="Mounk")]
+        await _execute_target(self.target, client, self.audit, self.confirmations, "moun")
+        self.assertEqual(client.status_calls, ["mig-plan"])
+        self.assertIn("Confirmacao criada", self.target.send.await_args.args[0])
+
+    async def test_execute_por_nick_ambiguo_nao_escolhe(self):
+        client = FakeClient(status())
+        client.players = [PlayerReference(canonical_uuid="bbbbbbbb-cccc-dddd-eeee-ffffffffffff", player_name="Mounk")]
+        client.migrations = [
+            MigrationReference(migration_id="mig-a", state=MigrationState.PLANNED, player_name="Mounk"),
+            MigrationReference(migration_id="mig-b", state=MigrationState.PLANNED, player_name="Mounk"),
+        ]
+        await _execute_target(self.target, client, self.audit, self.confirmations, "moun")
+        self.assertFalse(client.status_calls)
+        self.assertIn("mais de uma migration", self.target.send.await_args.args[0])
+
+    async def test_botao_confirmar_executa_sem_staff_copiar_id(self):
+        client = FakeClient(status())
+        await _request_confirmation(self.target, client, self.audit, self.confirmations, "execute", "mig-1")
+        view = self.target.send.await_args.kwargs["view"]
+        interaction = fake_interaction(42, self.confirmations)
+        await view.children[0].callback(interaction)
+        self.assertEqual(client.executed[0][0], "mig-1")
 
     async def test_busca_por_nick_aproximado_resolve_canonical_uuid(self):
         client = FakeClient(status())

@@ -10,6 +10,7 @@ from bot.services.migration_engine_client import (
     MigrationEngineUnavailable,
     MigrationInspectRequest,
     MigrationPlanRequest,
+    MigrationSource,
     MigrationState,
     PresenceState,
 )
@@ -230,6 +231,33 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result)
         self.assertEqual(FakeSession.calls[0][0], "POST")
         self.assertEqual(FakeSession.calls[0][2], {"enabled": False})
+
+    async def test_multi_source_plan_payload_uses_discord_target_and_policy(self):
+        FakeSession.responses = [(200, {**PLAN_PAYLOAD, "status": "READY", "sources": [
+            {"platform": "java", "external_id": "java-id", "username": "Mounkass"},
+            {"platform": "bedrock", "external_id": "2535408009867685", "username": ".Mounkass"},
+        ], "target": {"discord_user_id": "884592686101852232"}, "dataset_policy": {"playerdata": "java", "advancements": "java", "stats": "java"}})]
+        request = MigrationPlanRequest(
+            sources=(MigrationSource("java", "java-id", "Mounkass"), MigrationSource("bedrock", "2535408009867685", ".Mounkass")),
+            target={"discord_user_id": "884592686101852232"},
+            dataset_policy={"playerdata": "java", "advancements": "java", "stats": "java"},
+            reason="multi-source test",
+        )
+        result = await self.client.plan(request)
+        body = FakeSession.calls[0][2]
+        self.assertEqual(body["target"], {"discord_user_id": "884592686101852232"})
+        self.assertEqual([item["platform"] for item in body["sources"]], ["java", "bedrock"])
+        self.assertEqual(result.target_discord_user_id, "884592686101852232")
+        self.assertEqual(result.dataset_policy["playerdata"], "java")
+
+    async def test_player_search_parses_independent_platform_candidates(self):
+        FakeSession.responses = [(200, {"players": [
+            {"player_name": "Mounkass", "platform": "java", "external_id": "java-id", "discord_user_id": "884592686101852232"},
+            {"player_name": ".Mounkass", "platform": "bedrock", "external_id": "2535408009867685", "discord_user_id": "884592686101852232"},
+        ]})]
+        result = await self.client.search_players("Mounkass")
+        self.assertEqual([item.source_list()[0].platform for item in result], ["java", "bedrock"])
+        self.assertNotEqual(result[1].external_id, "00000000-0000-0000-0009-01f0adc9f1a5")
 
 
 if __name__ == "__main__":

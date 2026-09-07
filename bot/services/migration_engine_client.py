@@ -90,6 +90,9 @@ class MigrationEngineRejected(MigrationEngineError):
     def __init__(self, code: MigrationErrorCode, message: str, *, status: int | None = None, payload: object | None = None) -> None:
         super().__init__(message, status=status, payload=payload)
         self.code = code
+        data = payload if isinstance(payload, dict) else {}
+        self.blockers = tuple(str(item) for item in data.get("blockers", []) if str(item).strip())
+        self.conflicts = tuple(str(item) for item in data.get("conflicts", []) if str(item).strip())
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,22 @@ class MinecraftAccountRef:
     platform: str
     external_id: str
     username: str | None = None
+
+
+@dataclass(frozen=True)
+class MigrationSource:
+    platform: str
+    external_id: str
+    username: str | None = None
+    physical_uuid: str | None = None
+
+    def payload(self) -> dict[str, str]:
+        result = {"platform": self.platform, "external_id": self.external_id}
+        if self.username:
+            result["username"] = self.username
+        if self.physical_uuid:
+            result["physical_uuid"] = self.physical_uuid
+        return result
 
 
 @dataclass(frozen=True)
@@ -141,6 +160,10 @@ class MigrationPlan:
     rollback_available: bool = False
     presence: PresenceState = PresenceState.UNKNOWN
     lock_state: LockState = LockState.UNKNOWN
+    status: str | None = None
+    sources: tuple[MigrationSource, ...] = ()
+    target_discord_user_id: str | None = None
+    dataset_policy: dict[str, str] | None = None
 
     def allows_mutation(self) -> bool:
         return self.presence is PresenceState.OFFLINE_CONFIRMED and not self.blockers and not self.lock_state.blocks_mutation
@@ -204,16 +227,33 @@ class MigrationReference:
 
 @dataclass(frozen=True)
 class PlayerReference:
-    canonical_uuid: str
-    player_name: str
+    canonical_uuid: str = ""
+    player_name: str = ""
     discord_user_id: str | None = None
     java_external_id: str | None = None
     bedrock_external_id: str | None = None
     confidence: float | None = None
+    platform: str | None = None
+    external_id: str | None = None
+    username: str | None = None
+    sources: tuple[MigrationSource, ...] = ()
 
     def label(self) -> str:
         score = f" | {self.confidence:.0%}" if self.confidence is not None else ""
-        return f"{self.player_name} | {self.canonical_uuid[:8]}{score}"
+        identity = self.platform or (f"{len(self.sources)} sources" if self.sources else self.canonical_uuid[:8] or "identidade")
+        return f"{self.player_name} | {identity}{score}"
+
+    def source_list(self) -> tuple[MigrationSource, ...]:
+        if self.sources:
+            return self.sources
+        if self.platform and self.external_id:
+            return (MigrationSource(self.platform, self.external_id, self.username or self.player_name),)
+        result = []
+        if self.java_external_id:
+            result.append(MigrationSource("java", self.java_external_id, self.player_name))
+        if self.bedrock_external_id:
+            result.append(MigrationSource("bedrock", self.bedrock_external_id, self.player_name))
+        return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -238,8 +278,21 @@ class MigrationInspectRequest:
 @dataclass(frozen=True)
 class MigrationPlanRequest(MigrationInspectRequest):
     reason: str | None = None
+    sources: tuple[MigrationSource, ...] = ()
+    target: dict[str, str] | None = None
+    dataset_policy: dict[str, str] | None = None
 
-    def payload(self) -> dict[str, str]:
+    def payload(self) -> dict[str, Any]:
+        if self.sources or self.target or self.dataset_policy:
+            result: dict[str, Any] = {
+                "sources": [source.payload() for source in self.sources],
+                "target": dict(self.target or {}),
+            }
+            if self.dataset_policy:
+                result["dataset_policy"] = dict(self.dataset_policy)
+            if self.reason:
+                result["reason"] = self.reason
+            return result
         result = super().payload()
         if self.reason:
             result["reason"] = self.reason
@@ -408,7 +461,7 @@ def _parse_plan(payload: object) -> MigrationPlan:
     return MigrationPlan(
         migration_id=migration_id,
         source_identities=_tuple_str(data.get("source_identities")),
-        canonical_target=_required_str(data, "canonical_target"),
+        canonical_target=_required_str(data, "canonical_target" if "canonical_target" in data else "canonical_uuid"),
         operations=operations,
         affected_files=_tuple_str(data.get("affected_files")),
         affected_datasets=_tuple_str(data.get("affected_datasets")),
@@ -418,6 +471,10 @@ def _parse_plan(payload: object) -> MigrationPlan:
         rollback_available=bool(data.get("rollback_available")),
         presence=_parse_enum(PresenceState, data.get("presence"), "presence"),
         lock_state=_parse_enum(LockState, data.get("lock_state") or data.get("lock"), "lock_state"),
+        status=_optional_str(data.get("status") or data.get("state")),
+        sources=tuple(_parse_source(item) for item in _list(data.get("sources"))),
+        target_discord_user_id=_target_discord_id(data.get("target")) or _optional_str(data.get("target_discord_user_id")),
+        dataset_policy=_parse_policy(data.get("dataset_policy")),
     )
 
 
@@ -479,14 +536,40 @@ def _parse_reference(payload: object) -> MigrationReference:
 
 def _parse_player_reference(payload: object) -> PlayerReference:
     data = _require_dict(payload)
+    sources = tuple(_parse_source(item) for item in _list(data.get("sources")))
+    platform = (_optional_str(data.get("platform")) or "").lower() or None
+    external_id = _optional_str(data.get("external_id") or data.get("xuid"))
     return PlayerReference(
-        canonical_uuid=_required_str(data, "canonical_uuid"),
-        player_name=_required_str(data, "player_name"),
-        discord_user_id=_optional_str(data.get("discord_user_id")),
+        canonical_uuid=_optional_str(data.get("canonical_uuid")) or "",
+        player_name=_optional_str(data.get("player_name") or data.get("username")) or "",
+        discord_user_id=_optional_str(data.get("discord_user_id")) or _target_discord_id(data.get("target")),
         java_external_id=_optional_str(data.get("java_external_id")),
         bedrock_external_id=_optional_str(data.get("bedrock_external_id")),
         confidence=_optional_float(data.get("confidence")),
+        platform=platform,
+        external_id=external_id,
+        username=_optional_str(data.get("username")),
+        sources=sources,
     )
+
+
+def _parse_source(value: object) -> MigrationSource:
+    data = _require_dict(value)
+    platform = _required_str(data, "platform").lower()
+    external_id = _required_str(data, "external_id" if "external_id" in data else "xuid")
+    return MigrationSource(platform, external_id, _optional_str(data.get("username")), _optional_str(data.get("physical_uuid") or data.get("floodgate_uuid")))
+
+
+def _target_discord_id(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    return _optional_str(value.get("discord_user_id"))
+
+
+def _parse_policy(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    return {str(key): str(item) for key, item in value.items() if str(key).strip() and str(item).strip()}
 
 
 def _parse_identity(data: dict[str, Any]) -> IdentitySummary:

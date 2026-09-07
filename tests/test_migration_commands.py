@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock
 import discord
 
 from bot.client import create_bot
-from bot.commands.migration import _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _reply, _request_confirmation, _resolve_target, _rollback_by_selector, _status, _status_by_selector
+from bot.commands.migration import _DatasetPolicyView, _SourceSelectionView, _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _reply, _request_confirmation, _resolve_plan_request, _resolve_target, _rollback_by_selector, _safe_multi_source_plan, _status, _status_by_selector
 from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationStore
-from bot.services.migration_engine_client import LockState, MigrationExecution, MigrationPlan, MigrationPlanRequest, MigrationReference, MigrationRollback, MigrationState, MigrationStatus, PlayerReference, PresenceState
+from bot.services.migration_engine_client import LockState, MigrationExecution, MigrationPlan, MigrationPlanRequest, MigrationReference, MigrationRollback, MigrationSource, MigrationState, MigrationStatus, PlannedOperation, PlayerReference, PresenceState
 
 
 class FakeClient:
@@ -207,6 +207,86 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.status_calls, ["mig-correta"])
         self.assertIn("Confirmacao criada", interaction.response.send_message.await_args.args[0])
 
+    async def test_nick_com_java_e_bedrock_exige_selecao_explicita(self):
+        client = FakeClient(status())
+        client.players = [
+            PlayerReference(player_name="Mounkass", platform="java", external_id="b557a9ca-2b8c-40ba-b9fb-6595cb50247e", username="Mounkass", discord_user_id="884592686101852232"),
+            PlayerReference(player_name=".Mounkass", platform="bedrock", external_id="2535408009867685", username=".Mounkass", discord_user_id="884592686101852232"),
+        ]
+        result = await _resolve_plan_request(self.target, client, self.audit, "Mounkass", None)
+        self.assertIsNone(result)
+        view = self.target.send.await_args.kwargs["view"]
+        self.assertIsInstance(view, _SourceSelectionView)
+        self.assertEqual({source.platform for source in view.sources}, {"java", "bedrock"})
+
+    async def test_selecao_java_mais_bedrock_monta_payload_multi_source(self):
+        client = FakeClient(status())
+        view = _SourceSelectionView(
+            client,
+            self.audit,
+            None,
+            "Mounkass",
+            (MigrationSource("java", "java-id", "Mounkass"), MigrationSource("bedrock", "xuid", ".Mounkass")),
+            "884592686101852232",
+        )
+        interaction = fake_interaction(42, self.confirmations)
+        await view.children[0].callback(interaction)
+        self.assertEqual([source.platform for source in client.plan_request.sources], ["java", "bedrock"])
+        self.assertEqual(client.plan_request.target["discord_user_id"], "884592686101852232")
+        self.assertEqual(client.plan_request.dataset_policy["playerdata"], "java")
+
+    async def test_multi_source_plano_inseguro_nao_mostra_execute(self):
+        plan = MigrationPlan(
+            migration_id="mig-unsafe",
+            source_identities=("java-id", "bedrock-id"),
+            canonical_target="00000000-0000-0000-0009-01f0adc9f1a5",
+            sources=(MigrationSource("java", "java-id"), MigrationSource("bedrock", "bedrock-id")),
+            operations=(PlannedOperation("playerdata", "rewrite_uuid"),),
+            status="READY",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+            target_discord_user_id="884592686101852232",
+            dataset_policy={"playerdata": "java", "advancements": "java", "stats": "java"},
+        )
+        self.assertFalse(_safe_multi_source_plan(plan))
+
+    async def test_multi_source_plano_ready_guarda_id_exato_no_botao(self):
+        client = FakeClient(status())
+        client.plan_value = MigrationPlan(
+            migration_id="mig-multi-ready",
+            source_identities=("java-id", "bedrock-id"),
+            canonical_target="eedbb797-3373-5174-a91b-77553e3b58e4",
+            sources=(MigrationSource("java", "b5579", "Mounkass"), MigrationSource("bedrock", "2535", ".Mounkass")),
+            operations=(PlannedOperation("identity", "CREATE_CANONICAL_IDENTITY"), PlannedOperation("identity", "ATTACH_JAVA_IDENTITY"), PlannedOperation("identity", "ATTACH_BEDROCK_IDENTITY"), PlannedOperation("playerdata", "MOVE_FILE"), PlannedOperation("playerdata", "ARCHIVE_FILE")),
+            status="READY",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+            target_discord_user_id="884592686101852232",
+            dataset_policy={"playerdata": "java", "advancements": "java", "stats": "java"},
+        )
+        request = MigrationPlanRequest(sources=client.plan_value.sources, target={"discord_user_id": "884592686101852232"}, dataset_policy=client.plan_value.dataset_policy)
+        await _plan(self.target, client, self.audit, request)
+        view = self.target.send.await_args.kwargs["view"]
+        interaction = fake_interaction(42, self.confirmations)
+        await view.children[0].callback(interaction)
+        self.assertEqual(client.status_calls, ["mig-multi-ready"])
+
+    async def test_policy_java_preserva_as_duas_sources(self):
+        client = FakeClient(status())
+        view = _DatasetPolicyView(
+            client,
+            self.audit,
+            (MigrationSource("java", "java-id"), MigrationSource("bedrock", "bedrock-id")),
+            {"discord_user_id": "884592686101852232"},
+            "policy test",
+        )
+        interaction = fake_interaction(42, self.confirmations)
+        await view.children[0].callback(interaction)
+        self.assertEqual([source.platform for source in client.plan_request.sources], ["java", "bedrock"])
+        self.assertEqual(set(client.plan_request.dataset_policy.values()), {"java"})
+
     async def test_botao_expirado(self):
         client = FakeClient(status())
         await _plan(self.target, client, self.audit, MigrationPlanRequest(discord_user_id="123"))
@@ -302,7 +382,7 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(status())
         client.players = [PlayerReference(canonical_uuid="bbbbbbbb-cccc-dddd-eeee-ffffffffffff", player_name="Mounk", confidence=0.95)]
         choices = await _player_autocomplete(client, "mou")
-        self.assertEqual(choices[0].value, "player:bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+        self.assertEqual(choices[0].value, "nick:Mounk")
         self.assertIn("Mounk", choices[0].name)
 
     async def test_reply_normal_sem_view_nao_envia_view_none(self):

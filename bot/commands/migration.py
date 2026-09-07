@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -24,6 +25,7 @@ from bot.services.migration_engine_client import (
     MigrationInspectRequest,
     MigrationPlan,
     MigrationPlanRequest,
+    MigrationSource,
     PlayerReference,
     MigrationReference,
     MigrationState,
@@ -62,9 +64,9 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @migration_prefix.command(name="plan")
     @commands.has_permissions(manage_guild=True)
     async def plan_prefix(ctx: commands.Context, target: str, *, reason: str = "") -> None:
-        request = await _resolve_target(ctx, client, target)
+        request = await _resolve_plan_request(ctx, client, audit, target, reason or None)
         if request:
-            await _plan(ctx, client, audit, _plan_request_from_request(request, reason or None))
+            await _plan(ctx, client, audit, request)
 
     @migration_prefix.command(name="status")
     @commands.has_permissions(manage_guild=True)
@@ -117,9 +119,9 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
             await _reply(interaction, "Voce nao tem permissao para planejar migrations.")
             return
         await _defer(interaction)
-        request = await _resolve_target(interaction, client, nick)
+        request = await _resolve_plan_request(interaction, client, audit, nick, reason or None)
         if request:
-            await _plan(interaction, client, audit, _plan_request_from_request(request, reason or None))
+            await _plan(interaction, client, audit, request)
 
     @group.command(name="status", description="Consulta o estado de uma migration")
     @app_commands.autocomplete(nick=autocomplete_player)
@@ -183,12 +185,18 @@ async def _inspect(target, client: MigrationEngineClient, audit: MigrationAuditS
 
 async def _plan(target, client: MigrationEngineClient, audit: MigrationAuditStore, request: MigrationPlanRequest) -> None:
     user_id = _user_id(target)
+    _log_event("migration_plan_request", operator_id=user_id, request=request.payload())
     try:
         result = await client.plan(request)
     except MigrationEngineError as error:
+        _log_engine_error("migration_plan_failure", error)
         audit.record("MIGRATION_PLAN", discord_user_id=user_id, result="failed", error=str(error))
         await _reply(target, _error_message(error))
         return
+    effective_sources = result.sources or request.sources
+    if effective_sources and not result.sources:
+        result = replace(result, sources=effective_sources, target_discord_user_id=result.target_discord_user_id or (request.target or {}).get("discord_user_id"), dataset_policy=result.dataset_policy or request.dataset_policy)
+    _log_event("migration_plan_result", operator_id=user_id, migration_id=result.migration_id, source_count=len(effective_sources), status=result.status, blockers=result.blockers, conflicts=result.conflicts)
     audit.record(
         "MIGRATION_PLAN",
         discord_user_id=user_id,
@@ -198,7 +206,10 @@ async def _plan(target, client: MigrationEngineClient, audit: MigrationAuditStor
         lock_state=result.lock_state.value,
         result="ok",
     )
-    await _reply(target, _format_plan(result), view=_PlanActionView(client, audit, confirmations=None, plan=result, operator_id=user_id))
+    view = _plan_action_view(client, audit, result, user_id)
+    if result.conflicts and request.sources:
+        view = _DatasetPolicyView(client, audit, request.sources, request.target or {}, request.reason)
+    await _reply(target, _format_plan(result), view=view)
 
 
 async def _status(target, client: MigrationEngineClient, audit: MigrationAuditStore, migration_id: str) -> None:
@@ -260,6 +271,7 @@ async def _request_confirmation(
     migration_id: str,
 ) -> None:
     user_id = _user_id(target)
+    _log_event("migration_confirmation_requested", operator_id=user_id, migration_id=migration_id, action=action)
     event = "MIGRATION_EXECUTE_REQUESTED" if action == "execute" else "MIGRATION_ROLLBACK_REQUESTED"
     try:
         status = await client.status(migration_id)
@@ -320,6 +332,16 @@ async def _execute_target(
     if _looks_like_migration_id(value):
         await _request_confirmation(target, client, audit, confirmations, "execute", value)
         return
+    if not _looks_like_advanced_target(value):
+        source_matches = await _search_players_for_execute(client, value)
+        if source_matches:
+            planned = await _planned_by_sources(client, source_matches)
+            if len(planned) == 1:
+                await _request_confirmation(target, client, audit, confirmations, "execute", planned[0].migration_id)
+                return
+            if len(planned) > 1:
+                await _reply(target, "Ha mais de uma migration planejada. Escolha explicitamente uma delas:\n" + _format_reference_list(tuple(planned)))
+                return
     request = await _resolve_target(target, client, value)
     if not request:
         return
@@ -338,6 +360,29 @@ async def _execute_target(
         return
     await _reply(target, f"Migration planejada encontrada: `{matches[0].migration_id}` ({matches[0].label()}). Vou pedir confirmacao agora.")
     await _request_confirmation(target, client, audit, confirmations, "execute", matches[0].migration_id)
+
+
+async def _search_players_for_execute(client: MigrationEngineClient, value: str) -> tuple[PlayerReference, ...]:
+    try:
+        return await client.search_players(str(value).strip(), limit=10)
+    except MigrationEngineError:
+        return ()
+
+
+async def _planned_by_sources(client: MigrationEngineClient, players: tuple[PlayerReference, ...]) -> list[MigrationReference]:
+    found: dict[str, MigrationReference] = {}
+    for player in players:
+        for source in player.source_list():
+            try:
+                matches = await client.list_migrations(
+                    selector=MigrationInspectRequest(platform=source.platform, external_id=source.external_id),
+                    state=MigrationState.PLANNED,
+                    limit=10,
+                )
+            except MigrationEngineError:
+                continue
+            found.update({item.migration_id: item for item in matches})
+    return list(found.values())
 
 
 async def _rollback_target(
@@ -402,6 +447,7 @@ async def _confirm(
         await _reply(target, "Acao invalida. Use `execute` ou `rollback`.")
         return
     user_id = _user_id(target)
+    _log_event("migration_confirmation", operator_id=user_id, migration_id=migration_id, action=action)
     confirmed_event = "MIGRATION_EXECUTE_CONFIRMED" if action == "execute" else "MIGRATION_ROLLBACK_CONFIRMED"
     succeeded_event = "MIGRATION_EXECUTE_SUCCEEDED" if action == "execute" else "MIGRATION_ROLLBACK_SUCCEEDED"
     failed_event = "MIGRATION_EXECUTE_FAILED" if action == "execute" else "MIGRATION_ROLLBACK_FAILED"
@@ -414,7 +460,9 @@ async def _confirm(
     audit.record(confirmed_event, discord_user_id=user_id, migration_id=migration_id, result="ok")
     try:
         if action == "execute":
+            _log_event("migration_execute_request", operator_id=user_id, migration_id=migration_id)
             result = await client.execute(migration_id, operator_id=user_id, idempotency_key=str(uuid.uuid4()))
+            _log_event("migration_execute_success", operator_id=user_id, migration_id=result.migration_id, result=result.result)
             audit.record(
                 succeeded_event,
                 discord_user_id=user_id,
@@ -440,12 +488,15 @@ async def _confirm(
         )
         await _reply(target, _format_execution(result.migration_id, result.result, result.restored_data, result.verifications))
     except MigrationEngineError as error:
+        _log_engine_error("migration_execute_failure" if action == "execute" else "migration_rollback_failure", error, migration_id=migration_id)
         audit.record(failed_event, discord_user_id=user_id, migration_id=migration_id, result="failed", error=str(error))
         await _reply(target, _error_message(error))
 
 
 def _request_from_target(target: str) -> MigrationInspectRequest:
     target = str(target or "").strip()
+    if target.casefold().startswith("nick:"):
+        return MigrationInspectRequest(player_name=target.split(":", 1)[1].strip())
     if target.casefold().startswith("player:"):
         return MigrationInspectRequest(canonical_uuid=target.split(":", 1)[1].strip())
     if target.casefold().startswith("java:"):
@@ -476,6 +527,69 @@ def _plan_request_from_request(request: MigrationInspectRequest, reason: str | N
         player_name=request.player_name,
         reason=reason,
     )
+
+
+async def _resolve_plan_request(target, client: MigrationEngineClient, audit: MigrationAuditStore, value: str, reason: str | None) -> MigrationPlanRequest | None:
+    value = str(value or "").strip()
+    request = _request_from_target(value)
+    if not request.player_name:
+        return _plan_request_from_request(request, reason)
+    _log_event("migration_player_search", operator_id=_user_id(target), query=request.player_name)
+    try:
+        matches = await client.search_players(request.player_name, limit=10)
+    except MigrationEngineNotConfigured:
+        return _plan_request_from_request(request, reason)
+    except MigrationEngineError as error:
+        _log_engine_error("migration_player_search_failure", error)
+        await _reply(target, _error_message(error))
+        return None
+    if not matches:
+        await _reply(target, f"Nenhum jogador encontrado parecido com `{request.player_name}`.")
+        return None
+    if len(matches) > 1:
+        sources = tuple(source for match in matches for source in match.source_list())
+        unique_sources = tuple(dict.fromkeys(sources))
+        discord_ids = tuple(dict.fromkeys(match.discord_user_id for match in matches if match.discord_user_id))
+        target_id = discord_ids[0] if len(discord_ids) == 1 else None
+        if not target_id:
+            await _reply(target, "As contas encontradas nao possuem um Discord alvo unico. Informe o Discord explicitamente.")
+            return None
+        _log_event("migration_source_selection", operator_id=_user_id(target), query=request.player_name, sources=unique_sources, target_discord_user_id=target_id)
+        await _reply(
+            target,
+            _format_source_selection(request.player_name, unique_sources, target_id),
+            view=_SourceSelectionView(client, audit, reason, request.player_name, unique_sources, target_id),
+        )
+        return None
+    match = matches[0]
+    sources = match.source_list()
+    if len(sources) > 1 and match.discord_user_id:
+        await _reply(target, _format_source_selection(match.player_name, sources, match.discord_user_id), view=_SourceSelectionView(client, audit, reason, match.player_name, sources, match.discord_user_id))
+        return None
+    if match.discord_user_id and sources:
+        return _multi_source_request(sources, match.discord_user_id, _java_policy(sources), reason)
+    if match.canonical_uuid:
+        return MigrationPlanRequest(canonical_uuid=match.canonical_uuid, reason=reason)
+    await _reply(target, "O candidato nao trouxe uma identidade Discord ou source utilizavel; plano nao criado.")
+    return None
+
+
+def _multi_source_request(sources: tuple[MigrationSource, ...], discord_user_id: str, policy: dict[str, str], reason: str | None) -> MigrationPlanRequest:
+    return MigrationPlanRequest(
+        sources=sources,
+        target={"discord_user_id": str(discord_user_id)},
+        dataset_policy=policy,
+        reason=reason,
+    )
+
+
+def _java_policy(sources: tuple[MigrationSource, ...]) -> dict[str, str]:
+    preferred = "java" if any(source.platform == "java" for source in sources) else sources[0].platform
+    return {dataset: preferred for dataset in ("playerdata", "advancements", "stats")}
+
+
+def _policy_for_platform(platform: str) -> dict[str, str]:
+    return {dataset: platform for dataset in ("playerdata", "advancements", "stats")}
 
 
 async def _resolve_target(
@@ -580,6 +694,14 @@ def _format_plan(plan: MigrationPlan) -> str:
         f"Warnings: {_csv(plan.warnings)}",
         f"Blockers: {_csv(plan.blockers)}",
     ]
+    if plan.sources:
+        lines.insert(3, "Sources: " + ", ".join(f"{source.platform}:{source.username or source.external_id}" for source in plan.sources))
+    if plan.target_discord_user_id:
+        lines.insert(4, f"Discord alvo: `{plan.target_discord_user_id}`")
+    if plan.dataset_policy:
+        lines.insert(5, "Policy: " + ", ".join(f"{key}={value}" for key, value in plan.dataset_policy.items()))
+    if plan.status:
+        lines.insert(3, f"Status: `{plan.status}`")
     return "\n".join(lines)
 
 
@@ -617,6 +739,40 @@ def _format_player_list(matches: tuple[PlayerReference, ...]) -> str:
     return "\n".join(f"- `{item.player_name}` {item.label()}" for item in matches[:10])
 
 
+def _format_source_selection(player_name: str, sources: tuple[MigrationSource, ...], target_discord_id: str) -> str:
+    lines = [f"Contas Minecraft encontradas para `{player_name}`:", f"Discord alvo: `{target_discord_id}`", ""]
+    for source in sources:
+        icon = "☕" if source.platform == "java" else "📱" if source.platform == "bedrock" else "🔹"
+        lines.append(f"{icon} {source.platform.title()} — {source.username or source.external_id}")
+    lines.append("\nEscolha explicitamente as sources que serão migradas.")
+    return "\n".join(lines)
+
+
+def _plan_action_view(client, audit, plan: MigrationPlan, operator_id: str) -> discord.ui.View | None:
+    if len(plan.sources or plan.source_identities) >= 2 and not _safe_multi_source_plan(plan):
+        logger.warning("migration_execute_button_suppressed migration_id=%s reason=unsafe_multi_source_plan", plan.migration_id)
+        return None
+    return _PlanActionView(client, audit, confirmations=None, plan=plan, operator_id=operator_id)
+
+
+def _safe_multi_source_plan(plan: MigrationPlan) -> bool:
+    actions = {operation.action.upper() for operation in plan.operations}
+    required = {"CREATE_CANONICAL_IDENTITY", "ATTACH_JAVA_IDENTITY", "ATTACH_BEDROCK_IDENTITY", "MOVE_FILE", "ARCHIVE_FILE"}
+    policy = plan.dataset_policy or {}
+    return (
+        (plan.status or "").upper() == "READY"
+        and not plan.blockers
+        and not plan.conflicts
+        and len(plan.sources) >= 2
+        and plan.canonical_target.lower() not in {value.lower() for source in plan.sources for value in (source.external_id, source.physical_uuid) if value}
+        and bool(plan.target_discord_user_id)
+        and all(policy.get(dataset) in {source.platform for source in plan.sources} for dataset in ("playerdata", "advancements", "stats"))
+        and plan.rollback_available
+        and required.issubset(actions)
+        and "REWRITE_UUID" not in actions
+    )
+
+
 def _mutation_blocked_message(status: MigrationStatus) -> str:
     if status.presence is PresenceState.ONLINE:
         return "Execute/Rollback abortado: jogador ONLINE."
@@ -639,6 +795,12 @@ def _error_message(error: Exception) -> str:
     if isinstance(error, MigrationEngineInvalidResponse):
         return "Migration Engine retornou uma resposta invalida/incompleta."
     if isinstance(error, MigrationEngineRejected):
+        details = [f"Motivo: {str(error)}", f"Código: `{error.code.value}`"]
+        if error.blockers:
+            details.append("Blockers: " + _csv(error.blockers))
+        if error.conflicts:
+            details.append("Conflitos: " + _csv(error.conflicts))
+        details.append("Nenhum dado foi alterado.")
         mapped = {
             MigrationErrorCode.PLAYER_ONLINE: "Jogador online; operacao recusada.",
             MigrationErrorCode.PRESENCE_UNKNOWN: "Presenca UNKNOWN; operacao recusada.",
@@ -648,7 +810,8 @@ def _error_message(error: Exception) -> str:
             MigrationErrorCode.ROLLBACK_UNAVAILABLE: "Rollback indisponivel.",
             MigrationErrorCode.CONFLICT: "Conflito detectado pelo Migration Engine.",
         }
-        return mapped.get(error.code, str(error))
+        details[0] = f"Motivo: {mapped.get(error.code, str(error))}"
+        return "\n".join(details)
     return str(error)
 
 
@@ -688,13 +851,13 @@ async def _player_autocomplete(client: MigrationEngineClient, current: str) -> l
         matches = await asyncio.wait_for(client.search_players(text, limit=10), timeout=1.5)
     except (MigrationEngineError, asyncio.TimeoutError):
         return []
-    return [app_commands.Choice(name=item.label()[:100], value=f"player:{item.canonical_uuid}") for item in matches[:10]]
+    return [app_commands.Choice(name=item.label()[:100], value=f"nick:{item.player_name}") for item in matches[:10]]
 
 
 def _looks_like_advanced_target(value: str) -> bool:
     value = str(value or "").strip()
     return (
-        value.casefold().startswith(("player:", "java:", "bedrock:", "mig_"))
+        value.casefold().startswith(("player:", "nick:", "java:", "bedrock:", "mig_"))
         or value.casefold().startswith("mig-")
         or value.startswith("<@")
         or value.isdecimal()
@@ -707,6 +870,77 @@ def _looks_like_migration_id(value: str) -> bool:
 
 def _clean_discord_mention(value: str) -> str:
     return str(value or "").strip().removeprefix("<@").removeprefix("!").removesuffix(">")
+
+
+def _log_event(event: str, **fields) -> None:
+    safe = {key: value for key, value in fields.items() if key not in {"token", "authorization", "headers"}}
+    logger.info("migration_event=%s data=%s", event, safe)
+
+
+def _log_engine_error(event: str, error: MigrationEngineError, **fields) -> None:
+    _log_event(event, **fields, error_code=getattr(error.code, "value", str(error.code)), http_status=error.status, message=str(error))
+
+
+class _SourceSelectionView(discord.ui.View):
+    def __init__(self, client, audit, reason, player_name, sources, target_discord_id):
+        super().__init__(timeout=120)
+        self.client = client
+        self.audit = audit
+        self.reason = reason
+        self.player_name = player_name
+        self.sources = tuple(sources)
+        self.target_discord_id = str(target_discord_id)
+
+    async def _choose(self, interaction, selected):
+        if not selected:
+            await _reply(interaction, "Nenhuma source foi selecionada.")
+            return
+        for child in self.children:
+            child.disabled = True
+        _log_event("migration_source_selected", operator_id=str(interaction.user.id), player_name=self.player_name, platforms=tuple(source.platform for source in selected), target_discord_user_id=self.target_discord_id)
+        request = _multi_source_request(tuple(selected), self.target_discord_id, _java_policy(tuple(selected)), None if not self.reason else self.reason)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="Migrar Java + Bedrock", style=discord.ButtonStyle.primary)
+    async def both_button(self, interaction, button):
+        selected = tuple(source for source in self.sources if source.platform in {"java", "bedrock"})
+        await self._choose(interaction, selected if len(selected) >= 2 else ())
+
+    @discord.ui.button(label="Usar progresso Java", style=discord.ButtonStyle.secondary)
+    async def java_button(self, interaction, button):
+        selected = tuple(source for source in self.sources if source.platform == "java")
+        await self._choose(interaction, selected)
+
+    @discord.ui.button(label="Usar progresso Bedrock", style=discord.ButtonStyle.secondary)
+    async def bedrock_button(self, interaction, button):
+        selected = tuple(source for source in self.sources if source.platform == "bedrock")
+        await self._choose(interaction, selected)
+
+
+class _DatasetPolicyView(discord.ui.View):
+    def __init__(self, client, audit, sources, target, reason):
+        super().__init__(timeout=120)
+        self.client = client
+        self.audit = audit
+        self.sources = tuple(sources)
+        self.target = dict(target)
+        self.reason = reason
+
+    async def _choose(self, interaction, platform):
+        for child in self.children:
+            child.disabled = True
+        policy = _policy_for_platform(platform)
+        request = _multi_source_request(self.sources, self.target.get("discord_user_id", ""), policy, self.reason)
+        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="Usar progresso Java", style=discord.ButtonStyle.primary)
+    async def java_button(self, interaction, button):
+        await self._choose(interaction, "java")
+
+    @discord.ui.button(label="Usar progresso Bedrock", style=discord.ButtonStyle.secondary)
+    async def bedrock_button(self, interaction, button):
+        await self._choose(interaction, "bedrock")
 
 
 class _OperatorBoundView(discord.ui.View):

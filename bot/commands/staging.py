@@ -11,50 +11,54 @@ from bot.services.migration_engine_client import MigrationEngineClient, Migratio
 UTC = timezone.utc
 
 
-def setup_staging_commands(bot: commands.Bot, settings: Settings, client: MigrationEngineClient | None = None) -> None:
+def setup_minecraft_auth_commands(
+    bot: commands.Bot, settings: Settings, client: MigrationEngineClient | None = None
+) -> None:
     client = client or getattr(bot, "_migration_engine_client", None) or MigrationEngineClient(
         settings.migration_engine_base_url,
         settings.migration_engine_token,
         timeout_seconds=settings.migration_engine_timeout_seconds,
     )
-    group = app_commands.Group(name="staging", description="Controles administrativos do ambiente staging")
-    auth = app_commands.Group(name="auth", description="Controle de autenticacao Minecraft staging")
+    group = bot.tree.get_command("minecraft")
+    if not isinstance(group, app_commands.Group):
+        group = app_commands.Group(name="minecraft", description="Comandos do Minecraft")
+        bot.tree.add_command(group)
+    auth = app_commands.Group(name="auth", description="Controle da autenticacao Minecraft")
 
-    @auth.command(name="status", description="Mostra se o bypass de autenticacao do staging esta ativo")
+    @auth.command(name="status", description="Mostra se o bypass de autenticacao esta ativo")
     async def auth_status(interaction: discord.Interaction) -> None:
-        if not await _guard(interaction, settings):
+        if not await _guard(interaction):
             return
         await _defer(interaction)
         await _send_status(interaction, client)
 
-    @auth.command(name="on", description="Ativa bypass de autenticacao Minecraft no staging")
+    @auth.command(name="on", description="Ativa o bypass de autenticacao Minecraft")
     async def auth_on(interaction: discord.Interaction) -> None:
-        if not await _guard(interaction, settings):
+        if not await _guard(interaction):
             return
         await _reply(
             interaction,
-            "Isso vai permitir entrar no Minecraft staging sem autenticacao da Ayla.",
-            view=_StagingAuthBypassView(client, str(interaction.user.id), enabled=True),
+            "Isso vai permitir entrar no Minecraft sem autenticacao da Ayla.",
+            view=_MinecraftAuthBypassView(client, str(interaction.user.id), enabled=True),
         )
 
-    @auth.command(name="off", description="Desativa bypass de autenticacao Minecraft no staging")
+    @auth.command(name="off", description="Desativa o bypass de autenticacao Minecraft")
     async def auth_off(interaction: discord.Interaction) -> None:
-        if not await _guard(interaction, settings):
+        if not await _guard(interaction):
             return
         await _defer(interaction)
         await _set_and_confirm(interaction, client, enabled=False)
 
     group.add_command(auth)
-    bot.tree.add_command(group)
 
 
 async def _send_status(target, client: MigrationEngineClient) -> None:
     try:
         enabled = await client.staging_auth_bypass_status()
     except MigrationEngineError:
-        await _reply(target, "Nao consegui consultar a autenticacao do Minecraft staging agora. Estado nao alterado.")
+        await _reply(target, "Nao consegui consultar a autenticacao do Minecraft agora. Estado nao alterado.")
         return
-    await _reply(target, f"Autenticacao do Minecraft staging: {'BYPASS ATIVO' if enabled else 'ATIVA'}")
+    await _reply(target, f"Autenticacao do Minecraft: {'BYPASS ATIVO' if enabled else 'ATIVA'}")
 
 
 async def _set_and_confirm(target, client: MigrationEngineClient, *, enabled: bool) -> None:
@@ -62,21 +66,18 @@ async def _set_and_confirm(target, client: MigrationEngineClient, *, enabled: bo
         await client.set_staging_auth_bypass(enabled)
         confirmed = await client.staging_auth_bypass_status()
     except MigrationEngineError:
-        await _reply(target, "Nao consegui alterar o bypass de autenticacao do staging. Estado nao assumido.")
+        await _reply(target, "Nao consegui alterar o bypass de autenticacao do Minecraft. Estado nao assumido.")
         return
     if confirmed is not enabled:
         await _reply(target, "A API respondeu, mas o estado confirmado nao bateu. Estado nao assumido.")
         return
-    await _reply(target, f"Bypass de autenticacao do staging: {'ATIVADO' if enabled else 'DESATIVADO'}")
+    await _reply(target, f"Bypass de autenticacao do Minecraft: {'ATIVADO' if enabled else 'DESATIVADO'}")
 
 
-async def _guard(interaction: discord.Interaction, settings: Settings) -> bool:
-    if settings.ayla_env != "staging":
-        await _reply(interaction, "Este comando so funciona no bot de staging.")
-        return False
+async def _guard(interaction: discord.Interaction) -> bool:
     permissions = getattr(interaction.user, "guild_permissions", None)
     if not permissions or not permissions.administrator:
-        await _reply(interaction, "Voce precisa ser administrador para controlar a autenticacao do staging.")
+        await _reply(interaction, "Voce precisa ser administrador para controlar a autenticacao do Minecraft.")
         return False
     return True
 
@@ -99,7 +100,7 @@ async def _defer(interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
 
 
-class _StagingAuthBypassView(discord.ui.View):
+class _MinecraftAuthBypassView(discord.ui.View):
     def __init__(self, client: MigrationEngineClient, operator_id: str, *, enabled: bool, timeout: float = 120) -> None:
         super().__init__(timeout=timeout)
         self.client = client

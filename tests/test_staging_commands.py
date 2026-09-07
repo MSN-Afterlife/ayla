@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock
 
 import discord
 
-from bot.commands.staging import _StagingAuthBypassView, _guard, _send_status, _set_and_confirm
-from bot.config import Settings
+from bot.commands.staging import _MinecraftAuthBypassView, _guard, _send_status, _set_and_confirm
 from bot.services.migration_engine_client import MigrationEngineUnavailable
 
 
@@ -46,9 +45,6 @@ class MutableResponse:
 
 
 class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.settings = Settings("token", ayla_env="staging")
-
     async def test_status_off(self):
         interaction = fake_interaction()
         await _send_status(interaction, FakeStagingClient([False]))
@@ -62,7 +58,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ativacao_confirmada(self):
         client = FakeStagingClient([True])
-        view = _StagingAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True)
         interaction = fake_interaction(user_id=42)
         await view.children[0].callback(interaction)
         self.assertEqual(client.set_calls, [True])
@@ -70,7 +66,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelamento(self):
         client = FakeStagingClient([False])
-        view = _StagingAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True)
         interaction = fake_interaction(user_id=42)
         await view.children[1].callback(interaction)
         self.assertEqual(client.set_calls, [])
@@ -92,19 +88,13 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_usuario_sem_permissao(self):
         interaction = fake_interaction(admin=False)
-        allowed = await _guard(interaction, self.settings)
+        allowed = await _guard(interaction)
         self.assertFalse(allowed)
         self.assertIn("administrador", interaction.response.send_message.await_args.args[0])
 
-    async def test_producao_recusada(self):
-        interaction = fake_interaction(admin=True)
-        allowed = await _guard(interaction, Settings("token", ayla_env="production"))
-        self.assertFalse(allowed)
-        self.assertIn("so funciona no bot de staging", interaction.response.send_message.await_args.args[0])
-
     async def test_botao_por_outro_operador_recusado(self):
         client = FakeStagingClient([True])
-        view = _StagingAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True)
         interaction = fake_interaction(user_id=99)
         await view.children[0].callback(interaction)
         self.assertEqual(client.set_calls, [])
@@ -112,7 +102,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_botao_expirado(self):
         client = FakeStagingClient([True])
-        view = _StagingAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True)
         view.expires_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
         interaction = fake_interaction(user_id=42)
         await view.children[0].callback(interaction)

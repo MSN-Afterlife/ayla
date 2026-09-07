@@ -10,6 +10,8 @@ from bot.services.migration_engine_client import (
     MigrationEngineUnavailable,
     MigrationInspectRequest,
     MigrationPlanRequest,
+    MigrationPreviewRequest,
+    MigrationPreviewResult,
     MigrationSource,
     MigrationState,
     PresenceState,
@@ -76,6 +78,85 @@ STATUS_PAYLOAD = {
     "rollback_available": True,
     "warnings": [],
     "blockers": [],
+}
+
+PREVIEW_PAYLOAD = {
+    "sources": [
+        {
+            "platform": "java",
+            "external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "username": "Mounk",
+            "playerdata": {
+                "available": True,
+                "inventory": {
+                    "occupied_slots": 15,
+                    "total_items": 120,
+                    "items": [
+                        {"id": "minecraft:diamond", "count": 13, "enchantments": []},
+                        {"id": "minecraft:diamond_sword", "count": 1, "enchantments": ["sharpness:5"]},
+                    ],
+                },
+                "ender_chest": {
+                    "occupied_slots": 2,
+                    "total_items": 10,
+                    "items": [{"id": "minecraft:netherite_ingot", "count": 2}],
+                },
+                "equipment": {
+                    "mainhand": {"id": "minecraft:diamond_sword", "count": 1, "enchantments": ["sharpness:5"]},
+                    "offhand": {"id": "minecraft:shield", "count": 1},
+                    "armor": {
+                        "head": {"id": "minecraft:diamond_helmet", "count": 1},
+                        "chest": {"id": "minecraft:diamond_chestplate", "count": 1},
+                        "legs": {"id": "minecraft:diamond_leggings", "count": 1},
+                        "feet": {"id": "minecraft:diamond_boots", "count": 1},
+                    },
+                },
+                "xp_level": 30,
+                "xp_total": 1395,
+                "xp_progress": 0.5,
+                "health": 20.0,
+                "food_level": 20,
+                "dimension": "minecraft:overworld",
+                "position": [100.5, 64.0, -250.0],
+            },
+            "advancements": {
+                "available": True,
+                "total_completed": 45,
+                "highlights": ["minecraft:story/mine_diamond"],
+            },
+            "stats": {
+                "available": True,
+                "play_time_seconds": 18450,
+                "deaths": 2,
+                "mob_kills": 120,
+                "player_kills": 0,
+                "blocks_mined": 4500,
+                "distance_walked": 12000,
+            },
+        },
+        {
+            "platform": "bedrock",
+            "external_id": "2533274791234567",
+            "username": "MounkBedrock",
+            "playerdata": {
+                "available": True,
+                "inventory": {
+                    "occupied_slots": 3,
+                    "total_items": 15,
+                    "items": [{"id": "minecraft:wooden_sword", "count": 1}],
+                },
+                "ender_chest": {"occupied_slots": 0, "total_items": 0, "items": []},
+                "equipment": {},
+                "xp_level": 1,
+                "xp_total": 10,
+                "health": 20.0,
+                "food_level": 20,
+            },
+            "advancements": {"available": True, "total_completed": 1, "highlights": []},
+            "stats": {"available": True, "play_time_seconds": 600, "deaths": 1, "mob_kills": 2},
+        },
+    ],
+    "warnings": [],
 }
 
 
@@ -258,6 +339,60 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.search_players("Mounkass")
         self.assertEqual([item.source_list()[0].platform for item in result], ["java", "bedrock"])
         self.assertNotEqual(result[1].external_id, "00000000-0000-0000-0009-01f0adc9f1a5")
+
+    async def test_preview_success(self):
+        FakeSession.responses = [(200, PREVIEW_PAYLOAD)]
+        request = MigrationPreviewRequest(
+            sources=(
+                MigrationSource("java", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "Mounk"),
+                MigrationSource("bedrock", "2533274791234567", "MounkBedrock"),
+            ),
+            target={"discord_user_id": "123"},
+        )
+        result = await self.client.preview(request)
+        self.assertEqual(FakeSession.calls[0][0], "POST")
+        self.assertTrue(FakeSession.calls[0][1].endswith("/api/v1/migrations/preview"))
+        self.assertEqual(len(result.sources), 2)
+        java_src = result.sources[0]
+        self.assertEqual(java_src.platform, "java")
+        self.assertTrue(java_src.playerdata.available)
+        self.assertEqual(java_src.playerdata.inventory.occupied_slots, 15)
+        self.assertEqual(java_src.playerdata.inventory.total_items, 120)
+        self.assertEqual(len(java_src.playerdata.inventory.items), 2)
+        self.assertEqual(java_src.playerdata.xp_level, 30)
+        self.assertEqual(java_src.advancements.total_completed, 45)
+        self.assertEqual(java_src.stats.play_time_seconds, 18450)
+        self.assertEqual(java_src.stats.deaths, 2)
+
+    async def test_preview_partial_data_and_missing_fields(self):
+        partial_payload = {
+            "sources": [
+                {
+                    "platform": "java",
+                    "external_id": "java-uuid",
+                    "playerdata": {"available": False, "error_message": "playerdata não encontrado"},
+                    "advancements": {"available": False},
+                    "stats": {"available": False},
+                }
+            ],
+            "warnings": ["Java playerdata indisponivel"],
+        }
+        FakeSession.responses = [(200, partial_payload)]
+        request = MigrationPreviewRequest(
+            sources=(MigrationSource("java", "java-uuid"),),
+        )
+        result = await self.client.preview(request)
+        self.assertEqual(len(result.sources), 1)
+        src = result.sources[0]
+        self.assertFalse(src.playerdata.available)
+        self.assertEqual(src.playerdata.error_message, "playerdata não encontrado")
+        self.assertIsNone(src.playerdata.xp_level)
+        self.assertEqual(result.warnings, ("Java playerdata indisponivel",))
+
+    async def test_preview_not_configured(self):
+        unconfigured = MigrationEngineClient(base_url=None, token=None)
+        with self.assertRaises(MigrationEngineNotConfigured):
+            await unconfigured.preview(MigrationPreviewRequest())
 
 
 if __name__ == "__main__":

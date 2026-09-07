@@ -66,6 +66,91 @@ Response:
 }
 ```
 
+`POST /api/v1/migrations/preview`
+
+Used by Discord UX to inspect and compare data profiles (playerdata, advancements,
+stats) between sources (e.g. Java and Bedrock) before choosing a source-of-truth
+or dataset policy. This endpoint is strictly read-only, idempotent, and never
+creates canonical identities, mappings, operations, or migration locks.
+
+Request:
+
+```json
+{
+  "sources": [
+    {"platform": "java", "external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "username": "PlayerJava"},
+    {"platform": "bedrock", "external_id": "2533274791234567", "username": "PlayerBedrock"}
+  ],
+  "target": {
+    "discord_user_id": "123456789"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "sources": [
+    {
+      "platform": "java",
+      "external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "username": "PlayerJava",
+      "playerdata": {
+        "available": true,
+        "inventory": {
+          "occupied_slots": 24,
+          "total_items": 312,
+          "items": [
+            {"id": "minecraft:diamond", "count": 13, "enchantments": []},
+            {"id": "minecraft:diamond_sword", "count": 1, "enchantments": ["sharpness:5"]}
+          ]
+        },
+        "ender_chest": {
+          "occupied_slots": 5,
+          "total_items": 45,
+          "items": [
+            {"id": "minecraft:netherite_ingot", "count": 2, "enchantments": []}
+          ]
+        },
+        "equipment": {
+          "mainhand": {"id": "minecraft:diamond_sword", "count": 1, "enchantments": ["sharpness:5"]},
+          "offhand": {"id": "minecraft:shield", "count": 1, "enchantments": []},
+          "armor": {
+            "head": {"id": "minecraft:diamond_helmet", "count": 1, "enchantments": []},
+            "chest": {"id": "minecraft:diamond_chestplate", "count": 1, "enchantments": []},
+            "legs": {"id": "minecraft:diamond_leggings", "count": 1, "enchantments": []},
+            "feet": {"id": "minecraft:diamond_boots", "count": 1, "enchantments": []}
+          }
+        },
+        "xp_level": 30,
+        "xp_total": 1395,
+        "xp_progress": 0.5,
+        "health": 20.0,
+        "food_level": 20,
+        "dimension": "minecraft:overworld",
+        "position": [100.5, 64.0, -200.0]
+      },
+      "advancements": {
+        "available": true,
+        "total_completed": 45,
+        "highlights": ["minecraft:story/mine_diamond"]
+      },
+      "stats": {
+        "available": true,
+        "play_time_seconds": 18450,
+        "deaths": 2,
+        "mob_kills": 120,
+        "player_kills": 0,
+        "blocks_mined": 4500,
+        "distance_walked": 12000
+      }
+    }
+  ],
+  "warnings": []
+}
+```
+
 `POST /api/v1/migrations/plan`
 
 Request is the same selector as inspect plus optional `reason`.

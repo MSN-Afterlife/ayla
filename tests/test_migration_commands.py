@@ -12,7 +12,7 @@ from bot.commands.migration import _DatasetPolicyView, _SourceSelectionView, _co
 from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationStore
-from bot.services.migration_engine_client import LockState, MigrationExecution, MigrationPlan, MigrationPlanRequest, MigrationReference, MigrationRollback, MigrationSource, MigrationState, MigrationStatus, PlannedOperation, PlayerReference, PresenceState
+from bot.services.migration_engine_client import LockState, MigrationExecution, MigrationPlan, MigrationPlanRequest, MigrationPreviewResult, MigrationReference, MigrationRollback, MigrationSource, MigrationState, MigrationStatus, PlannedOperation, PlayerReference, PresenceState
 
 
 class FakeClient:
@@ -32,6 +32,11 @@ class FakeClient:
         self.migrations = []
         self.players = []
         self.status_calls = []
+        self.preview_request = None
+
+    async def preview(self, request):
+        self.preview_request = request
+        return MigrationPreviewResult(sources=())
 
     async def status(self, migration_id):
         self.status_calls.append(migration_id)
@@ -409,6 +414,40 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         await _reply(interaction, "ok", view=view)
         self.assertIs(interaction.followup.send.await_args.kwargs["view"], view)
 
+    async def test_source_selection_view_tem_botao_comparar_progresso(self):
+        client = FakeClient(status())
+        view = _SourceSelectionView(
+            client,
+            self.audit,
+            None,
+            "Mounkass",
+            (MigrationSource("java", "java-id", "Mounkass"), MigrationSource("bedrock", "xuid", ".Mounkass")),
+            "884592686101852232",
+        )
+        self.assertEqual(len(view.children), 4)
+        compare_btn = view.children[3]
+        self.assertEqual(compare_btn.label, "📊 Comparar progresso")
+        interaction = fake_interaction(42, self.confirmations)
+        await compare_btn.callback(interaction)
+        self.assertIsNotNone(client.preview_request)
+        self.assertEqual(client.preview_request.target["discord_user_id"], "884592686101852232")
+
+    async def test_dataset_policy_view_tem_botao_comparar_progresso(self):
+        client = FakeClient(status())
+        view = _DatasetPolicyView(
+            client,
+            self.audit,
+            (MigrationSource("java", "java-id"), MigrationSource("bedrock", "bedrock-id")),
+            {"discord_user_id": "884592686101852232"},
+            "policy test",
+        )
+        self.assertEqual(len(view.children), 3)
+        compare_btn = view.children[2]
+        self.assertEqual(compare_btn.label, "📊 Comparar progresso")
+        interaction = fake_interaction(42, self.confirmations)
+        await compare_btn.callback(interaction)
+        self.assertIsNotNone(client.preview_request)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -416,7 +455,8 @@ if __name__ == "__main__":
 
 def fake_interaction(user_id, confirmations, *, admin=True, manage_guild=True, deferred=False):
     permissions = SimpleNamespace(administrator=admin, manage_guild=manage_guild)
-    response = SimpleNamespace(is_done=lambda: deferred, send_message=AsyncMock())
+    response = SimpleNamespace(is_done=lambda: deferred, send_message=AsyncMock(), edit_message=AsyncMock())
     followup = SimpleNamespace(send=AsyncMock())
+    message = SimpleNamespace(edit=AsyncMock())
     client = SimpleNamespace(_migration_confirmations=confirmations)
-    return SimpleNamespace(user=SimpleNamespace(id=user_id, guild_permissions=permissions), response=response, followup=followup, client=client)
+    return SimpleNamespace(user=SimpleNamespace(id=user_id, guild_permissions=permissions), response=response, followup=followup, message=message, client=client)

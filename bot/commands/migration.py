@@ -12,6 +12,7 @@ from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationError, MigrationConfirmationStore
 from bot.services.migration_engine_client import (
+    AdvancementsPreview,
     IdentitySummary,
     LockState,
     MigrationEngineAuthError,
@@ -25,12 +26,29 @@ from bot.services.migration_engine_client import (
     MigrationInspectRequest,
     MigrationPlan,
     MigrationPlanRequest,
-    MigrationSource,
-    PlayerReference,
+    MigrationPreviewRequest,
+    MigrationPreviewResult,
     MigrationReference,
+    MigrationSource,
     MigrationState,
     MigrationStatus,
+    PlayerdataPreview,
+    PlayerReference,
     PresenceState,
+    SourceProfilePreview,
+    StatsPreview,
+)
+from bot.services.migration_preview_service import (
+    ComparisonSummary,
+    PreviewRecommendation,
+    build_comparison,
+    filter_relevant_items,
+    format_dimension,
+    format_equipment_item,
+    format_item_name,
+    format_playtime,
+    format_position,
+    format_xp,
 )
 
 
@@ -916,6 +934,18 @@ class _SourceSelectionView(discord.ui.View):
         selected = tuple(source for source in self.sources if source.platform == "bedrock")
         await self._choose(interaction, selected)
 
+    @discord.ui.button(label="📊 Comparar progresso", style=discord.ButtonStyle.secondary, row=1)
+    async def compare_button(self, interaction, button):
+        await _show_comparison_preview(
+            interaction,
+            self.client,
+            self.audit,
+            self.sources,
+            self.target_discord_id,
+            self.player_name,
+            self.reason,
+        )
+
 
 class _DatasetPolicyView(discord.ui.View):
     def __init__(self, client, audit, sources, target, reason):
@@ -941,6 +971,446 @@ class _DatasetPolicyView(discord.ui.View):
     @discord.ui.button(label="Usar progresso Bedrock", style=discord.ButtonStyle.secondary)
     async def bedrock_button(self, interaction, button):
         await self._choose(interaction, "bedrock")
+
+    @discord.ui.button(label="📊 Comparar progresso", style=discord.ButtonStyle.secondary)
+    async def compare_button(self, interaction, button):
+        await _show_comparison_preview(
+            interaction,
+            self.client,
+            self.audit,
+            self.sources,
+            self.target.get("discord_user_id", ""),
+            "jogador",
+            self.reason,
+        )
+
+
+async def _edit_or_reply(interaction, content: str, view: discord.ui.View) -> None:
+    if hasattr(interaction, "response") and not interaction.response.is_done():
+        try:
+            await interaction.response.edit_message(content=content, view=view)
+            return
+        except (AttributeError, discord.InteractionResponded):
+            pass
+    if hasattr(interaction, "message") and hasattr(interaction.message, "edit"):
+        try:
+            await interaction.message.edit(content=content, view=view)
+            return
+        except Exception:
+            pass
+    await _reply(interaction, content, view=view)
+
+
+def _render_preview_page(comparison: ComparisonSummary, page: int, player_name: str, target_discord_id: str) -> str:
+    if page == 1:
+        return _render_inventory_page(comparison, player_name)
+    if page == 2:
+        return _render_advancements_stats_page(comparison, player_name)
+    return _render_summary_page(comparison, player_name, target_discord_id)
+
+
+def _render_summary_page(comparison: ComparisonSummary, player_name: str, target_discord_id: str) -> str:
+    lines = [
+        "📊 **PREVIEW COMPARATIVO DE PROGRESSO** (Aba 1/3: Resumo)",
+        f"👤 Jogador: `{player_name}` | Discord: <@{target_discord_id}>",
+        "",
+        f"💡 **{comparison.recommendation.headline}**",
+    ]
+    for reason in comparison.recommendation.reasons:
+        lines.append(f"  • {reason}")
+    lines.append("")
+
+    for prof in (comparison.java_profile, comparison.bedrock_profile):
+        if not prof:
+            continue
+        icon = "☕" if prof.platform == "java" else "📱"
+        name = prof.username or prof.external_id
+        lines.append(f"{icon} **{prof.platform.title()}** (`{name}`):")
+
+        if not prof.playerdata.available:
+            lines.append(f"  • Playerdata: ⚠️ *indisponível* ({prof.playerdata.error_message or 'sem dados'})")
+        else:
+            inv = prof.playerdata.inventory
+            ec = prof.playerdata.ender_chest
+            xp = format_xp(prof.playerdata.xp_level, prof.playerdata.xp_total)
+            dim = format_dimension(prof.playerdata.dimension)
+            lines.append(f"  • Playerdata: {xp} | Dimensão: {dim}")
+            lines.append(f"  • Inventário: {inv.occupied_slots}/36 slots ({inv.total_items} itens)")
+            ec_desc = f"{ec.occupied_slots}/27 slots ({ec.total_items} itens)" if ec.occupied_slots > 0 else "vazio"
+            lines.append(f"  • Ender Chest: {ec_desc}")
+
+        if not prof.advancements.available:
+            lines.append("  • Conquistas: ⚠️ *indisponível*")
+        else:
+            adv_count = prof.advancements.total_completed if prof.advancements.total_completed is not None else 0
+            lines.append(f"  • Conquistas: {adv_count} concluídas")
+
+        if not prof.stats.available:
+            lines.append("  • Estatísticas: ⚠️ *indisponível*")
+        else:
+            pt = format_playtime(prof.stats.play_time_seconds)
+            deaths = prof.stats.deaths if prof.stats.deaths is not None else "indisponível"
+            kills = prof.stats.mob_kills if prof.stats.mob_kills is not None else "indisponível"
+            lines.append(f"  • Tempo de jogo: {pt} | Mortes: {deaths} | Mobs derrotados: {kills}")
+        lines.append("")
+
+    lines.append("Use as abas para inspecionar inventário e stats, ou selecione a política desejada:")
+    return "\n".join(lines)
+
+
+def _render_inventory_page(comparison: ComparisonSummary, player_name: str) -> str:
+    lines = [
+        "🎒 **PREVIEW DE INVENTÁRIO & EQUIPAMENTOS** (Aba 2/3)",
+        f"👤 Jogador: `{player_name}`",
+        "",
+    ]
+    for prof in (comparison.java_profile, comparison.bedrock_profile):
+        if not prof:
+            continue
+        icon = "☕" if prof.platform == "java" else "📱"
+        name = prof.username or prof.external_id
+        lines.append(f"{icon} **{prof.platform.title()}** (`{name}`):")
+
+        if not prof.playerdata.available:
+            lines.append(f"  • Inventário indisponível ({prof.playerdata.error_message or 'sem dados'}).")
+            lines.append("")
+            continue
+
+        pdata = prof.playerdata
+        eq = pdata.equipment
+        lines.append("  🛡️ **Equipamentos:**")
+        lines.append(f"    - Mão Principal: {format_equipment_item(eq.mainhand)}")
+        lines.append(f"    - Secundária: {format_equipment_item(eq.offhand)}")
+        armor_parts = []
+        if eq.head:
+            armor_parts.append(f"Elmo: {format_equipment_item(eq.head)}")
+        if eq.chest:
+            armor_parts.append(f"Peitoral: {format_equipment_item(eq.chest)}")
+        if eq.legs:
+            armor_parts.append(f"Calça: {format_equipment_item(eq.legs)}")
+        if eq.feet:
+            armor_parts.append(f"Botas: {format_equipment_item(eq.feet)}")
+        lines.append(f"    - Armadura: {', '.join(armor_parts) if armor_parts else 'nenhuma'}")
+
+        rel_inv = filter_relevant_items(pdata.inventory.items)
+        lines.append(f"  💎 **Itens Relevantes no Inventário ({len(rel_inv)}):**")
+        if rel_inv:
+            for item in rel_inv[:5]:
+                ench = f" ✨ ({', '.join(item.enchantments)})" if item.enchantments else ""
+                lines.append(f"    • {item.count}x {format_item_name(item.id)}{ench}")
+            if len(rel_inv) > 5:
+                lines.append(f"    • ...e mais {len(rel_inv) - 5} itens")
+        else:
+            lines.append("    • *nenhum item valioso detectado*")
+
+        rel_ec = filter_relevant_items(pdata.ender_chest.items)
+        lines.append(f"  🔮 **Ender Chest ({pdata.ender_chest.occupied_slots} slots / {pdata.ender_chest.total_items} itens):**")
+        if rel_ec:
+            for item in rel_ec[:4]:
+                ench = f" ✨ ({', '.join(item.enchantments)})" if item.enchantments else ""
+                lines.append(f"    • {item.count}x {format_item_name(item.id)}{ench}")
+            if len(rel_ec) > 4:
+                lines.append(f"    • ...e mais {len(rel_ec) - 4} itens")
+        elif pdata.ender_chest.occupied_slots > 0:
+            lines.append(f"    • {pdata.ender_chest.occupied_slots} slots ocupados (itens comuns)")
+        else:
+            lines.append("    • *vazio*")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_advancements_stats_page(comparison: ComparisonSummary, player_name: str) -> str:
+    lines = [
+        "🏆 **CONQUISTAS & ESTATÍSTICAS** (Aba 3/3)",
+        f"👤 Jogador: `{player_name}`",
+        "",
+    ]
+    for prof in (comparison.java_profile, comparison.bedrock_profile):
+        if not prof:
+            continue
+        icon = "☕" if prof.platform == "java" else "📱"
+        name = prof.username or prof.external_id
+        lines.append(f"{icon} **{prof.platform.title()}** (`{name}`):")
+
+        lines.append("  🏆 **Conquistas:**")
+        if not prof.advancements.available:
+            lines.append(f"    • ⚠️ *indisponível* ({prof.advancements.error_message or 'sem dados'})")
+        else:
+            completed = prof.advancements.total_completed if prof.advancements.total_completed is not None else 0
+            lines.append(f"    • Total concluídas: {completed}")
+            if prof.advancements.highlights:
+                lines.append(f"    • Destaques: {', '.join(h.split('/')[-1].replace('_', ' ').title() for h in prof.advancements.highlights[:4])}")
+
+        lines.append("  📈 **Estatísticas:**")
+        if not prof.stats.available:
+            lines.append(f"    • ⚠️ *indisponível* ({prof.stats.error_message or 'sem dados'})")
+        else:
+            lines.append(f"    • Tempo de jogo: {format_playtime(prof.stats.play_time_seconds)}")
+            deaths = prof.stats.deaths if prof.stats.deaths is not None else "indisponível"
+            mob_k = prof.stats.mob_kills if prof.stats.mob_kills is not None else "indisponível"
+            lines.append(f"    • Mortes: {deaths} | Mobs derrotados: {mob_k}")
+            if prof.stats.blocks_mined is not None:
+                lines.append(f"    • Blocos minerados: {prof.stats.blocks_mined:,}")
+            if prof.stats.distance_walked is not None:
+                lines.append(f"    • Distância percorrida: {prof.stats.distance_walked:,}m")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+class _ComparisonPaginationView(discord.ui.View):
+    def __init__(
+        self,
+        client: MigrationEngineClient,
+        audit: MigrationAuditStore,
+        sources: tuple[MigrationSource, ...],
+        target_discord_id: str,
+        player_name: str,
+        reason: str | None,
+        comparison: ComparisonSummary,
+        page: int = 0,
+    ):
+        super().__init__(timeout=180)
+        self.client = client
+        self.audit = audit
+        self.sources = tuple(sources)
+        self.target_discord_id = str(target_discord_id)
+        self.player_name = str(player_name)
+        self.reason = reason
+        self.comparison = comparison
+        self.page = page
+        self._update_button_styles()
+
+    def _update_button_styles(self):
+        self.summary_button.style = discord.ButtonStyle.primary if self.page == 0 else discord.ButtonStyle.secondary
+        self.inventory_button.style = discord.ButtonStyle.primary if self.page == 1 else discord.ButtonStyle.secondary
+        self.stats_button.style = discord.ButtonStyle.primary if self.page == 2 else discord.ButtonStyle.secondary
+
+    async def _change_page(self, interaction: discord.Interaction, new_page: int):
+        self.page = new_page
+        self._update_button_styles()
+        content = _render_preview_page(self.comparison, self.page, self.player_name, self.target_discord_id)
+        await _edit_or_reply(interaction, content, self)
+
+    @discord.ui.button(label="📄 Resumo", style=discord.ButtonStyle.primary, row=0)
+    async def summary_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._change_page(interaction, 0)
+
+    @discord.ui.button(label="🎒 Inventário", style=discord.ButtonStyle.secondary, row=0)
+    async def inventory_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._change_page(interaction, 1)
+
+    @discord.ui.button(label="🏆 Conquistas & Stats", style=discord.ButtonStyle.secondary, row=0)
+    async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._change_page(interaction, 2)
+
+    @discord.ui.button(label="☕ Usar tudo Java", style=discord.ButtonStyle.success, row=1)
+    async def java_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        policy = _policy_for_platform("java")
+        request = _multi_source_request(self.sources, self.target_discord_id, policy, self.reason)
+        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="📱 Usar tudo Bedrock", style=discord.ButtonStyle.success, row=1)
+    async def bedrock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        policy = _policy_for_platform("bedrock")
+        request = _multi_source_request(self.sources, self.target_discord_id, policy, self.reason)
+        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="⚙️ Escolher por categoria", style=discord.ButtonStyle.secondary, row=1)
+    async def category_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cat_view = _CategoryPolicySelectionView(
+            client=self.client,
+            audit=self.audit,
+            sources=self.sources,
+            target_discord_id=self.target_discord_id,
+            player_name=self.player_name,
+            reason=self.reason,
+            comparison=self.comparison,
+        )
+        content = cat_view.render_content()
+        await _edit_or_reply(interaction, content, cat_view)
+
+    @discord.ui.button(label="↩️ Voltar", style=discord.ButtonStyle.secondary, row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        back_view = _SourceSelectionView(
+            client=self.client,
+            audit=self.audit,
+            reason=self.reason,
+            player_name=self.player_name,
+            sources=self.sources,
+            target_discord_id=self.target_discord_id,
+        )
+        content = _format_source_selection(self.player_name, self.sources, self.target_discord_id)
+        await _edit_or_reply(interaction, content, back_view)
+
+
+class _CategoryPolicySelectionView(discord.ui.View):
+    def __init__(
+        self,
+        client: MigrationEngineClient,
+        audit: MigrationAuditStore,
+        sources: tuple[MigrationSource, ...],
+        target_discord_id: str,
+        player_name: str,
+        reason: str | None,
+        comparison: ComparisonSummary,
+        current_policy: dict[str, str] | None = None,
+    ):
+        super().__init__(timeout=180)
+        self.client = client
+        self.audit = audit
+        self.sources = tuple(sources)
+        self.target_discord_id = str(target_discord_id)
+        self.player_name = str(player_name)
+        self.reason = reason
+        self.comparison = comparison
+        self.policy = dict(current_policy or {"playerdata": "java", "advancements": "java", "stats": "java"})
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.pd_java.style = discord.ButtonStyle.primary if self.policy.get("playerdata") == "java" else discord.ButtonStyle.secondary
+        self.pd_bedrock.style = discord.ButtonStyle.primary if self.policy.get("playerdata") == "bedrock" else discord.ButtonStyle.secondary
+
+        self.adv_java.style = discord.ButtonStyle.primary if self.policy.get("advancements") == "java" else discord.ButtonStyle.secondary
+        self.adv_bedrock.style = discord.ButtonStyle.primary if self.policy.get("advancements") == "bedrock" else discord.ButtonStyle.secondary
+
+        self.stats_java.style = discord.ButtonStyle.primary if self.policy.get("stats") == "java" else discord.ButtonStyle.secondary
+        self.stats_bedrock.style = discord.ButtonStyle.primary if self.policy.get("stats") == "bedrock" else discord.ButtonStyle.secondary
+
+    def render_content(self) -> str:
+        lines = [
+            "⚙️ **ESCOLHA DE FONTE POR CATEGORIA**",
+            f"👤 Jogador: `{self.player_name}` | Discord: <@{self.target_discord_id}>",
+            "",
+            "Selecione a fonte da verdade para cada conjunto de dados:",
+            f"• 🎒 **Playerdata** (inventário, ender chest, XP, vida): **{self.policy['playerdata'].title()}**",
+            f"• 🏆 **Conquistas** (advancements): **{self.policy['advancements'].title()}**",
+            f"• 📈 **Estatísticas** (tempo de jogo, mortes, kills): **{self.policy['stats'].title()}**",
+            "",
+            "Clique nos botões para alternar as fontes e em 'Confirmar' para gerar o plano.",
+        ]
+        return "\n".join(lines)
+
+    async def _toggle(self, interaction: discord.Interaction, dataset: str, platform: str):
+        self.policy[dataset] = platform
+        self._update_buttons()
+        await _edit_or_reply(interaction, self.render_content(), self)
+
+    @discord.ui.button(label="🎒 Playerdata: Java", style=discord.ButtonStyle.primary, row=0)
+    async def pd_java(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "playerdata", "java")
+
+    @discord.ui.button(label="🎒 Playerdata: Bedrock", style=discord.ButtonStyle.secondary, row=0)
+    async def pd_bedrock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "playerdata", "bedrock")
+
+    @discord.ui.button(label="🏆 Conquistas: Java", style=discord.ButtonStyle.primary, row=1)
+    async def adv_java(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "advancements", "java")
+
+    @discord.ui.button(label="🏆 Conquistas: Bedrock", style=discord.ButtonStyle.secondary, row=1)
+    async def adv_bedrock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "advancements", "bedrock")
+
+    @discord.ui.button(label="📈 Stats: Java", style=discord.ButtonStyle.primary, row=2)
+    async def stats_java(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "stats", "java")
+
+    @discord.ui.button(label="📈 Stats: Bedrock", style=discord.ButtonStyle.secondary, row=2)
+    async def stats_bedrock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, "stats", "bedrock")
+
+    @discord.ui.button(label="✅ Confirmar migração", style=discord.ButtonStyle.success, row=3)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        policy = dict(self.policy)
+        request = _multi_source_request(self.sources, self.target_discord_id, policy, self.reason)
+        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="↩️ Voltar ao preview", style=discord.ButtonStyle.secondary, row=3)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        preview_view = _ComparisonPaginationView(
+            client=self.client,
+            audit=self.audit,
+            sources=self.sources,
+            target_discord_id=self.target_discord_id,
+            player_name=self.player_name,
+            reason=self.reason,
+            comparison=self.comparison,
+            page=0,
+        )
+        content = _render_preview_page(self.comparison, 0, self.player_name, self.target_discord_id)
+        await _edit_or_reply(interaction, content, preview_view)
+
+
+async def _show_comparison_preview(
+    target,
+    client: MigrationEngineClient,
+    audit: MigrationAuditStore,
+    sources: tuple[MigrationSource, ...],
+    target_discord_id: str,
+    player_name: str,
+    reason: str | None,
+) -> None:
+    operator_id = _user_id(target)
+    _log_event("migration_preview_requested", operator_id=operator_id, player_name=player_name, platforms=tuple(s.platform for s in sources))
+    audit.record("MIGRATION_PREVIEW", discord_user_id=operator_id, result="requested")
+
+    preview_req = MigrationPreviewRequest(
+        sources=sources,
+        target={"discord_user_id": target_discord_id},
+    )
+    try:
+        preview_res = await client.preview(preview_req)
+        profiles = preview_res.sources
+    except MigrationEngineNotConfigured:
+        profiles = tuple(
+            SourceProfilePreview(
+                platform=s.platform,
+                external_id=s.external_id,
+                username=s.username,
+                playerdata=PlayerdataPreview(available=False, error_message="Engine não configurado"),
+                advancements=AdvancementsPreview(available=False, error_message="Engine não configurado"),
+                stats=StatsPreview(available=False, error_message="Engine não configurado"),
+            )
+            for s in sources
+        )
+    except MigrationEngineError as error:
+        _log_engine_error("migration_preview_failure", error)
+        profiles = tuple(
+            SourceProfilePreview(
+                platform=s.platform,
+                external_id=s.external_id,
+                username=s.username,
+                playerdata=PlayerdataPreview(available=False, error_message=f"Indisponível ({error.code.value})"),
+                advancements=AdvancementsPreview(available=False, error_message=f"Indisponível ({error.code.value})"),
+                stats=StatsPreview(available=False, error_message=f"Indisponível ({error.code.value})"),
+            )
+            for s in sources
+        )
+
+    comparison = build_comparison(profiles)
+    view = _ComparisonPaginationView(
+        client=client,
+        audit=audit,
+        sources=sources,
+        target_discord_id=target_discord_id,
+        player_name=player_name,
+        reason=reason,
+        comparison=comparison,
+        page=0,
+    )
+    content = _render_preview_page(comparison, 0, player_name, target_discord_id)
+    await _edit_or_reply(target, content, view)
 
 
 class _OperatorBoundView(discord.ui.View):

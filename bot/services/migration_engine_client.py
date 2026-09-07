@@ -300,6 +300,98 @@ class MigrationPlanRequest(MigrationInspectRequest):
 
 
 @dataclass(frozen=True)
+class ItemEntry:
+    id: str
+    count: int = 1
+    enchantments: tuple[str, ...] = ()
+    slot: int | None = None
+
+
+@dataclass(frozen=True)
+class InventorySection:
+    occupied_slots: int = 0
+    total_items: int = 0
+    items: tuple[ItemEntry, ...] = ()
+    available: bool = True
+
+
+@dataclass(frozen=True)
+class EquipmentSummary:
+    mainhand: ItemEntry | None = None
+    offhand: ItemEntry | None = None
+    head: ItemEntry | None = None
+    chest: ItemEntry | None = None
+    legs: ItemEntry | None = None
+    feet: ItemEntry | None = None
+
+
+@dataclass(frozen=True)
+class PlayerdataPreview:
+    available: bool = True
+    error_message: str | None = None
+    inventory: InventorySection = field(default_factory=InventorySection)
+    ender_chest: InventorySection = field(default_factory=InventorySection)
+    equipment: EquipmentSummary = field(default_factory=EquipmentSummary)
+    xp_level: int | None = None
+    xp_total: int | None = None
+    xp_progress: float | None = None
+    health: float | None = None
+    food_level: int | None = None
+    dimension: str | None = None
+    position: tuple[float, float, float] | None = None
+
+
+@dataclass(frozen=True)
+class AdvancementsPreview:
+    available: bool = True
+    error_message: str | None = None
+    total_completed: int | None = None
+    highlights: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StatsPreview:
+    available: bool = True
+    error_message: str | None = None
+    play_time_seconds: int | None = None
+    deaths: int | None = None
+    mob_kills: int | None = None
+    player_kills: int | None = None
+    blocks_mined: int | None = None
+    distance_walked: int | None = None
+
+
+@dataclass(frozen=True)
+class SourceProfilePreview:
+    platform: str
+    external_id: str
+    username: str | None = None
+    playerdata: PlayerdataPreview = field(default_factory=PlayerdataPreview)
+    advancements: AdvancementsPreview = field(default_factory=AdvancementsPreview)
+    stats: StatsPreview = field(default_factory=StatsPreview)
+
+
+@dataclass(frozen=True)
+class MigrationPreviewRequest:
+    sources: tuple[MigrationSource, ...] = ()
+    target: dict[str, str] | None = None
+
+    def payload(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "sources": [source.payload() for source in self.sources],
+        }
+        if self.target:
+            result["target"] = dict(self.target)
+        return result
+
+
+@dataclass(frozen=True)
+class MigrationPreviewResult:
+    sources: tuple[SourceProfilePreview, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class MigrationEngineClient:
     base_url: str | None
     token: str | None
@@ -318,6 +410,10 @@ class MigrationEngineClient:
     async def plan(self, request: MigrationPlanRequest) -> MigrationPlan:
         payload = await self._request("POST", "/api/v1/migrations/plan", json_payload=request.payload())
         return _parse_plan(payload)
+
+    async def preview(self, request: MigrationPreviewRequest) -> MigrationPreviewResult:
+        payload = await self._request("POST", "/api/v1/migrations/preview", json_payload=request.payload())
+        return _parse_preview_result(payload)
 
     async def execute(self, migration_id: str, *, operator_id: str, idempotency_key: str | None = None) -> MigrationExecution:
         payload = await self._request(
@@ -657,3 +753,146 @@ def _path_id(value: str) -> str:
     if not value or "/" in value or "\\" in value or ".." in value:
         raise ValueError("migration_id invalido.")
     return value
+
+
+def _parse_preview_result(payload: object) -> MigrationPreviewResult:
+    data = _require_dict(payload)
+    sources_data = _list(data.get("sources"))
+    sources = tuple(_parse_source_profile_preview(item) for item in sources_data)
+    warnings = _tuple_str(data.get("warnings"))
+    return MigrationPreviewResult(sources=sources, warnings=warnings)
+
+
+def _parse_source_profile_preview(payload: object) -> SourceProfilePreview:
+    data = _require_dict(payload)
+    platform = _required_str(data, "platform").lower()
+    external_id = _required_str(data, "external_id" if "external_id" in data else "xuid")
+    username = _optional_str(data.get("username"))
+    playerdata = _parse_playerdata_preview(data.get("playerdata"))
+    advancements = _parse_advancements_preview(data.get("advancements"))
+    stats = _parse_stats_preview(data.get("stats"))
+    return SourceProfilePreview(
+        platform=platform,
+        external_id=external_id,
+        username=username,
+        playerdata=playerdata,
+        advancements=advancements,
+        stats=stats,
+    )
+
+
+def _parse_playerdata_preview(payload: object) -> PlayerdataPreview:
+    if not isinstance(payload, dict):
+        return PlayerdataPreview(available=False, error_message="indisponivel")
+    available = bool(payload.get("available", True))
+    error_message = _optional_str(payload.get("error_message") or payload.get("error"))
+    inventory = _parse_inventory_section(payload.get("inventory"))
+    ender_chest = _parse_inventory_section(payload.get("ender_chest"))
+    equipment = _parse_equipment_summary(payload.get("equipment"))
+    xp_level = _optional_int(payload.get("xp_level"))
+    xp_total = _optional_int(payload.get("xp_total"))
+    xp_progress = _optional_float(payload.get("xp_progress") or payload.get("xp_p"))
+    health = _optional_float(payload.get("health"))
+    food_level = _optional_int(payload.get("food_level"))
+    dimension = _optional_str(payload.get("dimension"))
+    position = _parse_position(payload.get("position") or payload.get("pos"))
+    return PlayerdataPreview(
+        available=available,
+        error_message=error_message,
+        inventory=inventory,
+        ender_chest=ender_chest,
+        equipment=equipment,
+        xp_level=xp_level,
+        xp_total=xp_total,
+        xp_progress=xp_progress,
+        health=health,
+        food_level=food_level,
+        dimension=dimension,
+        position=position,
+    )
+
+
+def _parse_position(value: object) -> tuple[float, float, float] | None:
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        try:
+            return (float(value[0]), float(value[1]), float(value[2]))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _parse_inventory_section(payload: object) -> InventorySection:
+    if not isinstance(payload, dict):
+        return InventorySection(available=False)
+    occupied_slots = _optional_int(payload.get("occupied_slots")) or 0
+    total_items = _optional_int(payload.get("total_items")) or 0
+    raw_items = _list(payload.get("items"))
+    items = tuple(_parse_item_entry(item) for item in raw_items)
+    available = bool(payload.get("available", True))
+    return InventorySection(
+        occupied_slots=occupied_slots,
+        total_items=total_items,
+        items=items,
+        available=available,
+    )
+
+
+def _parse_item_entry(payload: object) -> ItemEntry:
+    if not isinstance(payload, dict):
+        return ItemEntry(id="unknown")
+    item_id = str(payload.get("id") or "unknown")
+    count = _optional_int(payload.get("count")) or 1
+    enchantments = _tuple_str(payload.get("enchantments"))
+    slot = _optional_int(payload.get("slot"))
+    return ItemEntry(id=item_id, count=count, enchantments=enchantments, slot=slot)
+
+
+def _parse_equipment_summary(payload: object) -> EquipmentSummary:
+    if not isinstance(payload, dict):
+        return EquipmentSummary()
+    mainhand = _parse_item_entry(payload["mainhand"]) if isinstance(payload.get("mainhand"), dict) else None
+    offhand = _parse_item_entry(payload["offhand"]) if isinstance(payload.get("offhand"), dict) else None
+    armor_data = payload.get("armor") if isinstance(payload.get("armor"), dict) else payload
+    head = _parse_item_entry(armor_data["head"]) if isinstance(armor_data.get("head"), dict) else None
+    chest = _parse_item_entry(armor_data["chest"]) if isinstance(armor_data.get("chest"), dict) else None
+    legs = _parse_item_entry(armor_data["legs"]) if isinstance(armor_data.get("legs"), dict) else None
+    feet = _parse_item_entry(armor_data["feet"]) if isinstance(armor_data.get("feet"), dict) else None
+    return EquipmentSummary(mainhand=mainhand, offhand=offhand, head=head, chest=chest, legs=legs, feet=feet)
+
+
+def _parse_advancements_preview(payload: object) -> AdvancementsPreview:
+    if not isinstance(payload, dict):
+        return AdvancementsPreview(available=False, error_message="indisponivel")
+    available = bool(payload.get("available", True))
+    error_message = _optional_str(payload.get("error_message") or payload.get("error"))
+    total_completed = _optional_int(payload.get("total_completed") or payload.get("completed"))
+    highlights = _tuple_str(payload.get("highlights"))
+    return AdvancementsPreview(
+        available=available,
+        error_message=error_message,
+        total_completed=total_completed,
+        highlights=highlights,
+    )
+
+
+def _parse_stats_preview(payload: object) -> StatsPreview:
+    if not isinstance(payload, dict):
+        return StatsPreview(available=False, error_message="indisponivel")
+    available = bool(payload.get("available", True))
+    error_message = _optional_str(payload.get("error_message") or payload.get("error"))
+    play_time_seconds = _optional_int(payload.get("play_time_seconds") or payload.get("playtime_seconds"))
+    deaths = _optional_int(payload.get("deaths"))
+    mob_kills = _optional_int(payload.get("mob_kills"))
+    player_kills = _optional_int(payload.get("player_kills"))
+    blocks_mined = _optional_int(payload.get("blocks_mined"))
+    distance_walked = _optional_int(payload.get("distance_walked"))
+    return StatsPreview(
+        available=available,
+        error_message=error_message,
+        play_time_seconds=play_time_seconds,
+        deaths=deaths,
+        mob_kills=mob_kills,
+        player_kills=player_kills,
+        blocks_mined=blocks_mined,
+        distance_walked=distance_walked,
+    )

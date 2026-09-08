@@ -9,34 +9,26 @@ from aiohttp import web
 from bot.config import Settings
 from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
+from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 from bot.services.minecraft_identity import MinecraftIdentityStore, MinecraftLinkError, valid_internal_token
-
-
-DEFAULT_CHAOS_MONSTERS = {
-    "godzilla": ("Godzilla", ["rampage", "roar", "stomp", "atomic", "tailwind"]),
-    "kraken": ("Kraken", ["tentacles", "drown", "gift", "tide", "steal"]),
-    "dragao": ("Dragao", ["fire", "hoard", "flight", "scales", "burn"]),
-    "mothra": ("Mothra", ["dust", "blessing", "flutter", "heal", "swarm"]),
-    "minotauro": ("Minotauro", ["charge", "labyrinth", "axe", "rage", "guard"]),
-    "medusa": ("Medusa", ["petrify", "gaze", "snakes", "curse", "mirror"]),
-    "yeti": ("Yeti", ["blizzard", "snowball", "warmth", "freeze", "avalanche"]),
-    "fenix": ("Fenix", ["rebirth", "flames", "ashes", "sun", "spark"]),
-    "cthulhu": ("Cthulhu", ["madness", "whispers", "void", "dream", "tentacles"]),
-    "king_kong": ("King Kong", ["smash", "roar", "climb", "protect", "throw"]),
-    "slime": ("Slime Mutante", ["split", "absorb", "bounce", "melt", "clone"]),
-    "robo_caos": ("Robo Caos", ["hack", "laser", "repair", "overload", "shuffle"]),
-    "ayla_caotica": ("Ayla Caotica", ["roulette", "favor", "prank", "glitch", "gift"]),
-}
+from bot.commands.uno import CHAOS_CHARACTERS
 
 
 class SiteApiServer:
-    def __init__(self, settings: Settings, readiness_check: Callable[[], bool], minecraft_store: MinecraftIdentityStore | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        readiness_check: Callable[[], bool],
+        lastfm: LastFmService | None = None,
+        minecraft_store: MinecraftIdentityStore | None = None,
+    ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
         self._economy = EconomyService(settings)
-        self._minecraft = minecraft_store or MinecraftIdentityStore(settings)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
+        self._lastfm = lastfm
+        self._minecraft = minecraft_store or MinecraftIdentityStore(settings)
 
     async def start(self) -> None:
         if self._runner:
@@ -45,6 +37,8 @@ class SiteApiServer:
         app = web.Application(middlewares=[_cors_middleware(self._settings.site_api_cors_origin)])
         app.router.add_get("/health", self._health)
         app.router.add_get("/api/site", self._site_info)
+        # These routes are consumed by the UNO Monsters admin page.  Keep the
+        # admin aliases here because the public site proxies /api/* to the bot.
         app.router.add_get("/api/uno/monsters", self._monsters)
         app.router.add_get("/api/uno/monsters/schema", self._monsters_schema)
         app.router.add_get("/api/admin/uno/monsters", self._monsters)
@@ -57,6 +51,7 @@ class SiteApiServer:
         app.router.add_get("/api/admin/uno/monsters/assets/{filename}", self._monster_asset)
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
+        app.router.add_get("/auth/lastfm/callback", self._lastfm_callback)
         app.router.add_post("/internal/minecraft/link/request", self._minecraft_link_request)
         app.router.add_get("/internal/minecraft/account/{platform}/{external_id}", self._minecraft_account_lookup)
         app.router.add_get("/internal/minecraft/account/java/{external_id}", self._minecraft_java_lookup)
@@ -72,12 +67,40 @@ class SiteApiServer:
             await self._runner.cleanup()
             self._runner = None
             self._site = None
+        if self._lastfm:
+            await self._lastfm.close()
+
+    async def _lastfm_callback(self, request: web.Request) -> web.Response:
+        if not self._lastfm or not self._lastfm.available:
+            return web.Response(text=safe_page("Last.fm indisponível", "A integração não está configurada."), content_type="text/html", status=503)
+        state = request.query.get("state", "")
+        token = request.query.get("token", "")
+        if len(state) > 256 or len(token) > 512:
+            return web.Response(text=safe_page("Falha na vinculação", "Os parâmetros recebidos são inválidos."), content_type="text/html", status=400)
+        if not state or not token:
+            return web.Response(text=safe_page("Falha na vinculação", "O Last.fm não forneceu os dados necessários."), content_type="text/html", status=400)
+        user_id = self._lastfm.repository.consume_state(state)
+        if user_id is None:
+            return web.Response(text=safe_page("Falha na vinculação", "O link expirou ou já foi utilizado."), content_type="text/html", status=400)
+        try:
+            username, session_key = await self._lastfm.exchange_token(token)
+            self._lastfm.repository.save_account(user_id, username, session_key)
+        except LastFmError:
+            return web.Response(text=safe_page("Falha na vinculação", "Não foi possível concluir a autorização. Tente gerar um novo link."), content_type="text/html", status=502)
+        return web.Response(text=safe_page("Last.fm conectado", "Sua conta foi vinculada com sucesso. Você pode fechar esta janela."), content_type="text/html")
 
     async def _site_info(self, request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "service": "ayla-bot", "dailyRoute": "/api/daily-ayla"})
 
     async def _monsters(self, request: web.Request) -> web.Response:
-        return web.json_response({"monsters": self._load_monsters()})
+        """Return the canonical UNO Caos monster catalog as JSON.
+
+        The website must never receive the SPA fallback for this endpoint.  The
+        catalog is derived from the same character table used by the game, so
+        the panel and the bot cannot silently drift apart.
+        """
+        monsters = self._load_monsters()
+        return web.json_response({"monsters": monsters})
 
     def _monster_catalog_path(self) -> Path:
         return Path(self._settings.uno_monsters_path)
@@ -91,11 +114,18 @@ class SiteApiServer:
         except (OSError, json.JSONDecodeError):
             pass
         monsters = [
-            {"id": monster_id, "name": name, "image": f"/api/uno/monsters/assets/{monster_id}.png",
-             "exists": True, "appearanceChance": 100, "behavior": "mixed", "trigger": "on_appear",
-             "actions": [{"type": "chaos_effect", "target": "random_player", "params": {"effects": effects}}],
-             "metadata": {"effects": effects}}
-            for monster_id, (name, effects) in DEFAULT_CHAOS_MONSTERS.items()
+            {
+                "id": monster_id,
+                "name": values["name"],
+                "image": f"/api/uno/monsters/assets/{monster_id}.png",
+                "exists": True,
+                "appearanceChance": 100,
+                "behavior": "mixed",
+                "trigger": "on_appear",
+                "actions": [{"type": "chaos_effect", "target": "random_player", "params": {"effects": values["effects"]}}],
+                "metadata": {"effects": values["effects"]},
+            }
+            for monster_id, values in CHAOS_CHARACTERS.items()
         ]
         self._save_monsters(monsters)
         return monsters
@@ -110,7 +140,7 @@ class SiteApiServer:
     async def _create_monster(self, request: web.Request) -> web.Response:
         try:
             monster = _validate_monster(await request.json())
-        except (ValueError, TypeError, json.JSONDecodeError) as error:
+        except (json.JSONDecodeError, ValueError, TypeError, web.HTTPException) as error:
             return web.json_response({"ok": False, "message": str(error)}, status=400)
         monsters = self._load_monsters()
         if any(item.get("id") == monster["id"] for item in monsters):
@@ -123,7 +153,7 @@ class SiteApiServer:
         monster_id = request.match_info["monster_id"]
         try:
             monster = _validate_monster(await request.json(), expected_id=monster_id)
-        except (ValueError, TypeError, json.JSONDecodeError) as error:
+        except (json.JSONDecodeError, ValueError, TypeError, web.HTTPException) as error:
             return web.json_response({"ok": False, "message": str(error)}, status=400)
         monsters = self._load_monsters()
         for index, current in enumerate(monsters):
@@ -152,7 +182,8 @@ class SiteApiServer:
             field = await reader.next()
             if field is None or field.name != "file":
                 raise ValueError("Envie o arquivo no campo 'file'.")
-            extension = Path(field.filename or "").suffix.lower()
+            filename = Path(field.filename or "").name
+            extension = Path(filename).suffix.lower()
             if extension not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".mov"}:
                 raise ValueError("Formato de mídia não permitido.")
             data = await field.read(decode=False)
@@ -183,15 +214,22 @@ class SiteApiServer:
         return web.FileResponse(path, headers={"Content-Type": mimetypes.guess_type(filename)[0] or "application/octet-stream"})
 
     async def _monsters_schema(self, request: web.Request) -> web.Response:
-        return web.json_response({
-            "actionTypes": ["chaos_effect", "draw", "skip", "set_color", "transform", "custom"],
-            "targets": ["current_player", "random_player", "all_players", "player_with_most_cards"],
-            "behaviors": ["mixed", "aggressive", "supportive", "chaotic"],
-            "triggers": ["on_appear", "on_turn", "on_draw", "on_play"],
-            "actionFields": {"chaos_effect": ["target", "params"], "draw": ["target", "amount"],
-                              "skip": ["target"], "set_color": ["target", "color"],
-                              "transform": ["target", "amount"], "custom": ["target", "params"]},
-        })
+        return web.json_response(
+            {
+                "actionTypes": ["chaos_effect", "draw", "skip", "set_color", "transform", "custom"],
+                "targets": ["current_player", "random_player", "all_players", "player_with_most_cards"],
+                "behaviors": ["mixed", "aggressive", "supportive", "chaotic"],
+                "triggers": ["on_appear", "on_turn", "on_draw", "on_play"],
+                "actionFields": {
+                    "chaos_effect": ["target", "params"],
+                    "draw": ["target", "amount"],
+                    "skip": ["target"],
+                    "set_color": ["target", "color"],
+                    "transform": ["target", "amount"],
+                    "custom": ["target", "params"],
+                },
+            }
+        )
 
     async def _health(self, request: web.Request) -> web.Response:
         if not self._readiness_check():
@@ -215,7 +253,12 @@ class SiteApiServer:
         except (TypeError, ValueError):
             return web.json_response({"ok": False, "message": "discordUserId invalido."}, status=400)
 
-        claim = self._economy.claim_daily(user_id)
+        bypass_cooldown = (
+            payload.get("bypassCooldown") is True
+            and payload.get("source") == "site"
+            and bool(self._settings.site_api_key)
+        )
+        claim = self._economy.claim_daily(user_id, bypass_cooldown=bypass_cooldown)
         profile = claim.profile
         remaining = claim.remaining_seconds
         if remaining:
@@ -226,6 +269,9 @@ class SiteApiServer:
                     "balance": profile.balance,
                     "dailyStreak": profile.daily_streak,
                     "remainingSeconds": remaining,
+                    # Preview do valor do daily; o bloqueio nao altera o saldo.
+                    "amount": claim.amount or DAILY_AMOUNT,
+                    "bonus": claim.bonus,
                 },
                 status=200,
             )
@@ -311,7 +357,14 @@ def _validate_monster(payload: object, *, expected_id: str | None = None) -> dic
     actions = payload.get("actions", [])
     if not isinstance(actions, list) or not all(isinstance(action, dict) for action in actions):
         raise ValueError("actions deve ser uma lista de objetos.")
-    return {"id": monster_id, "name": name, "image": str(payload.get("image") or f"/api/uno/monsters/assets/{monster_id}.png"),
-            "exists": payload.get("exists") is not False, "appearanceChance": int(chance),
-            "behavior": str(payload.get("behavior") or "mixed"), "trigger": str(payload.get("trigger") or "on_appear"),
-            "actions": actions, "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}}
+    return {
+        "id": monster_id,
+        "name": name,
+        "image": str(payload.get("image") or f"/api/uno/monsters/assets/{monster_id}.png"),
+        "exists": payload.get("exists") is not False,
+        "appearanceChance": int(chance),
+        "behavior": str(payload.get("behavior") or "mixed"),
+        "trigger": str(payload.get("trigger") or "on_appear"),
+        "actions": actions,
+        "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+    }

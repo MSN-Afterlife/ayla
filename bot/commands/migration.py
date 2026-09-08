@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import uuid
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -202,6 +203,7 @@ async def _inspect(target, client: MigrationEngineClient, audit: MigrationAuditS
 
 
 async def _plan(target, client: MigrationEngineClient, audit: MigrationAuditStore, request: MigrationPlanRequest) -> None:
+    await _defer(target)
     user_id = _user_id(target)
     _log_event("migration_plan_request", operator_id=user_id, request=request.payload())
     try:
@@ -210,6 +212,11 @@ async def _plan(target, client: MigrationEngineClient, audit: MigrationAuditStor
         _log_engine_error("migration_plan_failure", error)
         audit.record("MIGRATION_PLAN", discord_user_id=user_id, result="failed", error=str(error))
         await _reply(target, _error_message(error))
+        return
+    except Exception as unexpected:
+        logger.exception("Unexpected error generating migration plan")
+        audit.record("MIGRATION_PLAN", discord_user_id=user_id, result="failed", error=str(unexpected))
+        await _reply(target, "Ocorreu um erro interno ao gerar o plano de migração. Tente novamente.")
         return
     effective_sources = result.sources or request.sources
     if effective_sources and not result.sources:
@@ -592,11 +599,11 @@ async def _resolve_plan_request(target, client: MigrationEngineClient, audit: Mi
     return None
 
 
-def _multi_source_request(sources: tuple[MigrationSource, ...], discord_user_id: str, policy: dict[str, str], reason: str | None) -> MigrationPlanRequest:
+def _multi_source_request(sources: tuple[MigrationSource, ...], discord_user_id: str, policy: dict[str, object], reason: str | None) -> MigrationPlanRequest:
     return MigrationPlanRequest(
         sources=sources,
         target={"discord_user_id": str(discord_user_id)},
-        dataset_policy=policy,
+        dataset_policy=dict(policy),
         reason=reason,
     )
 
@@ -608,6 +615,15 @@ def _java_policy(sources: tuple[MigrationSource, ...]) -> dict[str, str]:
 
 def _policy_for_platform(platform: str) -> dict[str, str]:
     return {dataset: platform for dataset in ("playerdata", "advancements", "stats")}
+
+
+def _replace_target_policy(source: MigrationSource) -> dict[str, object]:
+    return {
+        "strategy": "REPLACE_TARGET",
+        "source": {"platform": source.platform, "external_id": source.external_id},
+        "confirmed_replace_target": True,
+        "global_preserve": ["simplelogin"],
+    }
 
 
 async def _resolve_target(
@@ -677,7 +693,7 @@ def _is_interaction_like(target) -> bool:
 
 
 async def _defer(interaction) -> None:
-    if _is_interaction_like(interaction) and not interaction.response.is_done():
+    if _is_interaction_like(interaction) and hasattr(interaction.response, "defer") and not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
 
 
@@ -706,12 +722,17 @@ def _format_plan(plan: MigrationPlan) -> str:
         f"Presence: `{plan.presence.value}`",
         f"Gateway Lock: `{plan.lock_state.value}`",
         f"Rollback: `{'disponivel' if plan.rollback_available else 'indisponivel'}`",
-        f"Operacoes: {_csv(tuple(f'{op.dataset}:{op.action}' for op in plan.operations))}",
+        f"Modo: `{plan.execution_mode or 'desconhecido'}`",
+        f"Operacoes: {_csv(tuple(f'{op.dataset}:{op.action}' if op.dataset else op.action for op in plan.operations))}",
         f"Datasets: {_csv(plan.affected_datasets)}",
         f"Conflitos: {_csv(plan.conflicts)}",
         f"Warnings: {_csv(plan.warnings)}",
         f"Blockers: {_csv(plan.blockers)}",
     ]
+    if plan.execution_mode == "HOT":
+        lines.append("⚡ Pode ser migrado sem reiniciar o servidor.")
+    elif plan.execution_mode == "QUIESCENT":
+        lines.append("🛠 Esta migração exige janela de manutenção.")
     if plan.sources:
         lines.insert(3, "Sources: " + ", ".join(f"{source.platform}:{source.username or source.external_id}" for source in plan.sources))
     if plan.target_discord_user_id:
@@ -761,12 +782,17 @@ def _format_source_selection(player_name: str, sources: tuple[MigrationSource, .
     lines = [f"Contas Minecraft encontradas para `{player_name}`:", f"Discord alvo: `{target_discord_id}`", ""]
     for source in sources:
         icon = "☕" if source.platform == "java" else "📱" if source.platform == "bedrock" else "🔹"
-        lines.append(f"{icon} {source.platform.title()} — {source.username or source.external_id}")
+        tag = f" ({source.source_type})" if getattr(source, "source_type", None) else ""
+        name = source.username or source.external_id
+        lines.append(f"{icon} {source.platform.title()} — {name}{tag}\n`{source.external_id}`")
     lines.append("\nEscolha explicitamente as sources que serão migradas.")
     return "\n".join(lines)
 
 
 def _plan_action_view(client, audit, plan: MigrationPlan, operator_id: str) -> discord.ui.View | None:
+    if (plan.status or "").upper() != "READY" or plan.blockers or plan.conflicts:
+        logger.warning("migration_execute_button_suppressed migration_id=%s reason=blocked_or_conflicted_plan", plan.migration_id)
+        return None
     if len(plan.sources or plan.source_identities) >= 2 and not _safe_multi_source_plan(plan):
         logger.warning("migration_execute_button_suppressed migration_id=%s reason=unsafe_multi_source_plan", plan.migration_id)
         return None
@@ -777,6 +803,13 @@ def _safe_multi_source_plan(plan: MigrationPlan) -> bool:
     actions = {operation.action.upper() for operation in plan.operations}
     required = {"CREATE_CANONICAL_IDENTITY", "ATTACH_JAVA_IDENTITY", "ATTACH_BEDROCK_IDENTITY", "MOVE_FILE", "ARCHIVE_FILE"}
     policy = plan.dataset_policy or {}
+    if policy.get("strategy") == "REPLACE_TARGET":
+        return (
+            (plan.status or "").upper() == "READY"
+            and not plan.blockers
+            and not plan.conflicts
+            and plan.rollback_available
+        )
     return (
         (plan.status or "").upper() == "READY"
         and not plan.blockers
@@ -899,6 +932,33 @@ def _log_engine_error(event: str, error: MigrationEngineError, **fields) -> None
     _log_event(event, **fields, error_code=getattr(error.code, "value", str(error.code)), http_status=error.status, message=str(error))
 
 
+class _DynamicSourceButton(discord.ui.Button):
+    def __init__(self, source: MigrationSource, parent_view: "_SourceSelectionView", label: str):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+        self.source = source
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view._select_source(interaction, self.source)
+
+
+class _DynamicCompareButton(discord.ui.Button):
+    def __init__(self, parent_view: "_SourceSelectionView"):
+        super().__init__(label="📊 Comparar progresso", style=discord.ButtonStyle.secondary, row=1)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await _show_comparison_preview(
+            interaction,
+            self.parent_view.client,
+            self.parent_view.audit,
+            self.parent_view.sources,
+            self.parent_view.target_discord_id,
+            self.parent_view.player_name,
+            self.parent_view.reason,
+        )
+
+
 class _SourceSelectionView(discord.ui.View):
     def __init__(self, client, audit, reason, player_name, sources, target_discord_id):
         super().__init__(timeout=120)
@@ -909,30 +969,49 @@ class _SourceSelectionView(discord.ui.View):
         self.sources = tuple(sources)
         self.target_discord_id = str(target_discord_id)
 
-    async def _choose(self, interaction, selected):
-        if not selected:
-            await _reply(interaction, "Nenhuma source foi selecionada.")
-            return
+        platform_counts = Counter(s.platform for s in self.sources)
+        if any(count > 1 for count in platform_counts.values()):
+            self.clear_items()
+            for source in self.sources:
+                tag = f" ({source.source_type})" if getattr(source, "source_type", None) else ""
+                name = source.username or source.external_id[:8]
+                btn_label = f"Usar {source.platform.title()} — {name}{tag}"
+                if len(btn_label) > 80:
+                    btn_label = btn_label[:77] + "..."
+                self.add_item(_DynamicSourceButton(source, self, btn_label))
+            self.add_item(_DynamicCompareButton(self))
+
+    async def _select_source(self, interaction: discord.Interaction, selected: MigrationSource) -> None:
         for child in self.children:
             child.disabled = True
-        _log_event("migration_source_selected", operator_id=str(interaction.user.id), player_name=self.player_name, platforms=tuple(source.platform for source in selected), target_discord_user_id=self.target_discord_id)
-        request = _multi_source_request(tuple(selected), self.target_discord_id, _java_policy(tuple(selected)), None if not self.reason else self.reason)
-        await _plan(interaction, self.client, self.audit, request)
-
-    @discord.ui.button(label="Migrar Java + Bedrock", style=discord.ButtonStyle.primary)
-    async def both_button(self, interaction, button):
-        selected = tuple(source for source in self.sources if source.platform in {"java", "bedrock"})
-        await self._choose(interaction, selected if len(selected) >= 2 else ())
+        view = _ReplaceTargetConfirmationView(
+            self.client,
+            self.audit,
+            selected,
+            self.target_discord_id,
+            self.player_name,
+            self.reason,
+            str(interaction.user.id),
+            all_sources=self.sources,
+        )
+        _log_event("migration_source_selected", operator_id=str(interaction.user.id), player_name=self.player_name, platforms=(selected.platform,), target_discord_user_id=self.target_discord_id)
+        await _edit_or_reply(interaction, view.render_content(), view)
 
     @discord.ui.button(label="Usar progresso Java", style=discord.ButtonStyle.secondary)
     async def java_button(self, interaction, button):
-        selected = tuple(source for source in self.sources if source.platform == "java")
-        await self._choose(interaction, selected)
+        selected = next((source for source in self.sources if source.platform == "java"), None)
+        if not selected:
+            await _reply(interaction, "Source Java não está disponível.")
+            return
+        await self._select_source(interaction, selected)
 
     @discord.ui.button(label="Usar progresso Bedrock", style=discord.ButtonStyle.secondary)
     async def bedrock_button(self, interaction, button):
-        selected = tuple(source for source in self.sources if source.platform == "bedrock")
-        await self._choose(interaction, selected)
+        selected = next((source for source in self.sources if source.platform == "bedrock"), None)
+        if not selected:
+            await _reply(interaction, "Source Bedrock não está disponível.")
+            return
+        await self._select_source(interaction, selected)
 
     @discord.ui.button(label="📊 Comparar progresso", style=discord.ButtonStyle.secondary, row=1)
     async def compare_button(self, interaction, button):
@@ -959,10 +1038,23 @@ class _DatasetPolicyView(discord.ui.View):
     async def _choose(self, interaction, platform):
         for child in self.children:
             child.disabled = True
-        policy = _policy_for_platform(platform)
-        request = _multi_source_request(self.sources, self.target.get("discord_user_id", ""), policy, self.reason)
+        selected = next((source for source in self.sources if source.platform == platform), None)
+        if not selected:
+            await _reply(interaction, f"Source {platform} não está disponível.")
+            return
+        view = _ReplaceTargetConfirmationView(
+            self.client,
+            self.audit,
+            selected,
+            self.target.get("discord_user_id", ""),
+            "jogador",
+            self.reason,
+            str(interaction.user.id),
+            all_sources=self.sources,
+        )
+        policy = _replace_target_policy(selected)
         _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
-        await _plan(interaction, self.client, self.audit, request)
+        await _edit_or_reply(interaction, view.render_content(), view)
 
     @discord.ui.button(label="Usar progresso Java", style=discord.ButtonStyle.primary)
     async def java_button(self, interaction, button):
@@ -983,6 +1075,73 @@ class _DatasetPolicyView(discord.ui.View):
             "jogador",
             self.reason,
         )
+
+
+class _ReplaceTargetConfirmationView(discord.ui.View):
+    def __init__(
+        self,
+        client: MigrationEngineClient,
+        audit: MigrationAuditStore,
+        source: MigrationSource,
+        target_discord_id: str,
+        player_name: str,
+        reason: str | None,
+        operator_id: str,
+        all_sources: tuple[MigrationSource, ...] | None = None,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.client = client
+        self.audit = audit
+        self.source = source
+        self.target_discord_id = str(target_discord_id)
+        self.player_name = str(player_name)
+        self.reason = reason
+        self.operator_id = str(operator_id)
+        self.all_sources = all_sources or (source,)
+        self.expires_at = datetime.now(UTC) + timedelta(seconds=180)
+
+    def render_content(self) -> str:
+        label = f"{self.source.platform}:{self.source.username or self.source.external_id}"
+        return "\n".join([
+            f"Fonte selecionada: `{label}`",
+            "",
+            "⚠️ O progresso atual da conta unificada será substituído.",
+            "",
+            "Um snapshot será criado antes da migração e poderá ser usado para rollback.",
+        ])
+
+    @discord.ui.button(label="Substituir e migrar", style=discord.ButtonStyle.danger)
+    async def replace_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._allowed(interaction, admin_required=True):
+            return
+        for child in self.children:
+            child.disabled = True
+        request = _multi_source_request(self.all_sources, self.target_discord_id, _replace_target_policy(self.source), self.reason)
+        _log_event("migration_replace_target_confirmed", operator_id=str(interaction.user.id), platform=self.source.platform, source=self.source.external_id, target_discord_user_id=self.target_discord_id)
+        await _plan(interaction, self.client, self.audit, request)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._allowed(interaction):
+            return
+        for child in self.children:
+            child.disabled = True
+        await _reply(interaction, "Migração cancelada. Nenhum dado foi alterado.")
+
+    async def _allowed(self, interaction: discord.Interaction, *, admin_required: bool = False) -> bool:
+        if str(interaction.user.id) != self.operator_id:
+            await _reply(interaction, "Este componente pertence a outro operador.")
+            return False
+        if datetime.now(UTC) >= self.expires_at:
+            await _reply(interaction, "Este componente expirou. Gere a acao novamente.")
+            return False
+        if admin_required and not _is_admin(interaction.user):
+            await _reply(interaction, "Voce nao tem permissao administrativa para esta acao.")
+            return False
+        if not admin_required and not _is_staff(interaction.user):
+            await _reply(interaction, "Voce nao tem permissao para esta acao.")
+            return False
+        return True
 
 
 async def _edit_or_reply(interaction, content: str, view: discord.ui.View) -> None:
@@ -1209,19 +1368,43 @@ class _ComparisonPaginationView(discord.ui.View):
     async def java_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
-        policy = _policy_for_platform("java")
-        request = _multi_source_request(self.sources, self.target_discord_id, policy, self.reason)
-        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
-        await _plan(interaction, self.client, self.audit, request)
+        selected = next((source for source in self.sources if source.platform == "java"), None)
+        if not selected:
+            await _reply(interaction, "Source Java não está disponível.")
+            return
+        view = _ReplaceTargetConfirmationView(
+            self.client,
+            self.audit,
+            selected,
+            self.target_discord_id,
+            self.player_name,
+            self.reason,
+            str(interaction.user.id),
+            all_sources=self.sources,
+        )
+        _log_event("migration_source_selected", operator_id=str(interaction.user.id), player_name=self.player_name, platforms=("java",), target_discord_user_id=self.target_discord_id)
+        await _edit_or_reply(interaction, view.render_content(), view)
 
     @discord.ui.button(label="📱 Usar tudo Bedrock", style=discord.ButtonStyle.success, row=1)
     async def bedrock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
-        policy = _policy_for_platform("bedrock")
-        request = _multi_source_request(self.sources, self.target_discord_id, policy, self.reason)
-        _log_event("migration_dataset_policy_selected", operator_id=str(interaction.user.id), platforms=tuple(source.platform for source in self.sources), policy=policy)
-        await _plan(interaction, self.client, self.audit, request)
+        selected = next((source for source in self.sources if source.platform == "bedrock"), None)
+        if not selected:
+            await _reply(interaction, "Source Bedrock não está disponível.")
+            return
+        view = _ReplaceTargetConfirmationView(
+            self.client,
+            self.audit,
+            selected,
+            self.target_discord_id,
+            self.player_name,
+            self.reason,
+            str(interaction.user.id),
+            all_sources=self.sources,
+        )
+        _log_event("migration_source_selected", operator_id=str(interaction.user.id), player_name=self.player_name, platforms=("bedrock",), target_discord_user_id=self.target_discord_id)
+        await _edit_or_reply(interaction, view.render_content(), view)
 
     @discord.ui.button(label="⚙️ Escolher por categoria", style=discord.ButtonStyle.secondary, row=1)
     async def category_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1448,11 +1631,15 @@ class _PlanActionView(_OperatorBoundView):
         self.client = client
         self.audit = audit
         self.confirmations = confirmations
+        self.plan = plan
         self.migration_id = plan.migration_id
 
     @discord.ui.button(label="Executar migracao", style=discord.ButtonStyle.danger)
     async def execute_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._allowed(interaction, admin_required=True):
+            return
+        if (self.plan.status or "").upper() != "READY" or self.plan.blockers or self.plan.conflicts:
+            await _reply(interaction, "Este plano possui impedimentos e não pode ser executado.")
             return
         confirmations = self.confirmations or getattr(interaction.client, "_migration_confirmations", None)
         if confirmations is None:

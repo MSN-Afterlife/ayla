@@ -394,6 +394,75 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MigrationEngineNotConfigured):
             await unconfigured.preview(MigrationPreviewRequest())
 
+    async def test_plan_structural_operations_without_dataset_success(self):
+        payload = {
+            "migration_id": "mig-test-123",
+            "canonical_target": "target-uuid",
+            "source_identities": ["src-java", "src-bedrock"],
+            "operations": [
+                {
+                    "action": "CREATE_CANONICAL_IDENTITY",
+                    "detail": "Create canonical identity",
+                    "canonical_uuid": "target-uuid",
+                },
+                {
+                    "action": "ATTACH_JAVA_IDENTITY",
+                    "platform": "java",
+                    "external_id": "java-uuid",
+                    "detail": "Attach java account",
+                },
+                {
+                    "action": "ATTACH_BEDROCK_IDENTITY",
+                    "platform": "bedrock",
+                    "external_id": "12345678",
+                    "detail": "Attach bedrock account",
+                },
+                {
+                    "dataset": "playerdata",
+                    "action": "MOVE_FILE",
+                    "source": "world/playerdata/old.dat",
+                    "target": "world/playerdata/new.dat",
+                },
+            ],
+            "affected_datasets": ["playerdata"],
+            "presence": "OFFLINE_CONFIRMED",
+            "lock_state": "UNLOCKED",
+            "rollback_available": True,
+        }
+        FakeSession.responses = [(200, payload)]
+        request = MigrationPlanRequest(canonical_uuid="target-uuid")
+        plan = await self.client.plan(request)
+        self.assertEqual(len(plan.operations), 4)
+        self.assertIsNone(plan.operations[0].dataset)
+        self.assertEqual(plan.operations[0].action, "CREATE_CANONICAL_IDENTITY")
+        self.assertIsNone(plan.operations[1].dataset)
+        self.assertEqual(plan.operations[1].action, "ATTACH_JAVA_IDENTITY")
+        self.assertIsNone(plan.operations[2].dataset)
+        self.assertEqual(plan.operations[2].action, "ATTACH_BEDROCK_IDENTITY")
+        self.assertEqual(plan.operations[3].dataset, "playerdata")
+        self.assertEqual(plan.operations[3].action, "MOVE_FILE")
+
+    async def test_plan_dataset_operation_without_dataset_raises_invalid_response(self):
+        payload = {
+            "migration_id": "mig-test-err",
+            "canonical_target": "target-uuid",
+            "source_identities": ["src-java"],
+            "operations": [
+                {
+                    "action": "MOVE_FILE",
+                    "source": "world/playerdata/old.dat",
+                    "target": "world/playerdata/new.dat",
+                },
+            ],
+            "presence": "OFFLINE_CONFIRMED",
+            "lock_state": "UNLOCKED",
+        }
+        FakeSession.responses = [(200, payload)]
+        request = MigrationPlanRequest(canonical_uuid="target-uuid")
+        with self.assertRaises(MigrationEngineInvalidResponse) as ctx:
+            await self.client.plan(request)
+        self.assertIn("dataset", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,3 +7,4 @@ openai
 pillow
 ddgs
 yt-dlp[default]
+wavelink==3.5.2

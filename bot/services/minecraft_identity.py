@@ -106,7 +106,7 @@ class MinecraftIdentityStore:
         migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
         with closing(self._connect()) as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
-            for version in ("001_minecraft_identity", "002_minecraft_bedrock"):
+            for version in ("001_minecraft_identity", "002_minecraft_bedrock", "003_minecraft_migration_audit"):
                 if connection.execute("SELECT 1 FROM schema_migrations WHERE version=?", (version,)).fetchone():
                     continue
                 path = migrations_dir / f"{version}.sql"

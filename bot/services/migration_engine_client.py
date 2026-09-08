@@ -108,6 +108,7 @@ class MigrationSource:
     external_id: str
     username: str | None = None
     physical_uuid: str | None = None
+    source_type: str | None = None
 
     def payload(self) -> dict[str, str]:
         result = {"platform": self.platform, "external_id": self.external_id}
@@ -140,7 +141,7 @@ class MigrationInspection:
 
 @dataclass(frozen=True)
 class PlannedOperation:
-    dataset: str
+    dataset: str | None
     action: str
     count: int | None = None
     detail: str | None = None
@@ -163,7 +164,10 @@ class MigrationPlan:
     status: str | None = None
     sources: tuple[MigrationSource, ...] = ()
     target_discord_user_id: str | None = None
-    dataset_policy: dict[str, str] | None = None
+    dataset_policy: dict[str, Any] | None = None
+    execution_mode: str | None = None
+    requires_paper_quiescence: bool = False
+    offline_required_adapters: tuple[str, ...] = ()
 
     def allows_mutation(self) -> bool:
         return self.presence is PresenceState.OFFLINE_CONFIRMED and not self.blockers and not self.lock_state.blocks_mutation
@@ -237,22 +241,25 @@ class PlayerReference:
     external_id: str | None = None
     username: str | None = None
     sources: tuple[MigrationSource, ...] = ()
+    source_type: str | None = None
 
     def label(self) -> str:
         score = f" | {self.confidence:.0%}" if self.confidence is not None else ""
         identity = self.platform or (f"{len(self.sources)} sources" if self.sources else self.canonical_uuid[:8] or "identidade")
-        return f"{self.player_name} | {identity}{score}"
+        stype = f" [{self.source_type}]" if self.source_type else ""
+        return f"{self.player_name} | {identity}{stype}{score}"
 
     def source_list(self) -> tuple[MigrationSource, ...]:
         if self.sources:
             return self.sources
+        stype = "legacy" if (self.source_type == "minecraft_legacy" or not self.canonical_uuid) else "linked"
         if self.platform and self.external_id:
-            return (MigrationSource(self.platform, self.external_id, self.username or self.player_name),)
+            return (MigrationSource(self.platform, self.external_id, self.username or self.player_name, source_type=stype),)
         result = []
         if self.java_external_id:
-            result.append(MigrationSource("java", self.java_external_id, self.player_name))
+            result.append(MigrationSource("java", self.java_external_id, self.player_name, source_type=stype))
         if self.bedrock_external_id:
-            result.append(MigrationSource("bedrock", self.bedrock_external_id, self.player_name))
+            result.append(MigrationSource("bedrock", self.bedrock_external_id, self.player_name, source_type=stype))
         return tuple(result)
 
 
@@ -280,7 +287,7 @@ class MigrationPlanRequest(MigrationInspectRequest):
     reason: str | None = None
     sources: tuple[MigrationSource, ...] = ()
     target: dict[str, str] | None = None
-    dataset_policy: dict[str, str] | None = None
+    dataset_policy: dict[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
         if self.sources or self.target or self.dataset_policy:
@@ -394,7 +401,7 @@ class MigrationPreviewResult:
 @dataclass(frozen=True)
 class MigrationEngineClient:
     base_url: str | None
-    token: str | None
+    token: str | None = field(repr=False)
     timeout_seconds: float = 10
     session_factory: Any = aiohttp.ClientSession
     extra_headers: dict[str, str] = field(default_factory=dict)
@@ -571,6 +578,9 @@ def _parse_plan(payload: object) -> MigrationPlan:
         sources=tuple(_parse_source(item) for item in _list(data.get("sources"))),
         target_discord_user_id=_target_discord_id(data.get("target")) or _optional_str(data.get("target_discord_user_id")),
         dataset_policy=_parse_policy(data.get("dataset_policy")),
+        execution_mode=_optional_str(data.get("execution_mode")),
+        requires_paper_quiescence=bool(data.get("requires_paper_quiescence")),
+        offline_required_adapters=_tuple_str(data.get("offline_required_adapters")),
     )
 
 
@@ -635,6 +645,12 @@ def _parse_player_reference(payload: object) -> PlayerReference:
     sources = tuple(_parse_source(item) for item in _list(data.get("sources")))
     platform = (_optional_str(data.get("platform")) or "").lower() or None
     external_id = _optional_str(data.get("external_id") or data.get("xuid"))
+    source_type = _optional_str(data.get("source"))
+    if not source_type:
+        if data.get("canonical_uuid"):
+            source_type = "linked"
+        elif data.get("external_id"):
+            source_type = "legacy"
     return PlayerReference(
         canonical_uuid=_optional_str(data.get("canonical_uuid")) or "",
         player_name=_optional_str(data.get("player_name") or data.get("username")) or "",
@@ -646,6 +662,7 @@ def _parse_player_reference(payload: object) -> PlayerReference:
         external_id=external_id,
         username=_optional_str(data.get("username")),
         sources=sources,
+        source_type=source_type,
     )
 
 
@@ -653,7 +670,14 @@ def _parse_source(value: object) -> MigrationSource:
     data = _require_dict(value)
     platform = _required_str(data, "platform").lower()
     external_id = _required_str(data, "external_id" if "external_id" in data else "xuid")
-    return MigrationSource(platform, external_id, _optional_str(data.get("username")), _optional_str(data.get("physical_uuid") or data.get("floodgate_uuid")))
+    source_type = _optional_str(data.get("source_type") or data.get("source"))
+    return MigrationSource(
+        platform,
+        external_id,
+        _optional_str(data.get("username")),
+        _optional_str(data.get("physical_uuid") or data.get("floodgate_uuid")),
+        source_type=source_type,
+    )
 
 
 def _target_discord_id(value: object) -> str | None:
@@ -662,10 +686,10 @@ def _target_discord_id(value: object) -> str | None:
     return _optional_str(value.get("discord_user_id"))
 
 
-def _parse_policy(value: object) -> dict[str, str] | None:
+def _parse_policy(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    return {str(key): str(item) for key, item in value.items() if str(key).strip() and str(item).strip()}
+    return {str(key): item for key, item in value.items() if str(key).strip()}
 
 
 def _parse_identity(data: dict[str, Any]) -> IdentitySummary:
@@ -690,11 +714,22 @@ def _parse_account(data: object) -> MinecraftAccountRef | None:
     )
 
 
+_STRUCTURAL_ACTIONS = {
+    "CREATE_CANONICAL_IDENTITY",
+    "ATTACH_JAVA_IDENTITY",
+    "ATTACH_BEDROCK_IDENTITY",
+}
+
+
 def _parse_operation(data: object) -> PlannedOperation:
     item = _require_dict(data)
+    action = _required_str(item, "action")
+    dataset = _optional_str(item.get("dataset"))
+    if not dataset and action not in _STRUCTURAL_ACTIONS and not action.startswith("ATTACH_"):
+        raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: dataset.")
     return PlannedOperation(
-        dataset=_required_str(item, "dataset"),
-        action=_required_str(item, "action"),
+        dataset=dataset,
+        action=action,
         count=_optional_int(item.get("count")),
         detail=_optional_str(item.get("detail")),
     )

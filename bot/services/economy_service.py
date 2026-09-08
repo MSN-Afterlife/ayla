@@ -54,16 +54,32 @@ class EconomyService:
             last_daily_at=int(row["last_daily_at"]) if row["last_daily_at"] is not None else None,
         )
 
-    def claim_daily(self, user_id: int) -> DailyClaim:
+    def claim_daily(self, user_id: int, *, bypass_cooldown: bool = False) -> DailyClaim:
         now = int(time.time())
         today = _local_date(now)
         with closing(self._connect()) as connection:
             profile = self.get_profile(user_id)
-            if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today:
-                return DailyClaim(profile, _seconds_until_next_local_midnight(now))
+            same_day = profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today
+            if same_day and not bypass_cooldown:
+                # O daily continua bloqueado, mas o site precisa conseguir exibir
+                # quanto o usuario receberia. Este e apenas um preview: nenhum
+                # dado da economia e alterado neste caminho.
+                streak = max(profile.daily_streak, 1)
+                bonus = min(streak * 100, 1000)
+                amount = DAILY_AMOUNT + bonus
+                return DailyClaim(
+                    profile,
+                    _seconds_until_next_local_midnight(now),
+                    amount,
+                    bonus,
+                )
 
             yesterday = today - timedelta(days=1)
-            streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
+            if same_day:
+                # Repeated admin tests do not inflate the streak; they only bypass the lockout.
+                streak = max(profile.daily_streak, 1)
+            else:
+                streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
             bonus = min(streak * 100, 1000)
             amount = DAILY_AMOUNT + bonus
             connection.execute(
@@ -113,41 +129,6 @@ class EconomyService:
             connection.commit()
         return self.get_profile(user_id)
 
-    def debit_once(self, user_id: int, amount: int, idempotency_key: str) -> EconomyProfile:
-        """Debita uma vez, protegendo retries com uma chave única."""
-        if amount <= 0:
-            raise ValueError("O valor precisa ser maior que zero.")
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._ensure_profile(connection, user_id)
-            if connection.execute("SELECT 1 FROM economy_transactions WHERE idempotency_key = ?", (idempotency_key,)).fetchone():
-                connection.commit()
-                return self.get_profile(user_id)
-            row = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (user_id,)).fetchone()
-            if int(row["balance"]) < amount:
-                connection.rollback()
-                raise ValueError("Saldo insuficiente.")
-            now = int(time.time())
-            connection.execute("UPDATE economy_profiles SET balance = balance - ?, updated_at = ? WHERE user_id = ?", (amount, now, user_id))
-            connection.execute("INSERT INTO economy_transactions (idempotency_key, user_id, amount, kind, created_at) VALUES (?, ?, ?, 'debit', ?)", (idempotency_key, user_id, amount, now))
-            connection.commit()
-        return self.get_profile(user_id)
-
-    def credit_once(self, user_id: int, amount: int, idempotency_key: str) -> EconomyProfile:
-        if amount < 0:
-            raise ValueError("O valor nao pode ser negativo.")
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._ensure_profile(connection, user_id)
-            if connection.execute("SELECT 1 FROM economy_transactions WHERE idempotency_key = ?", (idempotency_key,)).fetchone():
-                connection.commit()
-                return self.get_profile(user_id)
-            now = int(time.time())
-            connection.execute("UPDATE economy_profiles SET balance = balance + ?, updated_at = ? WHERE user_id = ?", (amount, now, user_id))
-            connection.execute("INSERT INTO economy_transactions (idempotency_key, user_id, amount, kind, created_at) VALUES (?, ?, ?, 'credit', ?)", (idempotency_key, user_id, amount, now))
-            connection.commit()
-        return self.get_profile(user_id)
-
     def can_afford(self, user_id: int, amount: int) -> bool:
         return self.get_profile(user_id).balance >= amount
 
@@ -193,7 +174,6 @@ class EconomyService:
                 )
                 """
             )
-            connection.execute("CREATE TABLE IF NOT EXISTS economy_transactions (idempotency_key TEXT PRIMARY KEY, user_id INTEGER NOT NULL, amount INTEGER NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL)")
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:

@@ -99,7 +99,15 @@ class TaskAIService:
             )
         except TimeoutError as error:
             raise TaskAIError(f"análise da IA excedeu {self._timeout_seconds:g}s") from error
-        allowed = {item["id"] for item in catalog or [] if item.get("id")} or self._destinations
+        allowed = set()
+        for item in catalog or []:
+            if item.get("id"):
+                allowed.add(str(item["id"]))
+            if item.get("path"):
+                allowed.add(str(item["path"]))
+            if item.get("name"):
+                allowed.add(str(item["name"]))
+        allowed = allowed or self._destinations
         return _parse_analysis(_response_content(response), allowed, source_content=cleaned_content, custom_field_schema=custom_fields)
 
     def _build_prompt(self, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None) -> str:
@@ -112,7 +120,7 @@ class TaskAIService:
             field_lines.append(f"- id={field['id']} | name={field.get('name', '')} | type={field.get('type', '')} | options={option_text}")
         field_instruction = "\nCustom Fields reais da lista (use somente estes IDs e opções; não crie nomes nem IDs):\n" + "\n".join(field_lines) + "\ncustom_field_values é obrigatório para todo campo aplicável com evidência. Formato: {\"ID_DO_CAMPO\": \"ID_DA_OPCAO\"}. Para dropdown, use EXATAMENTE o ID da opção, nunca o nome traduzido. Se não houver evidência, não inclua o campo." if field_lines else ""
         if catalog:
-            lines = [f"- id={item['id']} | {item['path']}" for item in catalog[:150] if item.get("id") and item.get("path")]
+            lines = [f"- id={item['id']} | path={item['path']} | name={item.get('name', '')}" for item in catalog[:150] if item.get("id") and item.get("path")]
             lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")
             if field_instruction:
                 lines.insert(0, field_instruction)
@@ -143,7 +151,7 @@ class TaskAIService:
 _TASK_ANALYSIS_PROMPT = """Transforme a mensagem do Discord em um chamado técnico acionável.
 Retorne exclusivamente JSON válido com title, description, category, area, environment, priority, risk, confidence, destination, possible_cause, possible_solution, acceptance_criteria, missing_information, estimated_minutes, estimate_confidence, estimate_basis, points, tags e subtasks.
 Valores internos permitidos: category=bug|improvement|security|content|infrastructure|other; area=ayla|site|api|database|discord|infrastructure|other; environment=production|staging|both|local|unknown; priority=urgent|high|normal|low; risk=critical|high|medium|low; confidence=high|medium|low.
-destination deve ser uma das chaves fornecidas no final deste prompt. Para solicitação de funcionalidade sem falha, possible_cause deve ser null ou explicar que não se aplica. possible_solution deve ser técnica, concreta e assumir-se como hipótese. acceptance_criteria deve conter resultados verificáveis. missing_information deve listar o que impede investigação.
+destination deve ser exatamente o id numérico da lista, nunca o caminho ou nome. Para solicitação de funcionalidade sem falha, possible_cause deve ser null ou explicar que não se aplica. possible_solution deve ser técnica, concreta e assumir-se como hipótese. acceptance_criteria deve conter resultados verificáveis. missing_information deve listar o que impede investigação.
 subtasks é uma lista de 0 a 5 objetos com title, description e type (investigation|implementation|validation). Para ticket acionável, gere 2 a 5 etapas distintas seguindo investigar/reproduzir, implementar/configurar e validar. Uma etapa isolada útil também deve ser preservada. Não use títulos genéricos como analisar o problema, resolver o problema ou testar a solução; mencione o componente e a ação concreta. Não invente fatos ou evidências."""
 
 

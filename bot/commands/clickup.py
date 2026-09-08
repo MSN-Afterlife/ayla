@@ -183,9 +183,27 @@ def _is_allowed(interaction: discord.Interaction, allowed_role_ids: list[int]) -
 
 def resolve_destination(settings: Settings, destination: str, catalog: list[dict[str, str]] | None = None) -> str:
     catalog = catalog or []
-    catalog_ids = {item.get("id") for item in catalog}
-    if destination in catalog_ids:
-        return destination
+    destination = str(destination or "").strip()
+    normalized_destination = _normalize_destination(destination)
+    for item in catalog:
+        item_id = str(item.get("id") or "").strip()
+        if not item_id:
+            continue
+        candidates = (item_id, str(item.get("path") or ""), str(item.get("name") or ""))
+        if normalized_destination in {_normalize_destination(candidate) for candidate in candidates if candidate}:
+            if destination != item_id:
+                logger.warning("Normalized ClickUp destination value=%r to list_id=%s", destination, item_id)
+            return item_id
+    if destination == "manual_triage":
+        manual_query = getattr(settings, "clickup_manual_triage_query", "Backlog > Triage Manual")
+        manual_query_normalized = _normalize_destination(manual_query)
+        for item in catalog:
+            item_id = str(item.get("id") or "").strip()
+            path = _normalize_destination(item.get("path"))
+            name = _normalize_destination(item.get("name"))
+            if item_id and (path == manual_query_normalized or path.endswith(" > " + manual_query_normalized) or name == manual_query_normalized):
+                logger.info("Resolved manual_triage through ClickUp catalog query=%r list_id=%s path=%s", manual_query, item_id, item.get("path"))
+                return item_id
     destinations = settings.clickup_destinations or {}
     if destination not in destinations:
         if destination == "manual_triage" and settings.clickup_list_id:
@@ -198,6 +216,12 @@ def resolve_destination(settings: Settings, destination: str, catalog: list[dict
     if not list_id.strip():
         raise ClickUpError(f"Destino {destination!r} possui list_id vazio.")
     return list_id
+
+
+def _normalize_destination(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join(text.casefold().split())
 
 
 def _destination_label(destination: str, catalog: list[dict[str, str]]) -> str:

@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 import aiohttp
 import discord
@@ -112,7 +113,7 @@ async def build_leaderboard_card(
     font_rank = _font(30, bold=True)
 
     draw.rounded_rectangle((34, 26, WIDTH - 34, 178), radius=30, fill=(255, 255, 255, 122), outline=(255, 255, 255, 170), width=2)
-    icon_url = guild.icon.replace(format="png", size=160).url if guild and guild.icon else None
+    icon_url = guild.icon.replace(format="png", size=128).url if guild and guild.icon else None
     icon = await _avatar_image(icon_url, 94, fallback=scope)
     image.paste(icon, (58, 54), icon)
 
@@ -216,7 +217,7 @@ async def _draw_guild_badge(
     x = 52
     y = 28
 
-    icon_url = guild.icon.replace(format="png", size=96).url if guild and guild.icon else None
+    icon_url = guild.icon.replace(format="png", size=128).url if guild and guild.icon else None
     icon = await _avatar_image(icon_url, 42, fallback=text)
     image.paste(icon, (x, y), icon)
     draw.text((x + 54, y + 1), _fit_text(draw, text, font, 360), fill=(250, 252, 255), font=font)
@@ -228,6 +229,11 @@ async def _remote_image(url: str | None) -> Image.Image | None:
         return None
 
     try:
+        local_path = Path(url)
+        if local_path.is_file():
+            with Image.open(local_path) as local_image:
+                return ImageOps.exif_transpose(local_image).convert("RGB").copy()
+
         headers = {
             "User-Agent": "Mozilla/5.0 AylaBot/1.0",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",

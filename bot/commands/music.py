@@ -1,4 +1,7 @@
+import logging
+
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
@@ -13,6 +16,15 @@ from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
 
 
+logger = logging.getLogger(__name__)
+REPEAT_CHOICES = [
+    app_commands.Choice(name="Desligado", value="off"),
+    app_commands.Choice(name="Uma musica", value="one"),
+    app_commands.Choice(name="Fila inteira", value="all"),
+]
+FILTER_CHOICES = [app_commands.Choice(name=name, value=name) for name in FILTERS]
+
+
 async def _send(ctx: commands.Context, message: str) -> None:
     try:
         if ctx.interaction and not ctx.interaction.response.is_done():
@@ -25,6 +37,9 @@ async def _send(ctx: commands.Context, message: str) -> None:
 
 def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
     music = MusicService(bot, settings)
+    bot._music_service = music
+    cookies_valid, cookies_message = music.validate_youtube_cookies()
+    print(f"[MUSIC] Cookies do YouTube: {'OK' if cookies_valid else 'AVISO'} - {cookies_message}")
     lyrics_service = LyricsService()
 
     @bot.hybrid_command(name="play", aliases=["p"], description="Toca uma musica, busca ou playlist.")
@@ -35,20 +50,32 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         if not ctx.author.voice or not ctx.author.voice.channel:
             await _send(ctx, "Entre em um canal de voz primeiro.")
             return
+        music.player_for(ctx.guild.id).cancel_autoplay()
 
         if ctx.interaction:
             await ctx.defer(ephemeral=True)
         else:
             await ctx.defer()
         try:
-            voice_client = await _connect_or_move(ctx)
-            tracks = await music.resolve_tracks(query, ctx.author.display_name)
+            tracks = await music.resolve_tracks(query, ctx.author.display_name, ctx.author.id)
             player = music.player_for(ctx.guild.id)
+            async with music.voice_lock_for(ctx.guild.id):
+                async with player._advance_lock:
+                    # Nunca troque o backend da faixa atual apenas porque uma nova
+                    # entrada foi enfileirada. A troca ocorre em _play_next_impl,
+                    # quando a faixa corrente termina ou e pulada.
+                    use_lavalink = player.current.provider == "lavalink" if player.current else tracks[0].provider == "lavalink"
+                    voice_client = await _connect_or_move(ctx, use_lavalink=use_lavalink)
             player.set_now_playing_view_factory(lambda player: MusicNowPlayingView(music, lyrics_service, player))
             position = player.add_many(tracks, ctx.channel)
             await player.start_if_idle(voice_client)
         except MusicError as error:
-            await ctx.send(str(error))
+            logger.warning("Falha ao executar play para %s: %s", ctx.author, error)
+            await _send(ctx, "Deu erro ao tentar tocar essa musica. Tente outro link ou outra busca.")
+            return
+        except Exception:
+            logger.exception("Erro inesperado ao executar play para %s", ctx.author)
+            await _send(ctx, "Deu erro ao tentar tocar essa musica. Tente novamente mais tarde.")
             return
 
         if len(tracks) == 1:
@@ -61,24 +88,59 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         limited = " " if len(tracks) < MAX_PLAYLIST_TRACKS else f" Limitei em {MAX_PLAYLIST_TRACKS} faixas."
         await ctx.send(f"Adicionei **{len(tracks)}** musicas da playlist a fila a partir da posicao `#{position}`.{limited}")
 
+    @bot.hybrid_command(
+        name="musiccheck",
+        aliases=["ytcheck", "checkcookies"],
+        description="Verifica os cookies do YouTube (administradores).",
+    )
+    async def musiccheck(ctx: commands.Context, *, url: str | None = None) -> None:
+        if not ctx.guild:
+            await _send(ctx, "Esse comando so funciona em servidores.")
+            return
+        permissions = getattr(ctx.author, "guild_permissions", None)
+        if not permissions or not permissions.manage_guild:
+            await _send(ctx, "Apenas administradores podem usar esse comando.")
+            return
+
+        if ctx.interaction and not ctx.interaction.response.is_done():
+            await ctx.defer(ephemeral=True)
+
+        if not url:
+            valid, message = music.validate_youtube_cookies()
+            prefix = "OK" if valid else "ERRO"
+            await ctx.send(f"`{prefix}` {message}", ephemeral=bool(ctx.interaction))
+            return
+
+        valid, message = await music.test_youtube_cookies(url)
+        prefix = "OK" if valid else "ERRO"
+        await ctx.send(f"`{prefix}` {message}", ephemeral=bool(ctx.interaction))
+
     @bot.hybrid_command(name="pause", aliases=["pa"], description="Pausa a musica atual.")
     async def pause(ctx: commands.Context) -> None:
         voice_client = ctx.voice_client
-        if not voice_client or not voice_client.is_playing():
+        if not voice_client or not _voice_playing(voice_client):
             await _send(ctx, "Nao tem nenhuma musica tocando agora.")
             return
 
-        voice_client.pause()
+        music.player_for(ctx.guild.id).pause() if ctx.guild else None
+        if hasattr(voice_client, "pause") and voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(True)
+        else:
+            voice_client.pause()
         await _send(ctx, "Musica pausada.")
 
     @bot.hybrid_command(name="resume", aliases=["r", "continuar"], description="Continua a musica pausada.")
     async def resume(ctx: commands.Context) -> None:
         voice_client = ctx.voice_client
-        if not voice_client or not voice_client.is_paused():
+        if not voice_client or not _voice_paused(voice_client):
             await _send(ctx, "Nao tem nenhuma musica pausada.")
             return
 
-        voice_client.resume()
+        music.player_for(ctx.guild.id).resume() if ctx.guild else None
+        if hasattr(voice_client, "pause") and voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(False)
+        else:
+            voice_client.resume()
         await _send(ctx, "Musica retomada.")
 
     @bot.hybrid_command(name="skip", aliases=["sk"], description="Pula a musica atual.")
@@ -122,6 +184,65 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
 
         await _send(ctx, "\n".join(lines) if lines else "A fila esta vazia.")
 
+    @bot.hybrid_command(
+        name="autoplay",
+        aliases=["autoqueue", "playqueue", "filaauto"],
+        description="Controla o autoplay ou monta uma fila com seu Last.fm.",
+    )
+    async def autoplay(ctx: commands.Context, modo: str = "status") -> None:
+        if not ctx.guild:
+            await _send(ctx, "Esse comando so funciona em servidores.")
+            return
+        player = music.player_for(ctx.guild.id)
+        normalized = modo.lower()
+        if normalized in {"on", "off", "status"}:
+            if normalized == "status":
+                await _send(ctx, f"Autoplay: `{'ativado' if player.autoplay_enabled else 'desativado'}`.")
+            else:
+                enabled = player.set_autoplay(normalized == "on")
+                await _send(ctx, f"Autoplay {'ativado' if enabled else 'desativado'}.")
+            return
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            await _send(ctx, "Entre em um canal de voz primeiro.")
+            return
+        try:
+            quantidade = max(1, min(10, int(normalized)))
+        except ValueError:
+            await _send(ctx, "Use `on`, `off`, `status` ou uma quantidade entre 1 e 10.")
+            return
+        recommendations = await music.recommendations_for_user(ctx.author.id, quantidade)
+        if not recommendations:
+            await _send(ctx, "Nao encontrei recomendacoes. Vincule/ative seu Last.fm primeiro.")
+            return
+
+        tracks = []
+        for item in recommendations:
+            artist_data = item.get("artist")
+            artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+            title = item.get("name")
+            if not title:
+                continue
+            query = f"{artist} {title}" if artist else str(title)
+            try:
+                resolved = await music.resolve_tracks(query, ctx.author.display_name, ctx.author.id)
+            except MusicError:
+                continue
+            if resolved:
+                tracks.append(resolved[0])
+
+        if not tracks:
+            await _send(ctx, "O Last.fm retornou recomendacoes, mas nao consegui resolver nenhuma para reproducao.")
+            return
+
+        async with music.voice_lock_for(ctx.guild.id):
+            async with player._advance_lock:
+                use_lavalink = player.current.provider == "lavalink" if player.current else tracks[0].provider == "lavalink"
+                voice_client = await _connect_or_move(ctx, use_lavalink=use_lavalink)
+                position = player.add_many(tracks, ctx.channel)
+                await player.start_if_idle(voice_client)
+
+        await ctx.send(f"Adicionei `{len(tracks)}` recomendacao(oes) do seu Last.fm a partir da posicao `#{position}`.")
+
     @bot.hybrid_command(name="nowplaying", aliases=["np"], description="Mostra a musica atual.")
     async def nowplaying(ctx: commands.Context) -> None:
         if not ctx.guild:
@@ -156,6 +277,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send(ctx, f"Volume ajustado para `{value}%`.")
 
     @bot.hybrid_command(name="repeat", aliases=["rep", "loop"], description="Define repeticao: off, one ou all.")
+    @app_commands.choices(mode=REPEAT_CHOICES)
     async def repeat(ctx: commands.Context, mode: str = "off") -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")
@@ -258,6 +380,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send(ctx, f"Voltei para `{_format_duration(position)}`.")
 
     @bot.hybrid_command(name="filter", aliases=["flt", "filtro"], description="Aplica filtro: none, bassboost, nightcore, vaporwave ou soft.")
+    @app_commands.choices(name=FILTER_CHOICES)
     async def filter_command(ctx: commands.Context, name: str = "none") -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")
@@ -294,12 +417,31 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=_lyrics_embed(result.title, result.artist, pages, 0), view=LyricsView(result.title, result.artist, pages))
 
 
-async def _connect_or_move(ctx: commands.Context) -> discord.VoiceClient:
+def _voice_playing(voice_client) -> bool:
+    return bool(getattr(voice_client, "playing", False)) if voice_client.__class__.__module__.startswith("wavelink") else voice_client.is_playing()
+
+
+def _voice_paused(voice_client) -> bool:
+    return bool(getattr(voice_client, "paused", False)) if voice_client.__class__.__module__.startswith("wavelink") else voice_client.is_paused()
+
+
+async def _connect_or_move(ctx: commands.Context, *, use_lavalink: bool = False) -> discord.VoiceClient:
     channel = ctx.author.voice.channel
     voice_client = ctx.voice_client
 
     try:
         if not voice_client:
+            if use_lavalink:
+                import wavelink
+                return await channel.connect(cls=wavelink.Player)
+            return await channel.connect()
+
+        current_is_lavalink = voice_client.__class__.__module__.startswith("wavelink")
+        if current_is_lavalink != use_lavalink:
+            await voice_client.disconnect()
+            if use_lavalink:
+                import wavelink
+                return await channel.connect(cls=wavelink.Player)
             return await channel.connect()
 
         if voice_client.channel != channel:
@@ -413,19 +555,27 @@ class MusicNowPlayingView(discord.ui.View):
     @discord.ui.button(label="Pausar", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         voice_client = interaction.guild.voice_client if interaction.guild else None
-        if not voice_client or not voice_client.is_playing():
+        if not voice_client or not _voice_playing(voice_client):
             await interaction.response.send_message("Nao tem musica tocando agora.", ephemeral=True)
             return
-        voice_client.pause()
+        self._player.pause()
+        if voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(True)
+        else:
+            voice_client.pause()
         await interaction.response.send_message("Musica pausada.", ephemeral=True)
 
     @discord.ui.button(label="Continuar", emoji="▶️", style=discord.ButtonStyle.success, row=0)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         voice_client = interaction.guild.voice_client if interaction.guild else None
-        if not voice_client or not voice_client.is_paused():
+        if not voice_client or not _voice_paused(voice_client):
             await interaction.response.send_message("Nao tem musica pausada.", ephemeral=True)
             return
-        voice_client.resume()
+        self._player.resume()
+        if voice_client.__class__.__module__.startswith("wavelink"):
+            await voice_client.pause(False)
+        else:
+            voice_client.resume()
         await interaction.response.send_message("Musica retomada.", ephemeral=True)
 
     @discord.ui.button(label="Pular", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)

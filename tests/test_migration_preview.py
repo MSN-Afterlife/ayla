@@ -160,10 +160,17 @@ def _build_nbt_bytes(
 
 
 def fake_interaction(user_id=42):
+    done = False
+
+    async def fake_defer(*args, **kwargs):
+        nonlocal done
+        done = True
+
     response = SimpleNamespace(
-        is_done=lambda: False,
+        is_done=lambda: done,
         send_message=AsyncMock(),
         edit_message=AsyncMock(),
+        defer=AsyncMock(side_effect=fake_defer),
     )
     followup = SimpleNamespace(send=AsyncMock())
     message = SimpleNamespace(edit=AsyncMock())
@@ -585,9 +592,15 @@ class MigrationPreviewTests(unittest.IsolatedAsyncioTestCase):
         interaction = fake_interaction()
         await view.java_button.callback(interaction)
 
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertIn("⚠️ O progresso atual da conta unificada será substituído", confirm_view.render_content())
+        await confirm_view.replace_button.callback(interaction)
+
         client.plan.assert_awaited_once()
         req: MigrationPlanRequest = client.plan.await_args[0][0]
-        self.assertEqual(req.dataset_policy, {"playerdata": "java", "advancements": "java", "stats": "java"})
+        self.assertEqual(req.dataset_policy["strategy"], "REPLACE_TARGET")
+        self.assertEqual(req.dataset_policy["source"], {"platform": "java", "external_id": "java-uuid"})
+        self.assertTrue(req.dataset_policy["confirmed_replace_target"])
         self.assertEqual(req.target, {"discord_user_id": "123456789"})
 
     # 15. Operador escolhe 'Usar tudo Bedrock' a partir do preview
@@ -610,9 +623,15 @@ class MigrationPreviewTests(unittest.IsolatedAsyncioTestCase):
         interaction = fake_interaction()
         await view.bedrock_button.callback(interaction)
 
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertIn("⚠️ O progresso atual da conta unificada será substituído", confirm_view.render_content())
+        await confirm_view.replace_button.callback(interaction)
+
         client.plan.assert_awaited_once()
         req: MigrationPlanRequest = client.plan.await_args[0][0]
-        self.assertEqual(req.dataset_policy, {"playerdata": "bedrock", "advancements": "bedrock", "stats": "bedrock"})
+        self.assertEqual(req.dataset_policy["strategy"], "REPLACE_TARGET")
+        self.assertEqual(req.dataset_policy["source"], {"platform": "bedrock", "external_id": "bedrock-xuid"})
+        self.assertTrue(req.dataset_policy["confirmed_replace_target"])
         self.assertEqual(req.target, {"discord_user_id": "123456789"})
 
     # 16. Operador escolhe 'Por categoria' -> abre seleção por dataset
@@ -718,6 +737,8 @@ class MigrationPreviewTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction = fake_interaction()
         await view.java_button.callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        await confirm_view.replace_button.callback(interaction)
 
         req: MigrationPlanRequest = client.plan.await_args[0][0]
         # Target must be Discord User ID
@@ -738,6 +759,8 @@ class MigrationPreviewTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction = fake_interaction()
         await view.java_button.callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        await confirm_view.replace_button.callback(interaction)
         client.plan.assert_awaited_once()
         req: MigrationPlanRequest = client.plan.await_args[0][0]
         self.assertEqual(len(req.sources), 1)

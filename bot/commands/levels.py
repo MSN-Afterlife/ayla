@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -12,6 +14,14 @@ from bot.services.level_service import LevelProfile
 from bot.services.level_service import LevelService
 from bot.services.media_search import MediaSearch
 from bot.services.media_search import MediaSearchError
+from bot.services.profile_background_storage import ProfileBackgroundError
+
+
+BACKGROUND_MODE_CHOICES = [
+    app_commands.Choice(name="Cover - preenche e corta as bordas", value="cover"),
+    app_commands.Choice(name="Contain - mostra a imagem inteira", value="contain"),
+    app_commands.Choice(name="Stretch - estica para caber", value="stretch"),
+]
 
 
 def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -94,7 +104,11 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @bot.command(name="perfilbg", aliases=["profilebg", "backgroundperfil"])
     async def profile_background(ctx: commands.Context, *, url: str) -> None:
-        level_service.set_profile_background(ctx.author.id, url)
+        try:
+            await level_service.save_profile_background_from_url(ctx.author.id, url)
+        except ProfileBackgroundError as error:
+            await ctx.send(str(error))
+            return
         await ctx.send("Background do seu perfil atualizado.")
 
     @bot.command(name="perfilbgmodo", aliases=["profilebgmode"])
@@ -170,19 +184,20 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.response.send_message(
             "Veja como o perfil vai ficar antes de confirmar:",
             file=file,
-            view=ProfileBackgroundConfirmView(level_service, interaction.user.id, background_url),
+            view=ProfileBackgroundConfirmView(
+                level_service,
+                economy_service,
+                interaction.user,
+                interaction.guild,
+                background_url,
+                customization.background_mode,
+            ),
             ephemeral=True,
         )
 
     @profile_group.command(name="modo", description="Define como o background se encaixa no perfil.")
     @app_commands.describe(modo="cover corta preenchendo, contain mostra tudo, stretch estica.")
-    @app_commands.choices(
-        modo=[
-            app_commands.Choice(name="cover", value="cover"),
-            app_commands.Choice(name="contain", value="contain"),
-            app_commands.Choice(name="stretch", value="stretch"),
-        ]
-    )
+    @app_commands.choices(modo=BACKGROUND_MODE_CHOICES)
     async def profile_background_mode_slash(interaction: discord.Interaction, modo: app_commands.Choice[str]) -> None:
         level_service.set_profile_background_mode(interaction.user.id, modo.value)
         await interaction.response.send_message(f"Modo do background atualizado para `{modo.value}`.", ephemeral=True)
@@ -193,14 +208,19 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         level_service.set_profile_about(interaction.user.id, texto[:120])
         await interaction.response.send_message("Sobre mim atualizado.", ephemeral=True)
 
-    @profile_group.command(name="status", description="Mostra suas configuracoes de perfil.")
-    async def profile_status_slash(interaction: discord.Interaction) -> None:
-        customization = level_service.get_profile_customization(interaction.user.id)
+    @bot.command(name="perfilstatus", aliases=["profilestatus"])
+    async def profile_status_admin(ctx: commands.Context) -> None:
+        if not ctx.guild or not isinstance(ctx.author, discord.Member) or not ctx.author.guild_permissions.administrator:
+            await ctx.send("Esse comando é exclusivo para administradores.")
+            return
+
+        customization = level_service.get_profile_customization(ctx.author.id)
         embed = discord.Embed(title="Perfil", color=0x5865F2)
-        embed.add_field(name="Background", value=customization.background_url or "Nenhum", inline=False)
+        background_value = "Armazenado localmente" if customization.background_url and Path(customization.background_url).is_file() else customization.background_url or "Nenhum"
+        embed.add_field(name="Background", value=background_value, inline=False)
         embed.add_field(name="Modo", value=customization.background_mode, inline=True)
         embed.add_field(name="Sobre mim", value=customization.about or "Nenhum", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed)
 
     @profile_group.command(name="buscarbackground", description="Busca uma imagem e usa como background do seu perfil.")
     @app_commands.describe(busca="Termo para buscar a imagem.")
@@ -318,7 +338,15 @@ class ProfileBackgroundSearchView(discord.ui.View):
             content="Confira a previa do perfil. Confirme apenas se estiver do jeito que voce quer.",
             embed=None,
             attachments=[file],
-            view=ProfileBackgroundConfirmView(self._level_service, self._user_id, url, self),
+            view=ProfileBackgroundConfirmView(
+                self._level_service,
+                self._economy_service,
+                self._user,
+                self._guild,
+                url,
+                self._level_service.get_profile_customization(self._user_id).background_mode,
+                self,
+            ),
         )
 
     @discord.ui.button(label="Proxima", style=discord.ButtonStyle.secondary)
@@ -384,14 +412,21 @@ class ProfileBackgroundConfirmView(discord.ui.View):
     def __init__(
         self,
         level_service: LevelService,
-        user_id: int,
+        economy_service: EconomyService,
+        user: discord.Member | discord.User,
+        guild: discord.Guild | None,
         url: str,
+        mode: str,
         search_view: ProfileBackgroundSearchView | None = None,
     ) -> None:
         super().__init__(timeout=180)
         self._level_service = level_service
-        self._user_id = user_id
+        self._economy_service = economy_service
+        self._user = user
+        self._user_id = user.id
+        self._guild = guild
         self._url = url
+        self._mode = mode
         self._search_view = search_view
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
@@ -404,8 +439,25 @@ class ProfileBackgroundConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._guard(interaction):
             return
-        self._level_service.set_profile_background(self._user_id, self._url)
-        await interaction.response.edit_message(content="Background do seu perfil atualizado.", attachments=[], view=None)
+        try:
+            await self._level_service.save_profile_background_from_url(self._user_id, self._url)
+            self._level_service.set_profile_background_mode(self._user_id, self._mode)
+        except ProfileBackgroundError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await interaction.response.edit_message(content=f"Background do seu perfil atualizado em modo `{self._mode}`.", attachments=[], view=None)
+
+    @discord.ui.button(label="Cover", style=discord.ButtonStyle.secondary)
+    async def cover(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._change_mode(interaction, "cover")
+
+    @discord.ui.button(label="Contain", style=discord.ButtonStyle.secondary)
+    async def contain(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._change_mode(interaction, "contain")
+
+    @discord.ui.button(label="Stretch", style=discord.ButtonStyle.secondary)
+    async def stretch(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._change_mode(interaction, "stretch")
 
     @discord.ui.button(label="Voltar", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -420,6 +472,29 @@ class ProfileBackgroundConfirmView(discord.ui.View):
             attachments=[],
             view=self._search_view,
         )
+
+    async def _change_mode(self, interaction: discord.Interaction, mode: str) -> None:
+        if not await self._guard(interaction):
+            return
+        self._mode = mode
+        await interaction.response.defer()
+        file = await self._preview_file()
+        await interaction.edit_original_response(
+            content=f"Previa em modo `{self._mode}`. Confirme se estiver do jeito que voce quer.",
+            attachments=[file],
+            view=self,
+        )
+
+    async def _preview_file(self) -> discord.File:
+        profile_data = (
+            self._level_service.get_guild_profile(self._guild.id, self._user.id, self._user.display_name)
+            if self._guild
+            else self._level_service.get_global_profile(self._user.id, self._user.display_name)
+        )
+        customization = self._level_service.get_profile_customization(self._user.id)
+        preview_customization = customization.__class__(background_url=self._url, background_mode=self._mode, about=customization.about)
+        economy = self._economy_service.get_profile(self._user.id)
+        return await build_profile_card(self._user, profile_data, "Previa do perfil", preview_customization, self._guild, economy)
 
 
 def _background_choice_embed(urls: list[str], index: int) -> discord.Embed:

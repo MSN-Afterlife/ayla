@@ -1,22 +1,39 @@
 import asyncio
+from contextlib import suppress
+import logging
+import math
+import os
 import random
+import shutil
+import tempfile
+import time
+from functools import partial
+import shlex
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import monotonic
-from typing import Callable
-from urllib.parse import urlparse
+from typing import Any, Callable
+from urllib.parse import quote_plus, urlparse, urlunsplit
 
 import aiohttp
 import discord
 import yt_dlp
 
+try:
+    import wavelink
+except ImportError:  # Lavalink e opcional durante desenvolvimento local.
+    wavelink = None
+
 from bot.config import Settings
+from bot.services.spotify_service import SpotifyError, SpotifyService, SpotifyTrack
 
 
+logger = logging.getLogger(__name__)
 MAX_PLAYLIST_TRACKS = 50
 DEFAULT_VOLUME = 0.6
+SEARCH_PROVIDERS = ("ytsearch5", "scsearch5", "gvsearch5")
 FILTERS = {
     "none": None,
     "bassboost": "bass=g=8",
@@ -35,6 +52,8 @@ YTDL_OPTIONS = {
 }
 
 FFMPEG_RECONNECT_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+LAVALINK_RECONNECT_GRACE_SECONDS = 20
+LAVALINK_STARTUP_RETRY_DELAY_SECONDS = 2
 
 
 class RepeatMode(str, Enum):
@@ -47,16 +66,110 @@ class MusicError(Exception):
     pass
 
 
+class ProviderError(MusicError):
+    """Erro esperado de um backend de áudio."""
+
+    def __init__(self, message: str, *, recoverable: bool = True) -> None:
+        super().__init__(message)
+        self.recoverable = recoverable
+
+
+WAVELINK_ERRORS = (wavelink.WavelinkException,) if wavelink is not None else ()
+PLAYBACK_ERRORS = (discord.ClientException, MusicError) + WAVELINK_ERRORS
+
+
 @dataclass
 class Track:
     title: str
     webpage_url: str
-    stream_url: str
+    stream_url: str | None
     requested_by: str
     duration: int | None = None
     artist: str | None = None
     album: str | None = None
     thumbnail_url: str | None = None
+    requester_id: int | None = None
+    http_headers: dict[str, str] | None = None
+    provider: str = "ytdlp"
+    provider_track: Any = None
+    source_query: str | None = None
+    fallback_attempted: bool = False
+    identifier: str | None = None
+    source: str | None = None
+    source_id: str | None = None
+    source_url: str | None = None
+    original_title: str | None = None
+    original_artist: str | None = None
+    disc_number: int | None = None
+    track_number: int | None = None
+
+
+class AudioProvider:
+    name = "unknown"
+
+    async def resolve(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+        raise NotImplementedError
+
+
+class YtdlpProvider(AudioProvider):
+    name = "ytdlp"
+
+    def __init__(self, service: "MusicService") -> None:
+        self.service = service
+
+    async def resolve(
+        self,
+        query: str,
+        requested_by: str,
+        requester_id: int | None = None,
+        *,
+        expected: SpotifyTrack | None = None,
+    ) -> list[Track]:
+        try:
+            info = await asyncio.to_thread(self.service._extract_best_info, query, expected)
+        except MusicError as error:
+            raise ProviderError(str(error), recoverable=_is_recoverable_provider_error(str(error))) from error
+        entries = self.service._entries_from_info(info)
+        if not entries:
+            raise ProviderError("Nao encontrei nenhum resultado para essa busca.")
+        limit = MAX_PLAYLIST_TRACKS if _is_url(query) else 1
+        return [self.service._track_from_info(entry, requested_by, query, requester_id) for entry in entries[:limit]]
+
+
+class LavalinkProvider(AudioProvider):
+    name = "lavalink"
+
+    def __init__(self, service: "MusicService") -> None:
+        self.service = service
+
+    async def resolve(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+        if not self.service.lavalink_available or wavelink is None:
+            raise ProviderError("Lavalink esta indisponivel.")
+        try:
+            result = await wavelink.Playable.search(query)
+        except (WAVELINK_ERRORS + (asyncio.TimeoutError, aiohttp.ClientError)) as error:
+            raise ProviderError(_friendly_lavalink_error(error)) from error
+        if not result:
+            raise ProviderError("Lavalink nao encontrou essa musica.")
+        entries = list(result.tracks) if isinstance(result, wavelink.Playlist) else list(result)
+        limit = MAX_PLAYLIST_TRACKS if _is_url(query) else 1
+        tracks: list[Track] = []
+        for playable in entries[:limit]:
+            tracks.append(Track(
+                title=getattr(playable, "title", "Musica sem titulo"),
+                webpage_url=getattr(playable, "uri", None) or query,
+                stream_url=None,
+                requested_by=requested_by,
+                duration=_coerce_duration(getattr(playable, "length", None) / 1000 if getattr(playable, "length", None) else None),
+                artist=getattr(playable, "author", None),
+                thumbnail_url=getattr(playable, "artwork", None),
+                requester_id=requester_id,
+                provider=self.name,
+                provider_track=playable,
+                source_query=query,
+                identifier=getattr(playable, "identifier", None),
+            ))
+        return tracks
 
 
 class GuildMusicPlayer:
@@ -74,6 +187,20 @@ class GuildMusicPlayer:
         self._repeat = RepeatMode.OFF
         self._filter_name = "none"
         self._suppress_after = False
+        self._stream_retry_attempted = False
+        self._voice_client: Any = None
+        self._transition_lock = asyncio.Lock()
+        self._advance_lock = asyncio.Lock()
+        self._ending = False
+        self._lavalink_reconnect_task: asyncio.Task | None = None
+        self._lavalink_track_started = False
+        self._lavalink_resume_state: bool | None = None
+        self._play_generation = 0
+        self._autoplay_enabled = False
+        self._autoplay_generation = 0
+        self._autoplay_task: asyncio.Task | None = None
+        self._autoplay_suppressed_once = False
+        self._recent_tracks: deque[str] = deque(maxlen=20)
 
     @property
     def current(self) -> Track | None:
@@ -99,7 +226,17 @@ class GuildMusicPlayer:
             return self._current_seek
         return self._current_seek + max(0, round(monotonic() - self._current_started_at))
 
+    def pause(self) -> None:
+        if self._current_started_at is not None:
+            self._current_seek = self.current_position()
+            self._current_started_at = None
+
+    def resume(self) -> None:
+        if self._current and self._current_started_at is None:
+            self._current_started_at = monotonic()
+
     def add_many(self, tracks: list[Track], text_channel: discord.abc.Messageable) -> int:
+        self.cancel_autoplay()
         self._text_channel = text_channel
         first_position = self.queue_size(include_current=True) + 1
         self._queue.extend(tracks)
@@ -112,15 +249,27 @@ class GuildMusicPlayer:
         return len(self._queue) + (1 if include_current and self._current else 0)
 
     async def start_if_idle(self, voice_client: discord.VoiceClient) -> None:
-        if not voice_client.is_playing() and not voice_client.is_paused():
-            await self._play_next(voice_client)
+        async with self._advance_lock:
+            if not _voice_is_playing(voice_client) and not _voice_is_paused(voice_client):
+                await self._play_next_impl(voice_client)
 
     async def skip(self, voice_client: discord.VoiceClient) -> None:
-        if not voice_client.is_playing() and not voice_client.is_paused():
-            raise MusicError("Nao tem nenhuma musica tocando agora.")
-        voice_client.stop()
+        async with self._advance_lock:
+            if not _voice_is_playing(voice_client) and not _voice_is_paused(voice_client):
+                raise MusicError("Nao tem nenhuma musica tocando agora.")
+            if _is_lavalink_voice(voice_client):
+                self._cancel_lavalink_reconnect_watchdog()
+                self._autoplay_suppressed_once = True
+                await voice_client.skip(force=True)
+            else:
+                self._autoplay_suppressed_once = True
+                voice_client.stop()
 
     async def seek(self, voice_client: discord.VoiceClient, seconds: int) -> None:
+        async with self._advance_lock:
+            await self._seek_impl(voice_client, seconds)
+
+    async def _seek_impl(self, voice_client: discord.VoiceClient, seconds: int) -> None:
         if not self._current:
             raise MusicError("Nao tem nenhuma musica tocando agora.")
         if seconds < 0:
@@ -128,10 +277,17 @@ class GuildMusicPlayer:
         if self._current.duration and seconds >= self._current.duration:
             raise MusicError("Esse tempo passa da duracao da musica.")
 
-        self._suppress_after = True
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop()
-        self._play_current(voice_client, seek=seconds)
+        if _voice_is_playing(voice_client) or _voice_is_paused(voice_client):
+            if _is_lavalink_voice(voice_client):
+                await voice_client.seek(seconds * 1000)
+                self._current_seek = seconds
+                self._current_started_at = None if _voice_is_paused(voice_client) else monotonic()
+            else:
+                self._suppress_after = True
+                voice_client.stop()
+                await self._play_current(voice_client, seek=seconds, new_playback=False)
+        elif self._current.provider == "ytdlp":
+            await self._play_current(voice_client, seek=seconds, new_playback=False)
 
     async def seek_relative(self, voice_client: discord.VoiceClient, seconds: int) -> int:
         new_position = self.current_position() + seconds
@@ -139,17 +295,28 @@ class GuildMusicPlayer:
         return max(0, new_position)
 
     async def stop(self, voice_client: discord.VoiceClient) -> None:
-        self.clear()
-        self._current = None
-        self._current_started_at = None
-        self._suppress_after = True
-        if voice_client.is_playing() or voice_client.is_paused():
-            voice_client.stop()
-        await voice_client.disconnect()
+        async with self._advance_lock:
+            self.cancel_autoplay()
+            self._cancel_lavalink_reconnect_watchdog()
+            self._bot._lastfm_scrobbler.ended(self._guild_id, self.current_position()) if hasattr(self._bot, "_lastfm_scrobbler") else None
+            self.clear()
+            self._current = None
+            self._current_started_at = None
+            self._suppress_after = True
+            if _voice_is_playing(voice_client) or _voice_is_paused(voice_client):
+                if _is_lavalink_voice(voice_client):
+                    await voice_client.stop(force=True)
+                    self._suppress_after = False
+                else:
+                    voice_client.stop()
+            self._voice_client = None
+            await voice_client.disconnect()
 
     def clear(self) -> int:
         removed = len(self._queue)
         self._queue.clear()
+        if self._current:
+            self._autoplay_suppressed_once = True
         return removed
 
     def shuffle(self) -> int:
@@ -181,11 +348,92 @@ class GuildMusicPlayer:
         self._volume = percent / 100
         if self._source:
             self._source.volume = self._volume
+        if _is_lavalink_voice(self._voice_client):
+            asyncio.create_task(self._voice_client.set_volume(percent))
         return percent
 
     def set_repeat(self, mode: RepeatMode) -> RepeatMode:
         self._repeat = mode
         return self._repeat
+
+    @property
+    def autoplay_enabled(self) -> bool:
+        return self._autoplay_enabled
+
+    def set_autoplay(self, enabled: bool) -> bool:
+        self._autoplay_enabled = enabled
+        if not enabled:
+            self.cancel_autoplay()
+        return enabled
+
+    def cancel_autoplay(self) -> None:
+        self._autoplay_generation += 1
+        task = self._autoplay_task
+        self._autoplay_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    @staticmethod
+    def _track_key(artist: str | None, title: str | None) -> str:
+        return " ".join(f"{artist or ''} {title or ''}".lower().split())
+
+    def _remember_track(self, track: Track) -> None:
+        self._recent_tracks.append(self._track_key(track.artist or track.original_artist, track.title or track.original_title))
+
+    async def _run_autoplay(self, seed: Track, voice_client: Any, generation: int) -> None:
+        try:
+            recommendations = await self._bot._music_service.recommendations_for_track(seed, limit=5)
+            for recommendation in recommendations:
+                artist_data = recommendation.get("artist")
+                artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+                title = recommendation.get("name")
+                key = self._track_key(str(artist) if artist else None, str(title) if title else None)
+                if not artist or not title or key == self._track_key(seed.artist, seed.title) or key in self._recent_tracks:
+                    continue
+                try:
+                    candidate_tracks = await self._bot._music_service.resolve_tracks(
+                        f"{artist} - {title}", seed.requested_by, seed.requester_id
+                    )
+                except MusicError as error:
+                    logger.info("[LASTFM AUTOPLAY] candidate failed: %s", _safe_error(error))
+                    continue
+                if not candidate_tracks:
+                    continue
+                async with self._advance_lock:
+                    if generation != self._autoplay_generation or not self._autoplay_enabled:
+                        return
+                    connected = getattr(voice_client, "connected", None)
+                    if connected is None:
+                        is_connected = getattr(voice_client, "is_connected", None)
+                        connected = is_connected() if callable(is_connected) else True
+                    if self._current or self._queue or not connected:
+                        return
+                    candidate = candidate_tracks[0]
+                    candidate.source_query = f"{artist} - {title}"
+                    self._queue.append(candidate)
+                    logger.info("[LASTFM AUTOPLAY] Recommendation: %s - %s", artist, title)
+                    await self._play_next_impl(voice_client)
+                return
+            logger.info("[LASTFM AUTOPLAY] No valid recommendation found")
+            await self._announce_queue_finished(seed, recommendations)
+        except asyncio.CancelledError:
+            return
+        except Exception as error:
+            logger.warning("[LASTFM AUTOPLAY] recommendation failed: %s", _safe_error(error))
+            await self._announce_queue_finished(seed, [])
+        finally:
+            if self._autoplay_task is asyncio.current_task():
+                self._autoplay_task = None
+
+    async def _announce_queue_finished(self, track: Track, recommendations: list[dict] | None = None) -> None:
+        if not self._text_channel:
+            return
+        try:
+            if recommendations is None:
+                recommendations = await self._bot._music_service.recommendations_for_track(track)
+            await self._text_channel.send(embed=build_queue_finished_embed(track, recommendations))
+        except Exception as error:
+            logger.info("[MUSIC] queue finished announcement failed: %s", _safe_error(error))
 
     async def set_filter(self, voice_client: discord.VoiceClient | None, name: str) -> str:
         normalized = name.lower()
@@ -194,35 +442,112 @@ class GuildMusicPlayer:
             raise MusicError(f"Filtro invalido. Use um destes: `{options}`.")
 
         self._filter_name = normalized
-        if voice_client and self._current and (voice_client.is_playing() or voice_client.is_paused()):
+        if _is_lavalink_voice(voice_client):
+            if normalized != "none":
+                self._filter_name = "none"
+                raise MusicError("Filtros avancados ainda nao estao disponiveis no Lavalink.")
+            await voice_client.set_filters(None, seek=False)
+            return normalized
+        if voice_client and self._current and (_voice_is_playing(voice_client) or _voice_is_paused(voice_client)):
             await self.seek(voice_client, self.current_position())
         return self._filter_name
 
     async def _play_next(self, voice_client: discord.VoiceClient) -> None:
+        async with self._advance_lock:
+            await self._play_next_impl(voice_client)
+
+    async def _play_next_impl(self, voice_client: discord.VoiceClient) -> None:
         if self._current and self._repeat == RepeatMode.ONE:
-            self._play_current(voice_client)
+            try:
+                await self._play_current(voice_client)
+            except PLAYBACK_ERRORS as error:
+                if self._current.provider == "ytdlp" and _is_recoverable_playback_error(error):
+                    await self._fallback_current(voice_client, error, advance_locked=True, expected_track=self._current)
+                else:
+                    raise
             return
 
         if self._current and self._repeat == RepeatMode.ALL:
             self._queue.append(self._current)
 
         if not self._queue:
+            finished_track = self._current
             self._current = None
             self._current_started_at = None
+            if finished_track:
+                if self._autoplay_enabled and not getattr(self, "_autoplay_suppressed_once", False):
+                    generation = self._autoplay_generation + 1
+                    self._autoplay_generation = generation
+                    self._autoplay_task = asyncio.create_task(self._run_autoplay(finished_track, voice_client, generation))
+                else:
+                    self._autoplay_suppressed_once = False
+                    await self._announce_queue_finished(finished_track)
             return
 
         self._current = self._queue.popleft()
-        self._play_current(voice_client)
+        self._autoplay_suppressed_once = False
+        self._stream_retry_attempted = False
+        self._cancel_lavalink_reconnect_watchdog()
+        try:
+            async with self._transition_lock:
+                voice_client = await self._ensure_voice_backend(voice_client)
+                await self._play_current(voice_client)
+        except PLAYBACK_ERRORS as error:
+            if self._current and self._current.provider == "ytdlp" and _is_recoverable_playback_error(error):
+                await self._fallback_current(voice_client, error, advance_locked=True, expected_track=self._current)
+                return
+            if self._text_channel:
+                await self._text_channel.send("Nao consegui iniciar essa musica; pulando para a proxima.")
+            self._autoplay_suppressed_once = True
+            self._current = None
+            await self._play_next_impl(voice_client)
+            return
 
         if self._text_channel:
             view = self._now_playing_view_factory(self) if self._now_playing_view_factory and self._current else None
-            await self._text_channel.send(embed=build_now_playing_embed(self, automatic=True), view=view)
+            # .fmbot's message-based reader looks for the conventional English
+            # "Started playing ... by ..." announcement used by music bots.
+            # The embed remains the user-facing Ayla UI, while this content gives
+            # compatible readers a stable, unambiguous track announcement.
+            track = self._current
+            announcement = f"Started playing {track.title}"
+            if track.artist:
+                announcement += f" by {track.artist}"
+            await self._text_channel.send(announcement[:1900], embed=build_now_playing_embed(self, automatic=True), view=view)
 
-    def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0) -> None:
+    async def _play_current(self, voice_client: discord.VoiceClient, *, seek: int = 0, new_playback: bool = True) -> None:
         if not self._current:
+            return
+        self._voice_client = voice_client
+        self._play_generation += 1
+        self._remember_track(self._current)
+        self._log_state("play_request", voice_client)
+
+        if self._current.provider == "lavalink":
+            if not _is_lavalink_voice(voice_client) or not self._current.provider_track:
+                raise MusicError("O player Lavalink nao esta conectado para esta faixa.")
+            self._lavalink_track_started = False
+            await voice_client.play(self._current.provider_track, start=seek * 1000, volume=round(self._volume * 100))
+            self._cancel_lavalink_reconnect_watchdog()
+            self._ending = False
+            self._current_seek = seek
+            self._current_started_at = monotonic()
+            self._log_provider()
+            self._start_scrobble(voice_client, new_playback)
+            self._log_state("play_accepted", voice_client)
             return
 
         before_options = FFMPEG_RECONNECT_OPTIONS
+        if self._current.http_headers:
+            header_lines = []
+            for key, value in self._current.http_headers.items():
+                key = str(key).replace("\r", "").replace("\n", "").strip()
+                value = str(value).replace("\r", "").replace("\n", "").strip()
+                if key and value and key.lower() in {"user-agent", "referer", "origin", "accept", "accept-language"}:
+                    header_lines.append(f"{key}: {value}")
+            if header_lines:
+                header_block = "\r\n".join(header_lines) + "\r\n"
+                before_options += f" -headers {shlex.quote(header_block)}"
         if seek:
             before_options = f"-ss {seek} {before_options}"
 
@@ -240,51 +565,562 @@ class GuildMusicPlayer:
         self._current_seek = seek
         self._current_started_at = monotonic()
         voice_client.play(self._source, after=self._after_track(voice_client))
+        self._ending = False
+        scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+        if scrobbler and new_playback:
+            listeners = tuple(member.id for member in getattr(getattr(voice_client, "channel", None), "members", []) if not member.bot)
+            scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position, listeners)
+        self._log_provider()
+        self._log_state("play_accepted", voice_client)
+
+    def _start_scrobble(self, voice_client: discord.VoiceClient, new_playback: bool) -> None:
+        scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+        if scrobbler and new_playback:
+            listeners = tuple(member.id for member in getattr(getattr(voice_client, "channel", None), "members", []) if not member.bot)
+            scrobbler.started(self._guild_id, self._current, self._current.requester_id, int(time.time()), self.current_position, listeners)
+
+    def _log_provider(self) -> None:
+        if self._current:
+            logger.info("[MUSIC] guild=%s track=%r provider=%s fallback=%s", self._guild_id, self._current.title, self._current.provider, self._current.provider == "lavalink")
 
     def _after_track(self, voice_client: discord.VoiceClient) -> Callable[[Exception | None], None]:
+        finished_track = self._current
+
         def callback(error: Exception | None) -> None:
+            if self._current is not finished_track:
+                return
             if self._suppress_after:
                 self._suppress_after = False
                 return
 
-            if error and self._text_channel:
+            stream_rejected = _is_stream_rejected(error)
+            if error and self._current and self._current.provider == "ytdlp" and not stream_rejected and not self._current.fallback_attempted:
+                if not _is_recoverable_playback_error(error):
+                    self._ending = True
+                    self._current_started_at = None
+                    asyncio.run_coroutine_threadsafe(self._play_next(voice_client), self._bot.loop)
+                    return
+                self._ending = True
+                self._current_started_at = None
                 asyncio.run_coroutine_threadsafe(
-                    self._text_channel.send(f"Erro ao tocar a musica: `{error}`"),
+                    self._fallback_current(voice_client, error, expected_track=finished_track),
                     self._bot.loop,
                 )
+                return
+
+            if error and self._text_channel and (not self._current or self._current.provider != "ytdlp" or self._current.fallback_attempted):
+                error_message = "O servidor do áudio recusou o stream. Tentando renovar..." if stream_rejected else "Erro ao tocar a musica."
+                asyncio.run_coroutine_threadsafe(
+                    self._text_channel.send(error_message),
+                    self._bot.loop,
+                )
+
+            if stream_rejected and not self._stream_retry_attempted:
+                self._ending = True
+                self._stream_retry_attempted = True
+                self._current_started_at = None
+                asyncio.run_coroutine_threadsafe(self._retry_current_stream(voice_client), self._bot.loop)
+                return
+
+            if self._ending:
+                return
+            self._ending = True
+            if error:
+                self._autoplay_suppressed_once = True
+            scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+            if scrobbler:
+                position = self.current_position()
+                self._bot.loop.call_soon_threadsafe(partial(scrobbler.ended, self._guild_id, position, error=error))
+            self._current_started_at = None
 
             asyncio.run_coroutine_threadsafe(self._play_next(voice_client), self._bot.loop)
 
         return callback
+
+    async def _retry_current_stream(self, voice_client: discord.VoiceClient) -> None:
+        async with self._advance_lock:
+            track = self._current
+            if not track:
+                await self._play_next_impl(voice_client)
+                return
+            position = self.current_position()
+            try:
+                await self._bot._music_service.refresh_track(track)
+                if self._current is not track:
+                    return
+                await self._play_current(voice_client, seek=position, new_playback=False)
+                return
+            except MusicError as error:
+                await self._fallback_current(voice_client, error, advance_locked=True, expected_track=track)
+                return
+            scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+            if scrobbler:
+                scrobbler.ended(self._guild_id, position)
+            await self._play_next_impl(voice_client)
+
+    async def _fallback_current(
+        self,
+        voice_client: discord.VoiceClient,
+        reason: Exception,
+        *,
+        advance_locked: bool = False,
+        expected_track: Track | None = None,
+    ) -> None:
+        if not advance_locked:
+            async with self._advance_lock:
+                await self._fallback_current(
+                    voice_client,
+                    reason,
+                    advance_locked=True,
+                    expected_track=expected_track,
+                )
+            return
+
+        advance = self._play_next_impl if advance_locked else self._play_next
+        track = self._current
+        if expected_track is not None and track is not expected_track:
+            return
+        if not track or track.fallback_attempted:
+            if self._text_channel:
+                await self._text_channel.send("Nao consegui tocar essa musica; o stream falhou nos provedores disponiveis.")
+            await advance(voice_client)
+
+            return
+
+        track.fallback_attempted = True
+        logger.info("[MUSIC] guild=%s yt-dlp failed: %s", self._guild_id, _safe_error(reason))
+        logger.info("[MUSIC] guild=%s falling back to Lavalink", self._guild_id)
+        try:
+            fallback = await self._bot._music_service.resolve_with_lavalink(track.source_query or track.webpage_url, track.requested_by, track.requester_id)
+            replacement = fallback[0]
+            track.title, track.webpage_url = replacement.title, replacement.webpage_url
+            track.duration, track.artist = replacement.duration, replacement.artist
+            track.album, track.thumbnail_url = replacement.album, replacement.thumbnail_url
+            track.stream_url, track.provider = None, "lavalink"
+            track.provider_track, track.source_query = replacement.provider_track, replacement.source_query
+            track.identifier = replacement.identifier
+            channel = getattr(voice_client, "channel", None)
+            if not channel or wavelink is None:
+                raise MusicError("Nao consegui conectar o player Lavalink ao canal de voz.")
+            if not _is_lavalink_voice(voice_client):
+                await voice_client.disconnect()
+                voice_client = await channel.connect(cls=wavelink.Player)
+            self._current_started_at = None
+            await self._play_current(voice_client, seek=self.current_position(), new_playback=False)
+            logger.info("[MUSIC] guild=%s Lavalink resolved track successfully", self._guild_id)
+        except Exception as error:
+            logger.warning("[MUSIC] guild=%s Lavalink fallback failed: %s", self._guild_id, _safe_error(error))
+            self._autoplay_suppressed_once = True
+            if self._text_channel:
+                await self._text_channel.send("Nao consegui tocar essa musica; tente outro link ou outra busca.")
+            self._current_started_at = None
+            await advance(voice_client)
+
+    async def handle_lavalink_end(self, voice_client: Any, error: Exception | None = None, event_track: Any = None) -> None:
+        async with self._advance_lock:
+            await self._handle_lavalink_end_impl(voice_client, error, event_track)
+
+    async def _handle_lavalink_end_impl(self, voice_client: Any, error: Exception | None = None, event_track: Any = None) -> None:
+        """Avança a fila para eventos emitidos pelo backend Lavalink."""
+        self._log_state("track_end_event", voice_client, event_track)
+        if not self._current or self._current.provider != "lavalink":
+            return
+        if event_track is not None and not _lavalink_tracks_match(self._current.provider_track, event_track):
+            return
+        if self._ending:
+            return
+        self._cancel_lavalink_reconnect_watchdog()
+        self._ending = True
+        if self._suppress_after:
+            self._suppress_after = False
+            return
+        if error and self._text_channel:
+            await self._text_channel.send("O Lavalink nao conseguiu reproduzir essa musica; pulando para a proxima.")
+        if error:
+            self._autoplay_suppressed_once = True
+        scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+        if scrobbler:
+            scrobbler.ended(self._guild_id, self.current_position(), error=error)
+        self._current_started_at = None
+        await self._play_next_impl(voice_client)
+
+    def _cancel_lavalink_reconnect_watchdog(self) -> None:
+        task = self._lavalink_reconnect_task
+        self._lavalink_reconnect_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def handle_lavalink_connection_lost(self, reason: str) -> None:
+        """Starts a bounded recovery window for the current Lavalink track."""
+        if not self._current or self._current.provider != "lavalink":
+            return
+        self._lavalink_resume_state = None
+        self._log_state("connection_lost", self._voice_client)
+        if self._lavalink_reconnect_task and not self._lavalink_reconnect_task.done():
+            return
+        track = self._current
+        voice_client = self._voice_client
+        if not voice_client:
+            return
+        logger.warning(
+            "[MUSIC] guild=%s Lavalink connection lost during %r: %s; recovery window=%ss",
+            self._guild_id,
+            track.title,
+            _safe_error(RuntimeError(reason)),
+            LAVALINK_RECONNECT_GRACE_SECONDS,
+        )
+        self._lavalink_reconnect_task = asyncio.create_task(
+            self._lavalink_reconnect_watchdog(track, voice_client)
+        )
+
+    async def _lavalink_reconnect_watchdog(self, track: Track, voice_client: Any) -> None:
+        try:
+            await asyncio.sleep(LAVALINK_RECONNECT_GRACE_SECONDS)
+            async with self._advance_lock:
+                if self._current is not track or track.provider != "lavalink" or self._ending:
+                    return
+                # Wavelink/Lavalink may restore the player without a new play call.
+                # Only keep the track when the node is back and playback is active.
+                music_service = getattr(self._bot, "_music_service", None)
+                remote_track = getattr(voice_client, "current", None)
+                player_connected = bool(getattr(voice_client, "connected", False))
+                if (
+                    music_service
+                    and music_service.lavalink_available
+                    and self._lavalink_resume_state is not False
+                    and self._lavalink_track_started
+                    and player_connected
+                    and remote_track is not None
+                    and _lavalink_tracks_match(track.provider_track, remote_track)
+                ):
+                    logger.info("[MUSIC] guild=%s Lavalink playback recovered", self._guild_id)
+                    return
+                self._ending = True
+                self._autoplay_suppressed_once = True
+                scrobbler = getattr(self._bot, "_lastfm_scrobbler", None)
+                if scrobbler:
+                    scrobbler.ended(self._guild_id, self.current_position(), error=MusicError("Lavalink connection timeout"))
+                self._current_started_at = None
+                logger.warning("[MUSIC] guild=%s Lavalink recovery timed out; advancing queue", self._guild_id)
+                await self._play_next_impl(voice_client)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._lavalink_reconnect_task is asyncio.current_task():
+                self._lavalink_reconnect_task = None
+
+    def handle_lavalink_node_ready(self, resumed: bool | None = None) -> None:
+        self._lavalink_resume_state = resumed
+        self._log_state("node_ready", self._voice_client)
+
+    def handle_lavalink_start(self, event_track: Any) -> None:
+        if not self._current or self._current.provider != "lavalink":
+            return
+        if not _lavalink_tracks_match(self._current.provider_track, event_track):
+            return
+        self._lavalink_track_started = True
+        self._log_state("track_start", self._voice_client, event_track)
+        logger.info("[MUSIC] guild=%s Lavalink TrackStart confirmed", self._guild_id)
+
+    def _log_state(self, event: str, voice_client: Any = None, event_track: Any = None) -> None:
+        current = self._current
+        player = voice_client or self._voice_client
+        try:
+            playing = _voice_is_playing(player) if player else False
+            paused = _voice_is_paused(player) if player else False
+        except (AttributeError, TypeError):
+            playing = paused = False
+        node = getattr(player, "node", None)
+        event_identifier = getattr(event_track, "identifier", None) if event_track else None
+        logger.info(
+            "[MUSIC_STATE] guild=%s event=%s player=%s node=%s track=%r provider=%s identifier=%s "
+            "generation=%s current=%s playing=%s paused=%s connected=%s ending=%s queue=%s watchdog=%s event_identifier=%s",
+            self._guild_id,
+            event,
+            id(player) if player else None,
+            getattr(getattr(node, "status", None), "name", None),
+            current.title if current else None,
+            current.provider if current else None,
+            current.identifier if current else None,
+            self._play_generation,
+            bool(current),
+            playing,
+            paused,
+            bool(getattr(player, "connected", False)) if player else False,
+            self._ending,
+            len(self._queue),
+            bool(self._lavalink_reconnect_task and not self._lavalink_reconnect_task.done()),
+            event_identifier,
+        )
+
+    async def _ensure_voice_backend(self, voice_client: Any) -> Any:
+        if not self._current:
+            return voice_client
+        wants_lavalink = self._current.provider == "lavalink"
+        if wants_lavalink == _is_lavalink_voice(voice_client):
+            return voice_client
+        if wavelink is None and wants_lavalink:
+            raise MusicError("Lavalink nao esta disponivel.")
+        channel = getattr(voice_client, "channel", None)
+        if not channel:
+            raise MusicError("Nao consegui manter a conexao de voz.")
+        await voice_client.disconnect()
+        return await channel.connect(cls=wavelink.Player) if wants_lavalink else await channel.connect()
 
 
 class MusicService:
     def __init__(self, bot, settings: Settings) -> None:
         self._bot = bot
         self._settings = settings
+        self._spotify = SpotifyService(settings)
         self._players: dict[int, GuildMusicPlayer] = {}
+        self._voice_locks: dict[int, asyncio.Lock] = {}
+        self._lavalink_connected = False
+        self._lavalink_ready_event = asyncio.Event()
+        self._youtube_cookies_runtime_path: Path | None = None
+        self._youtube_cookies_source_signature: tuple[int, int] | None = None
+        self._ytdlp = YtdlpProvider(self)
+        self._lavalink = LavalinkProvider(self)
+
+    @property
+    def lavalink_available(self) -> bool:
+        return bool(self._lavalink_connected and self._settings.lavalink_enabled and self._settings.lavalink_password and wavelink)
+
+    @property
+    def health(self) -> dict[str, str]:
+        return {"yt-dlp": "available", "lavalink": "connected" if self.lavalink_available else "disconnected"}
+
+    def set_lavalink_connected(self, value: bool) -> None:
+        self._lavalink_connected = value
+        if value:
+            self._lavalink_ready_event.set()
+        else:
+            self._lavalink_ready_event.clear()
+
+    async def connect_lavalink(self) -> bool:
+        """Conecta ao Lavalink sem impedir o bot de iniciar se o servico estiver fora."""
+        if not self._settings.lavalink_enabled or wavelink is None or not self._settings.lavalink_password:
+            logger.info("[MUSIC] Lavalink disabled or incompletely configured; using yt-dlp only")
+            return False
+        if self._lavalink_connected:
+            return True
+        attempts = 1 + min(self._settings.lavalink_reconnect_attempts, 4) if self._settings.lavalink_reconnect else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            node = None
+            try:
+                node = wavelink.Node(uri=self._settings.lavalink_uri, password=self._settings.lavalink_password, retries=self._settings.lavalink_reconnect_attempts if self._settings.lavalink_reconnect else 0)
+                connected_nodes = await asyncio.wait_for(
+                    wavelink.Pool.connect(nodes=[node], client=self._bot, cache_capacity=100),
+                    timeout=5,
+                )
+                if node.identifier not in connected_nodes or node.status is wavelink.NodeStatus.DISCONNECTED:
+                    raise wavelink.NodeException("Lavalink nao confirmou a conexao do node")
+                if node.status is not wavelink.NodeStatus.CONNECTED:
+                    self._lavalink_ready_event.clear()
+                    await asyncio.wait_for(self._lavalink_ready_event.wait(), timeout=5)
+                self._lavalink_connected = True
+                logger.info("Lavalink conectado em %s", self._settings.lavalink_uri)
+                return True
+            except Exception as error:
+                last_error = error
+                if node is not None:
+                    with suppress(Exception):
+                        await node.close(eject=True)
+                    session = getattr(node, "_session", None)
+                    if session is not None:
+                        with suppress(Exception):
+                            await session.close()
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(LAVALINK_STARTUP_RETRY_DELAY_SECONDS)
+        logger.warning("[MUSIC] Lavalink unavailable after %s attempt(s): %s", attempts, _safe_error(last_error or RuntimeError("unknown error")))
+        return False
 
     def player_for(self, guild_id: int) -> GuildMusicPlayer:
         if guild_id not in self._players:
             self._players[guild_id] = GuildMusicPlayer(self._bot, guild_id)
         return self._players[guild_id]
 
-    async def resolve_tracks(self, query: str, requested_by: str) -> list[Track]:
+    async def close(self) -> None:
+        await self._spotify.close()
+
+    def voice_lock_for(self, guild_id: int) -> asyncio.Lock:
+        return self._voice_locks.setdefault(guild_id, asyncio.Lock())
+
+    def validate_youtube_cookies(self) -> tuple[bool, str]:
+        """Valida o caminho e o cabecalho Netscape sem expor o conteudo dos cookies."""
+        cookies_path = self._settings.youtube_cookies_path
+        if not cookies_path:
+            return False, "YOUTUBE_COOKIES_PATH nao foi configurado."
+
+        path = Path(cookies_path)
+        if not path.is_file():
+            return False, f"Arquivo de cookies nao encontrado: {path}"
+
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as cookies_file:
+                first_line = cookies_file.readline().strip()
+        except (OSError, UnicodeError) as error:
+            return False, f"Nao consegui ler o arquivo de cookies: {error}"
+
+        if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+            return False, "O arquivo nao esta no formato Mozilla/Netscape (cookies.txt)."
+
+        return True, f"Arquivo de cookies encontrado e com formato valido: {path}"
+
+    async def resolve_tracks(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+        try:
+            spotify_result = await self._spotify.resolve_url(query)
+        except SpotifyError as error:
+            raise MusicError(str(error)) from error
+        if spotify_result is not None:
+            kind, identifier, spotify_tracks = spotify_result
+            return await self._resolve_spotify_tracks(kind, identifier, spotify_tracks, requested_by, requester_id)
+
+        return await self._resolve_standard_tracks(query, requested_by, requester_id)
+
+    async def _resolve_standard_tracks(
+        self,
+        query: str,
+        requested_by: str,
+        requester_id: int | None = None,
+        *,
+        expected: SpotifyTrack | None = None,
+    ) -> list[Track]:
         normalized_query = await self._normalize_query(query)
-        info = await asyncio.to_thread(self._extract_best_info, normalized_query)
+        logger.info("[MUSIC] resolving with yt-dlp")
+        try:
+            return await self._ytdlp.resolve(normalized_query, requested_by, requester_id, expected=expected)
+        except (ProviderError, MusicError) as error:
+            logger.info("[MUSIC] yt-dlp failed: %s", _safe_error(error))
+            recoverable = error.recoverable if isinstance(error, ProviderError) else _is_recoverable_provider_error(str(error))
+            if not recoverable:
+                raise
+            if not self.lavalink_available:
+                raise MusicError("Nao consegui carregar essa musica nos provedores disponiveis.") from error
+            logger.info("[MUSIC] falling back to Lavalink")
+            try:
+                fallback_tracks = await self.resolve_with_lavalink(normalized_query, requested_by, requester_id)
+                if expected and fallback_tracks:
+                    fallback = fallback_tracks[0]
+                    score = _spotify_match_score({
+                        "title": fallback.title,
+                        "artist": fallback.artist,
+                        "duration": fallback.duration,
+                    }, expected)
+                    if score < 0.35:
+                        raise ProviderError("Lavalink retornou uma faixa que nao corresponde aos metadados Spotify.")
+                return fallback_tracks
+            except (ProviderError, MusicError) as fallback_error:
+                raise MusicError("Nao consegui carregar essa musica nos provedores disponiveis.") from fallback_error
+
+    async def _resolve_spotify_tracks(
+        self,
+        kind: str,
+        identifier: str,
+        spotify_tracks: list[SpotifyTrack],
+        requested_by: str,
+        requester_id: int | None,
+    ) -> list[Track]:
+        resolved: list[Track] = []
+        failed = 0
+        batch_size = 4
+        unique_tracks: list[SpotifyTrack] = []
+        seen_ids: set[str] = set()
+        for item in spotify_tracks:
+            if item.spotify_id in seen_ids:
+                continue
+            seen_ids.add(item.spotify_id)
+            unique_tracks.append(item)
+        for start in range(0, len(unique_tracks), batch_size):
+            batch = unique_tracks[start:start + batch_size]
+            results = await asyncio.gather(
+                *(self._resolve_standard_tracks(item.search_query, requested_by, requester_id, expected=item) for item in batch),
+                return_exceptions=True,
+            )
+            for item, result in zip(batch, results):
+                if isinstance(result, Exception) or not result:
+                    if isinstance(result, Exception) and not isinstance(result, (MusicError, ProviderError)):
+                        raise result
+                    failed += 1
+                    continue
+                track = result[0]
+                track.source = "spotify"
+                track.source_id = item.spotify_id
+                track.source_url = item.spotify_url
+                track.original_title = item.title
+                track.original_artist = ", ".join(item.artists)
+                track.disc_number = item.disc_number
+                track.track_number = item.track_number
+                if item.duration_ms is not None:
+                    track.duration = round(item.duration_ms / 1000)
+                if item.album:
+                    track.album = item.album
+                resolved.append(track)
+            if len(resolved) >= MAX_PLAYLIST_TRACKS and kind == "track":
+                break
+        logger.info("[SPOTIFY] %s %s: %s resolved, %s failed", kind, identifier, len(resolved), failed)
+        if not resolved:
+            raise MusicError("Nao consegui resolver nenhuma faixa desse conteudo Spotify.")
+        return resolved
+
+    async def resolve_with_lavalink(self, query: str, requested_by: str, requester_id: int | None = None) -> list[Track]:
+        return await self._lavalink.resolve(query, requested_by, requester_id)
+
+    async def handle_lavalink_end(self, player: Any, *, error: Exception | None = None, event_track: Any = None) -> None:
+        guild = getattr(getattr(player, "guild", None), "id", None)
+        if guild is None:
+            return
+        music_player = self._players.get(guild)
+        if music_player:
+            await music_player.handle_lavalink_end(player, error, event_track)
+
+    async def handle_lavalink_start(self, player: Any, event_track: Any) -> None:
+        guild = getattr(getattr(player, "guild", None), "id", None)
+        if guild is None:
+            return
+        music_player = self._players.get(guild)
+        if music_player:
+            music_player.handle_lavalink_start(event_track)
+
+    async def handle_lavalink_voice_closed(self, player: Any, reason: str) -> None:
+        guild = getattr(getattr(player, "guild", None), "id", None)
+        if guild is not None and guild in self._players:
+            self._players[guild].handle_lavalink_connection_lost(reason)
+            logger.warning("[MUSIC] guild=%s Lavalink voice websocket closed: %s; aguardando reconexao", guild, _safe_error(RuntimeError(reason)))
+
+    async def handle_lavalink_node_ready(self, resumed: bool | None = None) -> None:
+        self.set_lavalink_connected(True)
+        self._lavalink_ready_event.set()
+        for player in self._players.values():
+            player.handle_lavalink_node_ready(resumed)
+
+    def handle_lavalink_node_lost(self, reason: str) -> None:
+        self.set_lavalink_connected(False)
+        for player in self._players.values():
+            player.handle_lavalink_connection_lost(reason)
+
+    async def test_youtube_cookies(self, query: str) -> tuple[bool, str]:
+        """Testa o arquivo de cookies contra uma URL, sem retornar dados sensiveis."""
+        valid, message = self.validate_youtube_cookies()
+        if not valid:
+            return False, message
+        try:
+            info = await asyncio.to_thread(self._extract_info, query)
+        except MusicError as error:
+            return False, str(error)
         entries = self._entries_from_info(info)
         if not entries:
-            raise MusicError("Nao encontrei nenhum resultado para essa busca.")
+            return False, "O YouTube nao retornou dados para essa URL."
+        return True, "Cookies aceitos pelo YouTube para essa URL."
 
-        limit = MAX_PLAYLIST_TRACKS if _is_url(normalized_query) else 1
-        return [self._track_from_info(entry, requested_by, normalized_query) for entry in entries[:limit]]
-
-    def _extract_best_info(self, query: str) -> dict:
+    def _extract_best_info(self, query: str, expected: SpotifyTrack | None = None) -> dict:
         if _is_url(query) or query.startswith(("ytsearch", "scsearch")):
             return self._extract_info(query)
 
         errors: list[str] = []
-        for candidate in (f"ytsearch5:{query}", f"scsearch5:{query}", query):
+        candidates: list[dict] = []
+        for candidate in (*(f"{provider}:{query}" for provider in SEARCH_PROVIDERS), query):
             try:
                 info = self._extract_info(candidate)
             except MusicError as error:
@@ -293,15 +1129,25 @@ class MusicService:
 
             entries = self._entries_from_info(info)
             if entries:
-                return entries[0]
+                candidates.extend(entries)
+
+        if candidates:
+            if expected is None:
+                return candidates[0]
+            best = max(candidates, key=lambda item: _spotify_match_score(item, expected))
+            if _spotify_match_score(best, expected) >= 0.35:
+                return best
+            errors.append("nenhum resultado correspondeu suficientemente aos metadados Spotify")
 
         detail = "; ".join(errors[-2:])
         raise MusicError(f"Nao encontrei musica nas fontes disponiveis. {detail}")
 
     def _extract_info(self, query: str) -> dict:
         try:
-            with yt_dlp.YoutubeDL(self._ytdl_options()) as ytdl:
+            with yt_dlp.YoutubeDL(self._ytdl_options(query)) as ytdl:
                 info = ytdl.extract_info(query, download=False)
+        except MusicError:
+            raise
         except Exception as error:
             raise MusicError(_friendly_ytdl_error(error)) from error
 
@@ -310,7 +1156,7 @@ class MusicService:
 
         return info
 
-    def _ytdl_options(self) -> dict:
+    def _ytdl_options(self, query: str | None = None) -> dict:
         options = dict(YTDL_OPTIONS)
         js_path = self._settings.youtube_js_runtime_path
         if js_path:
@@ -320,10 +1166,49 @@ class MusicService:
         options["remote_components"] = ["ejs:npm"]
 
         cookies_path = self._settings.youtube_cookies_path
-        if cookies_path and Path(cookies_path).exists():
-            options["cookiefile"] = cookies_path
+        if cookies_path and _uses_youtube(query):
+            valid, message = self.validate_youtube_cookies()
+            if not valid:
+                raise MusicError(message)
+            options["cookiefile"] = self._writable_youtube_cookies_path()
 
         return options
+
+    def _writable_youtube_cookies_path(self) -> str:
+        """Returns a writable private copy, keeping the Docker secret read-only."""
+        source = Path(self._settings.youtube_cookies_path or "")
+        try:
+            signature = (source.stat().st_mtime_ns, source.stat().st_size)
+        except OSError as error:
+            raise MusicError(f"Nao consegui acessar o arquivo de cookies: {error}") from error
+
+        if self._youtube_cookies_runtime_path and self._youtube_cookies_source_signature == signature:
+            return str(self._youtube_cookies_runtime_path)
+
+        runtime_path = Path(tempfile.gettempdir()) / "ayla-youtube-cookies.txt"
+        temporary_path = runtime_path.with_name(f".{runtime_path.name}.tmp")
+        try:
+            shutil.copyfile(source, temporary_path)
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, runtime_path)
+            os.chmod(runtime_path, 0o600)
+        except OSError as error:
+            with suppress(OSError):
+                temporary_path.unlink()
+            raise MusicError(f"Nao consegui preparar uma copia gravavel dos cookies: {error}") from error
+
+        self._youtube_cookies_runtime_path = runtime_path
+        self._youtube_cookies_source_signature = signature
+        return str(runtime_path)
+
+    def prepare_youtube_cookies(self) -> None:
+        """Refreshes the writable copy when a cookie secret is available."""
+        if not self._settings.youtube_cookies_path or not Path(self._settings.youtube_cookies_path).is_file():
+            return
+        try:
+            self._writable_youtube_cookies_path()
+        except MusicError as error:
+            logger.warning("[MUSIC] Could not prepare writable YouTube cookies: %s", _safe_error(error))
 
     def _entries_from_info(self, info: dict | None) -> list[dict]:
         if not info:
@@ -332,7 +1217,7 @@ class MusicService:
             return [info]
         return [entry for entry in info["entries"] if entry and entry.get("url")]
 
-    def _track_from_info(self, info: dict, requested_by: str, fallback_url: str) -> Track:
+    def _track_from_info(self, info: dict, requested_by: str, fallback_url: str, requester_id: int | None = None) -> Track:
         stream_url = info.get("url")
         if not stream_url:
             raise MusicError("Nao consegui obter o audio dessa fonte.")
@@ -342,18 +1227,33 @@ class MusicService:
             webpage_url=info.get("webpage_url") or fallback_url,
             stream_url=stream_url,
             requested_by=requested_by,
-            duration=info.get("duration"),
+            duration=_coerce_duration(info.get("duration")),
             artist=info.get("artist") or info.get("creator") or info.get("uploader"),
             album=info.get("album"),
             thumbnail_url=info.get("thumbnail"),
+            requester_id=requester_id,
+            http_headers=info.get("http_headers"),
+            source_query=fallback_url,
+            identifier=info.get("id"),
         )
+
+    async def refresh_track(self, track: Track) -> None:
+        if not track.webpage_url:
+            raise MusicError("A faixa não possui uma URL de origem para renovar o stream.")
+        info = await asyncio.to_thread(self._extract_info, track.webpage_url)
+        entries = self._entries_from_info(info)
+        if not entries:
+            raise MusicError("Não consegui renovar o stream da faixa.")
+        refreshed = self._track_from_info(entries[0], track.requested_by, track.webpage_url, track.requester_id)
+        track.stream_url = refreshed.stream_url
+        track.http_headers = refreshed.http_headers
 
     async def _normalize_query(self, query: str) -> str:
         if not _is_url(query):
             return query
 
         host = urlparse(query).netloc.lower()
-        if "spotify.com" in host or "deezer.com" in host:
+        if "deezer.com" in host:
             title = await self._resolve_oembed_title(query)
             if title:
                 return f"ytsearch1:{title}"
@@ -362,6 +1262,8 @@ class MusicService:
         return query
 
     async def _resolve_oembed_title(self, url: str) -> str | None:
+        parsed = urlparse(url)
+        canonical_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         endpoints = [
             "https://open.spotify.com/oembed",
             "https://noembed.com/embed",
@@ -369,7 +1271,7 @@ class MusicService:
         async with aiohttp.ClientSession() as session:
             for endpoint in endpoints:
                 try:
-                    async with session.get(endpoint, params={"url": url}, timeout=10) as response:
+                    async with session.get(endpoint, params={"url": canonical_url}, timeout=10) as response:
                         if response.status != 200:
                             continue
                         data = await response.json(content_type=None)
@@ -382,10 +1284,165 @@ class MusicService:
 
         return None
 
+    async def recommendations_for_track(self, track: Track, limit: int = 5) -> list[dict]:
+        lastfm = getattr(self._bot, "_lastfm", None)
+        if not lastfm or not lastfm.available or not track.artist:
+            return []
+        try:
+            similar = await lastfm.similar(track.artist, track.title, limit)
+            if similar:
+                return similar
+            recommendations: list[dict] = []
+            for artist in await lastfm.similar_artists(track.artist, limit=3):
+                artist_name = artist.get("name")
+                if not artist_name:
+                    continue
+                for item in await lastfm.artist_top_tracks(str(artist_name), limit=2):
+                    item["artist"] = {"name": artist_name}
+                    recommendations.append(item)
+                    if len(recommendations) >= limit:
+                        return recommendations
+            return recommendations
+        except Exception as error:
+            logger.info("[MUSIC] Last.fm recommendations unavailable: %s", _safe_error(error))
+            return []
+
+    async def recommendations_for_user(self, user_id: int, limit: int = 5) -> list[dict]:
+        lastfm = getattr(self._bot, "_lastfm", None)
+        if not lastfm or not lastfm.available:
+            return []
+        account = lastfm.repository.get_account(user_id)
+        if not account:
+            return []
+        try:
+            return await lastfm.top_tracks(account, limit)
+        except Exception as error:
+            logger.info("[MUSIC] Last.fm user recommendations unavailable: %s", _safe_error(error))
+            return []
+
 
 def _is_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_lavalink_voice(voice_client: Any) -> bool:
+    return bool(wavelink is not None and isinstance(voice_client, wavelink.Player))
+
+
+def _lavalink_tracks_match(expected: Any, received: Any) -> bool:
+    if expected is received:
+        return True
+    if expected is None or received is None:
+        return False
+    expected_encoded = getattr(expected, "encoded", None)
+    received_encoded = getattr(received, "encoded", None)
+    if expected_encoded and received_encoded:
+        return expected_encoded == received_encoded
+    expected_identifier = getattr(expected, "identifier", None)
+    received_identifier = getattr(received, "identifier", None)
+    return bool(expected_identifier and received_identifier and expected_identifier == received_identifier)
+
+
+def _voice_is_playing(voice_client: Any) -> bool:
+    return bool(voice_client.playing if _is_lavalink_voice(voice_client) else voice_client.is_playing())
+
+
+def _voice_is_paused(voice_client: Any) -> bool:
+    return bool(voice_client.paused if _is_lavalink_voice(voice_client) else voice_client.is_paused())
+
+
+def _safe_error(error: Exception) -> str:
+    return str(error).replace("\r", " ").replace("\n", " ")[:500]
+
+
+def _music_text(value: str | None) -> str:
+    return " ".join((value or "").lower().replace("-", " ").split())
+
+
+def _spotify_match_score(info: dict, expected: SpotifyTrack) -> float:
+    """Small deterministic score; Spotify remains metadata-only."""
+    expected_title = _music_text(expected.title)
+    actual_title = _music_text(info.get("track") or info.get("title"))
+    expected_artists = [_music_text(artist) for artist in expected.artists if artist]
+    actual_artist = _music_text(info.get("artist") or info.get("creator") or info.get("uploader"))
+    if not expected_title or not actual_title:
+        return 0.0
+
+    title_tokens = set(expected_title.split())
+    actual_tokens = set(actual_title.split())
+    title_score = len(title_tokens & actual_tokens) / max(len(title_tokens), 1)
+    if expected_title == actual_title:
+        title_score = 1.0
+    artist_score = 1.0 if any(artist and (artist in actual_artist or actual_artist in artist) for artist in expected_artists) else 0.0
+
+    expected_duration = expected.duration_ms / 1000 if expected.duration_ms else None
+    actual_duration = _coerce_duration(info.get("duration"))
+    duration_score = 0.5
+    if expected_duration and actual_duration:
+        difference = abs(actual_duration - expected_duration) / max(expected_duration, 1)
+        duration_score = 1.0 if difference <= 0.08 else 0.6 if difference <= 0.20 else 0.0
+
+    score = title_score * 0.55 + artist_score * 0.30 + duration_score * 0.15
+    undesired = ("cover", "karaoke", "tribute")
+    original_terms = set(expected_title.split())
+    if any(term in actual_title.split() and term not in original_terms for term in undesired):
+        score -= 0.25
+    for term in ("remix", "live"):
+        if term in actual_title.split() and term not in original_terms:
+            score -= 0.15
+    return max(0.0, score)
+
+
+def _friendly_lavalink_error(error: Exception) -> str:
+    return f"Falha do Lavalink: {_safe_error(error)}"
+
+
+def _is_recoverable_provider_error(message: str) -> bool:
+    normalized = message.lower()
+    non_provider = ("cookies_path", "arquivo de cookies", "formato mozilla", "dependencia", "permissao", "permission")
+    if any(item in normalized for item in non_provider):
+        return False
+    return any(item in normalized for item in (
+        "http error", "http 4", "http 5", "too many requests", "sign in to confirm",
+        "not a bot", "unavailable", "blocked", "extract", "stream", "video",
+        "source", "no results", "nao consegui carregar", "nao encontrei",
+    ))
+
+
+def _is_recoverable_playback_error(error: Exception) -> bool:
+    normalized = str(error).lower()
+    if any(item in normalized for item in (
+        "ffmpeg was not found", "executable not found", "no such file", "permission denied",
+        "already playing", "not connected", "voice client", "cannot connect",
+    )):
+        return False
+    return _is_stream_rejected(error) or any(item in normalized for item in (
+        "connection reset", "broken pipe", "process exited", "http error", "timed out",
+        "input/output error", "return code",
+    ))
+
+
+def _uses_youtube(query: str | None) -> bool:
+    if not query:
+        return False
+    if query.startswith("ytsearch"):
+        return True
+    host = urlparse(query).netloc.lower()
+    return host == "youtu.be" or host.endswith("youtube.com")
+
+
+def _is_stream_rejected(error: Exception | None) -> bool:
+    if error is None:
+        return False
+    message = str(error).lower()
+    return (
+        "403" in message
+        or "http error 400" in message
+        or "server returned 400" in message
+        or "return code of 8" in message
+        or "return code 8" in message
+    )
 
 
 def _friendly_ytdl_error(error: Exception) -> str:
@@ -423,14 +1480,49 @@ def build_now_playing_embed(player: GuildMusicPlayer, *, automatic: bool = False
     return embed
 
 
-def _format_track_time(position: int, duration: int | None) -> str:
+def build_queue_finished_embed(track: Track, recommendations: list[dict] | None = None) -> discord.Embed:
+    embed = discord.Embed(title="Fila finalizada", color=0x5865F2)
+    embed.description = f"A fila terminou após **{track.title}**."
+    items = []
+    for item in recommendations or []:
+        artist_data = item.get("artist")
+        artist = artist_data.get("name") if isinstance(artist_data, dict) else artist_data
+        artist = str(artist or "Artista desconhecido")
+        title = str(item.get("name") or "Musica")
+        url = item.get("url") or f"https://www.youtube.com/results?search_query={quote_plus(f'{artist} {title}')}"
+        items.append(f"[{title} — {artist}]({url})")
+    if items:
+        embed.add_field(name="Sugestões do Last.fm", value="\n".join(items[:5]), inline=False)
+    else:
+        embed.add_field(name="Sugestões", value="Use `a!autoplay` para montar uma fila com seu Last.fm.", inline=False)
+    return embed
+
+
+def _coerce_duration(value: object) -> int | None:
+    """Converte duracoes do yt-dlp (normalmente float) para segundos inteiros."""
+    if value is None:
+        return None
+
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    if seconds < 0:
+        return 0
+    return int(seconds)
+
+
+def _format_track_time(position: int | float, duration: int | float | None) -> str:
     if duration is None:
         return _format_duration(position)
     return f"{_format_duration(position)} / {_format_duration(duration)}"
 
 
-def _format_duration(seconds: int) -> str:
-    minutes, remaining_seconds = divmod(max(0, seconds), 60)
+def _format_duration(seconds: int | float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours}:{minutes:02d}:{remaining_seconds:02d}"

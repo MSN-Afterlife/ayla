@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -8,11 +9,48 @@ from unittest.mock import AsyncMock
 import discord
 
 from bot.client import create_bot
-from bot.commands.migration import _DatasetPolicyView, _SourceSelectionView, _confirm, _execute_target, _is_admin, _migration_id_autocomplete, _plan, _player_autocomplete, _reply, _request_confirmation, _resolve_plan_request, _resolve_target, _rollback_by_selector, _safe_multi_source_plan, _status, _status_by_selector
+from bot.commands.migration import (
+    _DatasetPolicyView,
+    _PlanActionView,
+    _ReplaceTargetConfirmationView,
+    _SourceSelectionView,
+    _confirm,
+    _execute_target,
+    _format_plan,
+    _is_admin,
+    _migration_id_autocomplete,
+    _plan,
+    _plan_action_view,
+    _player_autocomplete,
+    _replace_target_policy,
+    _reply,
+    _request_confirmation,
+    _resolve_plan_request,
+    _resolve_target,
+    _rollback_by_selector,
+    _safe_multi_source_plan,
+    _status,
+    _status_by_selector,
+)
 from bot.config import Settings
 from bot.services.migration_audit import MigrationAuditStore
 from bot.services.migration_confirmation import MigrationConfirmationStore
-from bot.services.migration_engine_client import LockState, MigrationExecution, MigrationPlan, MigrationPlanRequest, MigrationPreviewResult, MigrationReference, MigrationRollback, MigrationSource, MigrationState, MigrationStatus, PlannedOperation, PlayerReference, PresenceState
+from bot.services.migration_engine_client import (
+    LockState,
+    MigrationEngineInvalidResponse,
+    MigrationExecution,
+    MigrationPlan,
+    MigrationPlanRequest,
+    MigrationPreviewResult,
+    MigrationReference,
+    MigrationRollback,
+    MigrationSource,
+    MigrationState,
+    MigrationStatus,
+    PlannedOperation,
+    PlayerReference,
+    PresenceState,
+)
 
 
 class FakeClient:
@@ -28,6 +66,7 @@ class FakeClient:
             rollback_available=True,
             presence=PresenceState.OFFLINE_CONFIRMED,
             lock_state=LockState.ABSENT,
+            status="READY",
         )
         self.migrations = []
         self.players = []
@@ -204,6 +243,7 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
             rollback_available=True,
             presence=PresenceState.OFFLINE_CONFIRMED,
             lock_state=LockState.ABSENT,
+            status="READY",
         )
         await _plan(self.target, client, self.audit, MigrationPlanRequest(discord_user_id="123"))
         view = self.target.send.await_args.kwargs["view"]
@@ -236,9 +276,40 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction = fake_interaction(42, self.confirmations)
         await view.children[0].callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        await confirm_view.replace_button.callback(interaction)
         self.assertEqual([source.platform for source in client.plan_request.sources], ["java", "bedrock"])
         self.assertEqual(client.plan_request.target["discord_user_id"], "884592686101852232")
-        self.assertEqual(client.plan_request.dataset_policy["playerdata"], "java")
+        self.assertEqual(client.plan_request.dataset_policy["strategy"], "REPLACE_TARGET")
+        self.assertEqual(client.plan_request.dataset_policy["source"], {"platform": "java", "external_id": "java-id"})
+        self.assertTrue(client.plan_request.dataset_policy["confirmed_replace_target"])
+
+    async def test_multiple_java_sources_renders_explicit_selection_buttons(self):
+        client = FakeClient(status())
+        legacy_source = MigrationSource("java", "0515e221-32d9-3337-bd41-6f5133736827", "Ben2149", source_type="legacy")
+        linked_source = MigrationSource("java", "51ec26ac-cb29-42f4-9284-b7eeb60b9485", "Rubens", source_type="linked")
+        view = _SourceSelectionView(
+            client,
+            self.audit,
+            None,
+            "Ben2149",
+            (legacy_source, linked_source),
+            "1066179464528138260",
+        )
+        self.assertEqual(len(view.children), 3)
+        self.assertIn("Ben2149", view.children[0].label)
+        self.assertIn("legacy", view.children[0].label)
+        self.assertIn("Rubens", view.children[1].label)
+        self.assertIn("linked", view.children[1].label)
+
+        # Operator chooses the legacy source explicitly
+        interaction = fake_interaction(42, self.confirmations)
+        await view.children[0].callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        self.assertEqual(confirm_view.source.external_id, "0515e221-32d9-3337-bd41-6f5133736827")
+        await confirm_view.replace_button.callback(interaction)
+        self.assertEqual(client.plan_request.dataset_policy["source"]["external_id"], "0515e221-32d9-3337-bd41-6f5133736827")
+        self.assertEqual(client.plan_request.dataset_policy["strategy"], "REPLACE_TARGET")
 
     async def test_multi_source_plano_inseguro_nao_mostra_execute(self):
         plan = MigrationPlan(
@@ -289,8 +360,11 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction = fake_interaction(42, self.confirmations)
         await view.children[0].callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        await confirm_view.replace_button.callback(interaction)
         self.assertEqual([source.platform for source in client.plan_request.sources], ["java", "bedrock"])
-        self.assertEqual(set(client.plan_request.dataset_policy.values()), {"java"})
+        self.assertEqual(client.plan_request.dataset_policy["strategy"], "REPLACE_TARGET")
+        self.assertEqual(client.plan_request.dataset_policy["source"], {"platform": "java", "external_id": "java-id"})
 
     async def test_botao_expirado(self):
         client = FakeClient(status())
@@ -424,8 +498,8 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
             (MigrationSource("java", "java-id", "Mounkass"), MigrationSource("bedrock", "xuid", ".Mounkass")),
             "884592686101852232",
         )
-        self.assertEqual(len(view.children), 4)
-        compare_btn = view.children[3]
+        self.assertEqual(len(view.children), 3)
+        compare_btn = view.children[2]
         self.assertEqual(compare_btn.label, "📊 Comparar progresso")
         interaction = fake_interaction(42, self.confirmations)
         await compare_btn.callback(interaction)
@@ -449,13 +523,327 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(client.preview_request)
 
 
+    def test_format_plan_with_structural_operations_without_dataset(self):
+        plan = MigrationPlan(
+            migration_id="mig-1234567890abcdef",
+            source_identities=("src-java",),
+            canonical_target="target-uuid",
+            operations=(
+                PlannedOperation(dataset=None, action="ATTACH_JAVA_IDENTITY", detail="Attach java"),
+                PlannedOperation(dataset="playerdata", action="MOVE_FILE", detail="Move playerdata"),
+            ),
+            affected_datasets=("playerdata",),
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.UNLOCKED,
+            rollback_available=True,
+        )
+        formatted = _format_plan(plan)
+        self.assertIn("Operacoes: `ATTACH_JAVA_IDENTITY`, `playerdata:MOVE_FILE`", formatted)
+        self.assertNotIn("None:", formatted)
+
+    def test_audit_store_legacy_schema_migration_and_row_preservation(self):
+        db_path = Path(self.directory.name) / "legacy_audit.sqlite3"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE minecraft_migration_audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    user_id TEXT,
+                    details TEXT,
+                    operator_id TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO minecraft_migration_audit_events (timestamp, event_type, user_id, details, operator_id)
+                VALUES ('2026-09-07T12:00:00Z', 'LEGACY_EVENT', '123456789', 'legacy error detail', '987654321')
+                """
+            )
+            conn.commit()
+
+        # Initialize store on legacy DB - triggers migration
+        store = MigrationAuditStore(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(minecraft_migration_audit_events)").fetchall()}
+            expected_cols = {
+                "id", "event_type", "discord_user_id", "canonical_uuid", "migration_id",
+                "presence", "lock_state", "result", "error", "metadata_json", "created_at"
+            }
+            self.assertTrue(expected_cols.issubset(cols))
+
+            row = conn.execute("SELECT * FROM minecraft_migration_audit_events WHERE id=1").fetchone()
+            self.assertIsNotNone(row)
+            # Map legacy columns: user_id -> discord_user_id, timestamp -> created_at, details -> error
+            row_dict = dict(zip([c[1] for c in conn.execute("PRAGMA table_info(minecraft_migration_audit_events)").fetchall()], row))
+            self.assertEqual(row_dict["event_type"], "LEGACY_EVENT")
+            self.assertEqual(row_dict["discord_user_id"], "123456789")
+            self.assertEqual(row_dict["created_at"], "2026-09-07T12:00:00Z")
+            self.assertEqual(row_dict["error"], "legacy error detail")
+
+        # Verify new writes succeed
+        store.record("NEW_EVENT", discord_user_id="999888", result="ok")
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT count(*) FROM minecraft_migration_audit_events").fetchone()[0]
+            self.assertEqual(count, 2)
+
+    async def test_audit_store_failure_does_not_crash_plan(self):
+        # Point audit to a read-only or invalid directory to simulate DB failure
+        broken_audit = MigrationAuditStore(Path(self.directory.name) / "normal.sqlite3")
+        broken_audit._connect = lambda: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error"))
+
+        # Calling record directly must not raise
+        broken_audit.record("TEST", discord_user_id="123", result="failed", error="something")
+
+        # Calling _plan with a client error + broken audit must not crash the callback
+        failing_client = FakeClient(status())
+        failing_client.plan = AsyncMock(side_effect=MigrationEngineInvalidResponse("Invalid plan response"))
+
+        interaction = fake_interaction(42, self.confirmations)
+        request = MigrationPlanRequest(canonical_uuid="test-uuid")
+
+        await _plan(interaction, failing_client, broken_audit, request)
+        # Verify interaction received error reply despite audit failure
+        self.assertTrue(interaction.response.send_message.called or interaction.followup.send.called)
+
+    async def test_source_selection_view_defers_interaction(self):
+        client = FakeClient(status())
+        client.plan = AsyncMock(return_value=MigrationPlan(
+            migration_id="mig-123",
+            source_identities=("src",),
+            canonical_target="target",
+            operations=(),
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.UNLOCKED,
+        ))
+        view = _SourceSelectionView(
+            client,
+            self.audit,
+            None,
+            "KekseGb",
+            (MigrationSource("java", "uuid-1", "KekseGb"),),
+            "1509541527159050374",
+        )
+        interaction = fake_interaction(42, self.confirmations)
+
+        java_btn = view.children[0]  # Usar progresso Java
+        await java_btn.callback(interaction)
+        confirm_view = interaction.response.edit_message.await_args.kwargs["view"]
+        await confirm_view.replace_button.callback(interaction)
+
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+
+    def test_format_plan_renders_execution_mode_hot(self):
+        plan = MigrationPlan(
+            migration_id="mig-hot-1",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            execution_mode="HOT",
+            status="READY",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        rendered = _format_plan(plan)
+        self.assertIn("Modo: `HOT`", rendered)
+        self.assertIn("⚡ Pode ser migrado sem reiniciar o servidor.", rendered)
+
+    def test_format_plan_renders_execution_mode_quiescent(self):
+        plan = MigrationPlan(
+            migration_id="mig-quiescent-1",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            execution_mode="QUIESCENT",
+            status="READY",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        rendered = _format_plan(plan)
+        self.assertIn("Modo: `QUIESCENT`", rendered)
+        self.assertIn("🛠 Esta migração exige janela de manutenção.", rendered)
+
+    def test_plan_action_view_suppresses_execute_button_when_status_not_ready(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-blocked",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="BLOCKED",
+            blockers=(),
+            conflicts=(),
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _plan_action_view(client, self.audit, plan, "42")
+        self.assertIsNone(view)
+
+    def test_plan_action_view_suppresses_execute_button_when_blockers(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-blockers",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="READY",
+            blockers=("player is online",),
+            conflicts=(),
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _plan_action_view(client, self.audit, plan, "42")
+        self.assertIsNone(view)
+
+    def test_plan_action_view_suppresses_execute_button_when_conflicts(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-conflicts",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="READY",
+            blockers=(),
+            conflicts=("dataset conflict",),
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _plan_action_view(client, self.audit, plan, "42")
+        self.assertIsNone(view)
+
+    def test_plan_action_view_returns_view_when_ready(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-ready",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="READY",
+            blockers=(),
+            conflicts=(),
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _plan_action_view(client, self.audit, plan, "42")
+        self.assertIsNotNone(view)
+        self.assertIsInstance(view, _PlanActionView)
+
+    async def test_plan_action_view_execute_button_defense_in_depth_blocked(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-defense",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="BLOCKED",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _PlanActionView(client, self.audit, self.confirmations, plan, "42")
+        interaction = fake_interaction(42, self.confirmations)
+        await view.execute_button.callback(interaction)
+        self.assertIn("Este plano possui impedimentos", interaction.response.send_message.await_args.args[0])
+
+    async def test_plan_action_view_execute_button_defense_in_depth_non_admin(self):
+        client = FakeClient(status())
+        plan = MigrationPlan(
+            migration_id="mig-defense-admin",
+            source_identities=("src",),
+            canonical_target="canonical-uuid",
+            status="READY",
+            rollback_available=True,
+            presence=PresenceState.OFFLINE_CONFIRMED,
+            lock_state=LockState.ABSENT,
+        )
+        view = _PlanActionView(client, self.audit, self.confirmations, plan, "42")
+        interaction = fake_interaction(42, self.confirmations, admin=False)
+        await view.execute_button.callback(interaction)
+        self.assertIn("Voce nao tem permissao administrativa", interaction.response.send_message.await_args.args[0])
+
+    def test_replace_target_policy_structure(self):
+        source = MigrationSource("java", "java-uuid", "Player1")
+        policy = _replace_target_policy(source)
+        self.assertEqual(policy["strategy"], "REPLACE_TARGET")
+        self.assertEqual(policy["source"], {"platform": "java", "external_id": "java-uuid"})
+        self.assertTrue(policy["confirmed_replace_target"])
+        self.assertEqual(policy["global_preserve"], ["simplelogin"])
+
+    def test_replace_target_confirmation_view_rendering(self):
+        client = FakeClient(status())
+        source = MigrationSource("java", "java-uuid", "Player1")
+        view = _ReplaceTargetConfirmationView(
+            client, self.audit, source, "123456", "Player1", "test reason", "42"
+        )
+        content = view.render_content()
+        self.assertIn("Fonte selecionada: `java:Player1`", content)
+        self.assertIn("⚠️ O progresso atual da conta unificada será substituído.", content)
+        self.assertIn("Um snapshot será criado antes da migração e poderá ser usado para rollback.", content)
+
+    async def test_replace_target_confirmation_view_cancel_button(self):
+        client = FakeClient(status())
+        source = MigrationSource("java", "java-uuid", "Player1")
+        view = _ReplaceTargetConfirmationView(
+            client, self.audit, source, "123456", "Player1", "test reason", "42"
+        )
+        interaction = fake_interaction(42, self.confirmations)
+        await view.cancel_button.callback(interaction)
+        self.assertIn("Migração cancelada. Nenhum dado foi alterado.", interaction.response.send_message.await_args.args[0])
+        for child in view.children:
+            self.assertTrue(child.disabled)
+
+    async def test_replace_target_confirmation_view_other_operator_blocked(self):
+        client = FakeClient(status())
+        source = MigrationSource("java", "java-uuid", "Player1")
+        view = _ReplaceTargetConfirmationView(
+            client, self.audit, source, "123456", "Player1", "test reason", "42"
+        )
+        interaction = fake_interaction(99, self.confirmations)
+        await view.replace_button.callback(interaction)
+        self.assertIn("Este componente pertence a outro operador.", interaction.response.send_message.await_args.args[0])
+
+    async def test_replace_target_confirmation_view_non_admin_blocked(self):
+        client = FakeClient(status())
+        source = MigrationSource("java", "java-uuid", "Player1")
+        view = _ReplaceTargetConfirmationView(
+            client, self.audit, source, "123456", "Player1", "test reason", "42"
+        )
+        interaction = fake_interaction(42, self.confirmations, admin=False)
+        await view.replace_button.callback(interaction)
+        self.assertIn("Voce nao tem permissao administrativa", interaction.response.send_message.await_args.args[0])
+
+    async def test_replace_target_confirmation_view_expired_blocked(self):
+        client = FakeClient(status())
+        source = MigrationSource("java", "java-uuid", "Player1")
+        view = _ReplaceTargetConfirmationView(
+            client, self.audit, source, "123456", "Player1", "test reason", "42"
+        )
+        view.expires_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        interaction = fake_interaction(42, self.confirmations)
+        await view.replace_button.callback(interaction)
+        self.assertIn("Este componente expirou.", interaction.response.send_message.await_args.args[0])
+
+
 if __name__ == "__main__":
     unittest.main()
 
 
 def fake_interaction(user_id, confirmations, *, admin=True, manage_guild=True, deferred=False):
+    done = deferred
+
+    async def fake_defer(*args, **kwargs):
+        nonlocal done
+        done = True
+
     permissions = SimpleNamespace(administrator=admin, manage_guild=manage_guild)
-    response = SimpleNamespace(is_done=lambda: deferred, send_message=AsyncMock(), edit_message=AsyncMock())
+    response = SimpleNamespace(
+        is_done=lambda: done,
+        send_message=AsyncMock(),
+        edit_message=AsyncMock(),
+        defer=AsyncMock(side_effect=fake_defer),
+    )
     followup = SimpleNamespace(send=AsyncMock())
     message = SimpleNamespace(edit=AsyncMock())
     client = SimpleNamespace(_migration_confirmations=confirmations)

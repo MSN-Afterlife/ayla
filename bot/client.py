@@ -13,6 +13,8 @@ from bot.commands.help import setup_help_command
 from bot.commands.interactions import setup_interaction_commands
 from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
+from bot.commands.migration import setup_migration_commands
+from bot.commands.minecraft import setup_minecraft_commands
 from bot.commands.music import setup_music_commands
 from bot.commands.presence import setup_presence_commands
 from bot.commands.presence import start_presence_rotation
@@ -22,6 +24,7 @@ from bot.config import Settings
 from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
+from bot.services.minecraft_identity import MinecraftIdentityStore
 from bot.services.site_api import SiteApiServer
 from bot.services.lastfm_service import LastFmService
 from bot.services.lastfm_scrobble import LastFmScrobbler
@@ -33,7 +36,13 @@ class AylaBot(commands.Bot):
         super().__init__(*args, **kwargs)
         self._lastfm = LastFmService(settings)
         self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
-        self._site_api = SiteApiServer(settings, self.is_ready, self._lastfm) if settings.site_api_enabled else None
+        self._minecraft_identity_store = MinecraftIdentityStore(settings)
+        self._site_api = SiteApiServer(
+            settings,
+            self.is_ready,
+            lastfm=self._lastfm,
+            minecraft_store=self._minecraft_identity_store,
+        ) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
         if self._site_api:
@@ -105,6 +114,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     intents.message_content = True
 
     bot = AylaBot(settings, command_prefix=settings.command_prefix, intents=intents, help_command=None)
+    bot._settings = settings
     bot._slash_synced = False
     bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)
@@ -134,6 +144,8 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_uno_commands(bot, settings)
     setup_bingo_commands(bot)
     setup_help_command(bot, settings)
+    setup_minecraft_commands(bot, bot._minecraft_identity_store)
+    setup_migration_commands(bot, settings)
     setup_message_events(bot, settings, chat_config)
     setup_command_debug(bot)
     return bot

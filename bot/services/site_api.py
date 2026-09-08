@@ -10,17 +10,25 @@ from bot.config import Settings
 from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
 from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
+from bot.services.minecraft_identity import MinecraftIdentityStore, MinecraftLinkError, valid_internal_token
 from bot.commands.uno import CHAOS_CHARACTERS
 
 
 class SiteApiServer:
-    def __init__(self, settings: Settings, readiness_check: Callable[[], bool], lastfm: LastFmService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        readiness_check: Callable[[], bool],
+        lastfm: LastFmService | None = None,
+        minecraft_store: MinecraftIdentityStore | None = None,
+    ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
         self._economy = EconomyService(settings)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._lastfm = lastfm
+        self._minecraft = minecraft_store or MinecraftIdentityStore(settings)
 
     async def start(self) -> None:
         if self._runner:
@@ -44,6 +52,9 @@ class SiteApiServer:
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
         app.router.add_get("/auth/lastfm/callback", self._lastfm_callback)
+        app.router.add_post("/internal/minecraft/link/request", self._minecraft_link_request)
+        app.router.add_get("/internal/minecraft/account/{platform}/{external_id}", self._minecraft_account_lookup)
+        app.router.add_get("/internal/minecraft/account/java/{external_id}", self._minecraft_java_lookup)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -278,6 +289,37 @@ class SiteApiServer:
 
     async def _options(self, request: web.Request) -> web.Response:
         return web.Response(status=204)
+
+    def _internal_authorized(self, request: web.Request) -> bool:
+        supplied = request.headers.get("authorization", "")
+        if supplied.lower().startswith("bearer "):
+            supplied = supplied[7:].strip()
+        return valid_internal_token(self._settings.ayla_minecraft_internal_token, supplied)
+
+    async def _minecraft_link_request(self, request: web.Request) -> web.Response:
+        if not self._internal_authorized(request):
+            return web.json_response({"ok": False, "message": "Nao autorizado."}, status=401)
+        try:
+            payload = await request.json()
+            result = self._minecraft.request_link_code(
+                payload.get("platform"), payload.get("external_id"), payload.get("username"),
+                requested_ip=request.remote,
+            )
+            return web.json_response(result)
+        except (MinecraftLinkError, AttributeError, TypeError, json.JSONDecodeError) as error:
+            return web.json_response({"ok": False, "message": str(error)}, status=400)
+
+    async def _minecraft_java_lookup(self, request: web.Request) -> web.Response:
+        return await self._minecraft_account_lookup(request, forced_platform="java")
+
+    async def _minecraft_account_lookup(self, request: web.Request, forced_platform: str | None = None) -> web.Response:
+        if not self._internal_authorized(request):
+            return web.json_response({"ok": False, "message": "Nao autorizado."}, status=401)
+        try:
+            platform = forced_platform or request.match_info["platform"]
+            return web.json_response(self._minecraft.lookup_account(platform, request.match_info["external_id"]))
+        except MinecraftLinkError as error:
+            return web.json_response({"ok": False, "message": str(error)}, status=400)
 
 
 def _cors_middleware(origin: str):

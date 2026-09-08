@@ -225,6 +225,31 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.result, "executed")
         self.assertEqual(FakeSession.calls[0][3]["Idempotency-Key"], "idem-1")
 
+    async def test_execute_modes_and_quiescence_proof_payload(self):
+        FakeSession.responses = [(200, EXECUTE_PAYLOAD)]
+        await self.client.execute("mig-1", operator_id="42", idempotency_key="idem-hot", execution_mode="HOT")
+        self.assertEqual(FakeSession.calls[0][2], {"operator_id": "42", "execution_mode": "HOT"})
+        FakeSession.responses = [(200, EXECUTE_PAYLOAD)]
+        proof = {"mode": "PAPER_OFFLINE_CONFIRMED", "valid": True}
+        await self.client.execute("mig-1", operator_id="42", idempotency_key="idem-q", execution_mode="QUIESCENT", quiescence_proof=proof)
+        self.assertEqual(FakeSession.calls[-1][2], {"operator_id": "42", "execution_mode": "QUIESCENT", "quiescence_proof": proof})
+
+    async def test_maintenance_contract_payloads(self):
+        proof = {"mode": "PAPER_OFFLINE_CONFIRMED", "valid": True}
+        FakeSession.responses = [(200, {"status": "stopped", "quiescence_proof": proof})]
+        stopped = await self.client.maintenance_paper_stop("mig-1", operator_id="42")
+        self.assertEqual(stopped.quiescence_proof, proof)
+        self.assertEqual(FakeSession.calls[0][2], {"migration_id": "mig-1", "operator_id": "42", "timeout_seconds": 60})
+        FakeSession.responses = [(200, {"status": "started"})]
+        await self.client.maintenance_paper_start("mig-1", operator_id="42")
+        self.assertEqual(FakeSession.calls[-1][2], {"migration_id": "mig-1", "operator_id": "42", "timeout_seconds": 180})
+        FakeSession.responses = [(200, {"healthy": True})]
+        await self.client.maintenance_health()
+        self.assertEqual(FakeSession.calls[-1][0], "GET")
+        FakeSession.responses = [(200, {"status": "released"})]
+        await self.client.maintenance_lock_release("mig-1")
+        self.assertEqual(FakeSession.calls[-1][2], {"migration_id": "mig-1", "force": False})
+
     async def test_client_rollback_success(self):
         FakeSession.responses = [(200, ROLLBACK_PAYLOAD)]
         result = await self.client.rollback("mig-1", operator_id="42", idempotency_key="idem-2")

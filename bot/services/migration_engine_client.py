@@ -59,6 +59,9 @@ class MigrationErrorCode(str, Enum):
     UNAVAILABLE = "unavailable"
     INVALID_RESPONSE = "invalid_response"
     NOT_CONFIGURED = "not_configured"
+    STALE_PLAN = "stale_plan"
+    RECOVERY_REQUIRED = "recovery_required"
+    QUIESCENCE_REQUIRED = "quiescence_required"
 
 
 class MigrationEngineError(Exception):
@@ -183,6 +186,13 @@ class MigrationExecution:
     rollback_available: bool = False
     presence: PresenceState = PresenceState.UNKNOWN
     lock_state: LockState = LockState.UNKNOWN
+
+
+@dataclass(frozen=True)
+class MaintenanceResponse:
+    status: str | None = None
+    quiescence_proof: dict[str, Any] | None = None
+    health: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -422,14 +432,55 @@ class MigrationEngineClient:
         payload = await self._request("POST", "/api/v1/migrations/preview", json_payload=request.payload())
         return _parse_preview_result(payload)
 
-    async def execute(self, migration_id: str, *, operator_id: str, idempotency_key: str | None = None) -> MigrationExecution:
+    async def execute(
+        self,
+        migration_id: str,
+        *,
+        operator_id: str,
+        idempotency_key: str | None = None,
+        quiescence_proof: dict[str, Any] | None = None,
+        execution_mode: str | None = None,
+    ) -> MigrationExecution:
+        body: dict[str, Any] = {"operator_id": operator_id}
+        if execution_mode:
+            body["execution_mode"] = execution_mode
+        if quiescence_proof is not None:
+            body["quiescence_proof"] = quiescence_proof
         payload = await self._request(
             "POST",
             f"/api/v1/migrations/{_path_id(migration_id)}/execute",
-            json_payload={"operator_id": operator_id},
+            json_payload=body,
             idempotency_key=idempotency_key,
         )
         return _parse_execution(payload)
+
+    async def maintenance_paper_stop(self, migration_id: str, *, operator_id: str, timeout_seconds: int = 60) -> MaintenanceResponse:
+        payload = await self._request(
+            "POST", "/api/v1/maintenance/paper/stop",
+            json_payload={"migration_id": migration_id, "operator_id": operator_id, "timeout_seconds": timeout_seconds},
+        )
+        data = _require_dict(payload)
+        return MaintenanceResponse(status=_optional_str(data.get("status")), quiescence_proof=_optional_dict(data.get("quiescence_proof")))
+
+    async def maintenance_paper_start(self, migration_id: str, *, operator_id: str, timeout_seconds: int = 180) -> MaintenanceResponse:
+        payload = await self._request(
+            "POST", "/api/v1/maintenance/paper/start",
+            json_payload={"migration_id": migration_id, "operator_id": operator_id, "timeout_seconds": timeout_seconds},
+        )
+        data = _require_dict(payload)
+        return MaintenanceResponse(status=_optional_str(data.get("status")))
+
+    async def maintenance_health(self) -> MaintenanceResponse:
+        payload = await self._request("GET", "/api/v1/maintenance/health")
+        return MaintenanceResponse(health=_require_dict(payload))
+
+    async def maintenance_lock_release(self, migration_id: str, *, force: bool = False) -> MaintenanceResponse:
+        payload = await self._request(
+            "POST", "/api/v1/maintenance/lock/release",
+            json_payload={"migration_id": migration_id, "force": force},
+        )
+        data = _require_dict(payload)
+        return MaintenanceResponse(status=_optional_str(data.get("status")))
 
     async def rollback(self, migration_id: str, *, operator_id: str, idempotency_key: str | None = None) -> MigrationRollback:
         payload = await self._request(
@@ -690,6 +741,10 @@ def _parse_policy(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     return {str(key): item for key, item in value.items() if str(key).strip()}
+
+
+def _optional_dict(value: object) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
 
 
 def _parse_identity(data: dict[str, Any]) -> IdentitySummary:

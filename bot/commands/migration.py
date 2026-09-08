@@ -130,6 +130,18 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
         if request:
             await _inspect(interaction, client, audit, request)
 
+    @group.command(name="migrar", description="Migra sua identidade Minecraft com verificacoes de seguranca")
+    @app_commands.describe(alvo="Alvo opcional; somente admins podem informar terceiros")
+    async def migrar_slash(interaction: discord.Interaction, alvo: str | None = None) -> None:
+        if not _is_staff(interaction.user):
+            await _reply(interaction, "Voce nao tem permissao para executar migrations.")
+            return
+        if alvo and not _is_admin(interaction.user):
+            await _reply(interaction, "Staff comum so pode migrar a propria identidade.")
+            return
+        await _defer(interaction)
+        await _one_click_migrate(interaction, client, audit, alvo)
+
     @group.command(name="plan", description="Gera um plano de migration sem executar alteracoes")
     @app_commands.describe(nick="Nick Minecraft do jogador", reason="Motivo administrativo opcional")
     @app_commands.autocomplete(nick=autocomplete_player)
@@ -518,6 +530,168 @@ async def _confirm(
         await _reply(target, _error_message(error))
 
 
+def _safe_one_click_error_message(error: Exception) -> str:
+    if isinstance(error, MigrationEngineError):
+        return _error_message(error)
+    return "Ocorreu uma falha interna na operacao. Tente novamente; nenhum detalhe interno foi exposto."
+
+
+def _source_key(source: MigrationSource) -> tuple[str, str, str | None]:
+    return (source.platform.casefold(), source.external_id, source.physical_uuid)
+
+
+def _identity_sources(identity: IdentitySummary) -> tuple[MigrationSource, ...]:
+    result = []
+    for account in (identity.java, identity.bedrock):
+        if account:
+            result.append(MigrationSource(account.platform, account.external_id, account.username, source_type="linked"))
+    return tuple(result)
+
+
+def _safe_one_click_metadata(*, operator_id: str, target_discord_id: str, canonical_uuid: str, source: MigrationSource, all_sources: tuple[MigrationSource, ...], migration_id: str | None = None, execution_mode: str | None = None, result: object | None = None) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "operator_discord_id": operator_id,
+        "target_discord_id": target_discord_id,
+        "canonical_uuid": canonical_uuid,
+        "pinned_source": source.payload(),
+        "source_type": source.source_type,
+        "unselected_sources": [item.payload() for item in all_sources if _source_key(item) != _source_key(source)],
+    }
+    if migration_id:
+        metadata["migration_id"] = migration_id
+    if execution_mode:
+        metadata["execution_mode"] = execution_mode
+    if result is not None:
+        metadata["result"] = str(result)[:300]
+    return metadata
+
+
+async def _revalidate_pinned_source(client: MigrationEngineClient, *, operator_id: str, canonical_uuid: str, target_discord_id: str, source: MigrationSource) -> IdentitySummary:
+    inspected = await client.inspect(MigrationInspectRequest(canonical_uuid=canonical_uuid, discord_user_id=target_discord_id))
+    identity = inspected.identity
+    if identity.canonical_uuid != canonical_uuid or identity.discord_user_id != target_discord_id:
+        raise MigrationEngineRejected(MigrationErrorCode.CONFLICT, "identity changed")
+    if _source_key(source) not in {_source_key(item) for item in _identity_sources(identity)}:
+        raise MigrationEngineRejected(MigrationErrorCode.CONFLICT, "pinned source changed")
+    if inspected.presence is not PresenceState.OFFLINE_CONFIRMED or inspected.lock_state.blocks_mutation or inspected.blockers:
+        raise MigrationEngineRejected(MigrationErrorCode.CONFLICT, "preflight no longer safe")
+    return identity
+
+
+async def _restore_paper_safely(target, client, audit, *, operator_id: str, migration_id: str, canonical_uuid: str, target_discord_id: str, source: MigrationSource, all_sources: tuple[MigrationSource, ...], paper_was_stopped: bool) -> None:
+    if not paper_was_stopped:
+        return
+    try:
+        await client.maintenance_paper_start(migration_id, operator_id=operator_id)
+        await client.maintenance_health()
+        await client.maintenance_lock_release(migration_id)
+        audit.record("MIGRATION_MAINTENANCE_START", discord_user_id=operator_id, canonical_uuid=canonical_uuid, migration_id=migration_id, result="restored", metadata=_safe_one_click_metadata(operator_id=operator_id, target_discord_id=target_discord_id, canonical_uuid=canonical_uuid, source=source, all_sources=all_sources))
+    except Exception:
+        logger.exception("Failed to restore Paper after migration failure migration_id=%s", migration_id)
+        audit.record("MIGRATION_MAINTENANCE_START", discord_user_id=operator_id, canonical_uuid=canonical_uuid, migration_id=migration_id, result="restore_failed", metadata=_safe_one_click_metadata(operator_id=operator_id, target_discord_id=target_discord_id, canonical_uuid=canonical_uuid, source=source, all_sources=all_sources))
+
+
+async def _execute_one_click(target, client, audit, *, identity: IdentitySummary, source: MigrationSource, all_sources: tuple[MigrationSource, ...], reason: str | None = None, force_quiescent: bool = False) -> None:
+    operator_id = _user_id(target)
+    target_discord_id = identity.discord_user_id
+    if not target_discord_id:
+        await _reply(target, "A identidade nao possui Discord canonico; operacao bloqueada.")
+        return
+    metadata = _safe_one_click_metadata(operator_id=operator_id, target_discord_id=target_discord_id, canonical_uuid=identity.canonical_uuid, source=source, all_sources=all_sources)
+    try:
+        await _revalidate_pinned_source(client, operator_id=operator_id, canonical_uuid=identity.canonical_uuid, target_discord_id=target_discord_id, source=source)
+        request = MigrationPlanRequest(sources=(source,), target={"discord_user_id": target_discord_id}, dataset_policy=_java_policy((source,)), reason=reason)
+        plan = await client.plan(request)
+        if plan.canonical_target != identity.canonical_uuid or (plan.status or "").upper() != "READY" or plan.blockers or plan.conflicts:
+            raise MigrationEngineRejected(MigrationErrorCode.STALE_PLAN, "plan not ready")
+        mode = "QUIESCENT" if force_quiescent else (plan.execution_mode or ("QUIESCENT" if plan.requires_paper_quiescence else "HOT")).upper()
+        if mode not in {"HOT", "QUIESCENT"}:
+            raise MigrationEngineInvalidResponse("execution_mode invalido")
+        audit.record("MIGRATION_PLAN", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, migration_id=plan.migration_id, result="ok", metadata={**metadata, "execution_mode": mode})
+        paper_was_stopped = False
+        proof = None
+        if mode == "QUIESCENT" or plan.requires_paper_quiescence:
+            await _reply(target, "[2/5] Bloqueando entradas e parando o Paper com seguranca...")
+            stopped = await client.maintenance_paper_stop(plan.migration_id, operator_id=operator_id)
+            paper_was_stopped = True
+            proof = stopped.quiescence_proof
+            audit.record("MIGRATION_MAINTENANCE_STOP", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, migration_id=plan.migration_id, result="stopped", metadata={**metadata, "execution_mode": "QUIESCENT"})
+            if not isinstance(proof, dict) or proof.get("mode") != "PAPER_OFFLINE_CONFIRMED" or proof.get("valid") is not True:
+                raise MigrationEngineRejected(MigrationErrorCode.CONFLICT, "invalid quiescence proof")
+            await _revalidate_pinned_source(client, operator_id=operator_id, canonical_uuid=identity.canonical_uuid, target_discord_id=target_discord_id, source=source)
+            replanned = await client.plan(request)
+            if replanned.canonical_target != plan.canonical_target or not replanned.sources or _source_key(replanned.sources[0]) != _source_key(source) or replanned.target_discord_user_id not in {None, target_discord_id} or (replanned.status or "").upper() != "READY" or replanned.blockers or replanned.conflicts:
+                raise MigrationEngineRejected(MigrationErrorCode.STALE_PLAN, "re-plan changed")
+            plan = replanned
+        else:
+            await _reply(target, "[2/3] Criando snapshot e migrando sem parar o Paper...")
+        key = str(uuid.uuid4())
+        audit.record("MIGRATION_EXECUTE_CONFIRMED", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, migration_id=plan.migration_id, result="execute", metadata={**metadata, "execution_mode": mode})
+        result = await client.execute(plan.migration_id, operator_id=operator_id, idempotency_key=key, execution_mode=mode, quiescence_proof=proof)
+        if paper_was_stopped:
+            await client.maintenance_paper_start(plan.migration_id, operator_id=operator_id)
+            health = await client.maintenance_health()
+            if health.health and health.health.get("healthy") is False:
+                raise MigrationEngineUnavailable("health check failed")
+            await client.maintenance_lock_release(plan.migration_id)
+        audit.record("MIGRATION_EXECUTE_SUCCEEDED", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, migration_id=result.migration_id, result=result.result, metadata={**metadata, "execution_mode": mode, "snapshot_ref": result.snapshot_ref})
+        await _reply(target, _format_execution(result.migration_id, result.result, result.migrated_datasets, result.verifications) + (f"\nSnapshot: `{result.snapshot_ref}`" if result.snapshot_ref else ""))
+    except MigrationEngineRejected as error:
+        recovery = error.code is MigrationErrorCode.RECOVERY_REQUIRED
+        if error.code is MigrationErrorCode.QUIESCENCE_REQUIRED and not force_quiescent:
+            await _execute_one_click(target, client, audit, identity=identity, source=source, all_sources=all_sources, reason=reason, force_quiescent=True)
+            return
+        audit.record("MIGRATION_EXECUTE_FAILED", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, migration_id=getattr(locals().get("plan", None), "migration_id", None), result="recovery_required" if recovery else "failed", error=error.code.value, metadata=metadata)
+        if not recovery:
+            await _restore_paper_safely(target, client, audit, operator_id=operator_id, migration_id=getattr(locals().get("plan", None), "migration_id", "unknown"), canonical_uuid=identity.canonical_uuid, target_discord_id=target_discord_id, source=source, all_sources=all_sources, paper_was_stopped=bool(locals().get("paper_was_stopped", False)))
+        message = "RECOVERY_REQUIRED: acao operacional manual necessaria. Paper nao sera iniciado automaticamente." if recovery else _error_message(error)
+        await _reply(target, message)
+    except (MigrationEngineError, Exception) as error:
+        logger.exception("Unexpected one-click migration failure")
+        audit.record("MIGRATION_EXECUTE_FAILED", discord_user_id=operator_id, canonical_uuid=identity.canonical_uuid, result="failed", error=type(error).__name__, metadata=metadata)
+        await _restore_paper_safely(target, client, audit, operator_id=operator_id, migration_id=getattr(locals().get("plan", None), "migration_id", "unknown"), canonical_uuid=identity.canonical_uuid, target_discord_id=target_discord_id, source=source, all_sources=all_sources, paper_was_stopped=bool(locals().get("paper_was_stopped", False)))
+        await _reply(target, _safe_one_click_error_message(error))
+
+
+async def _one_click_migrate(target, client, audit, value: str | None = None, reason: str | None = None) -> None:
+    operator_id = _user_id(target)
+    query = str(value or operator_id).strip()
+    try:
+        if query == operator_id and not value:
+            inspection = await client.inspect(MigrationInspectRequest(discord_user_id=operator_id))
+        else:
+            request = _request_from_target(query)
+            if query.startswith("<@"):
+                request = MigrationInspectRequest(discord_user_id=_clean_discord_mention(query))
+            if request.player_name:
+                matches = await client.search_players(request.player_name, limit=10)
+                canonical_ids = {item.canonical_uuid for item in matches if item.canonical_uuid}
+                discord_ids = {item.discord_user_id for item in matches if item.discord_user_id}
+                if len(matches) != 1 and not (len(canonical_ids) == 1 and len(discord_ids) <= 1):
+                    await _reply(target, "A busca nao identificou uma identidade canonica unica. Operacao bloqueada.")
+                    return
+                match = matches[0]
+                request = MigrationInspectRequest(canonical_uuid=next(iter(canonical_ids)), discord_user_id=next(iter(discord_ids), None))
+            inspection = await client.inspect(request)
+        if not inspection.identity.discord_user_id:
+            await _reply(target, "A identidade nao possui Discord canonico; operacao bloqueada.")
+            return
+        if not value and inspection.identity.discord_user_id != operator_id:
+            await _reply(target, "A identidade retornada nao pertence ao operador; operacao bloqueada.")
+            return
+        sources = _identity_sources(inspection.identity)
+        if not sources:
+            await _reply(target, "Nenhuma source real foi encontrada para esta identidade.")
+            return
+        if len(sources) > 1:
+            await _reply(target, "Escolha explicitamente a source que sera a fonte da verdade.", view=_OneClickSourceView(operator_id, client, audit, inspection.identity, sources, reason))
+            return
+        await _execute_one_click(target, client, audit, identity=inspection.identity, source=sources[0], all_sources=sources, reason=reason)
+    except MigrationEngineError as error:
+        audit.record("MIGRATION_PLAN", discord_user_id=operator_id, result="failed", error=error.code.value)
+        await _reply(target, _error_message(error))
+
+
 def _request_from_target(target: str) -> MigrationInspectRequest:
     target = str(target or "").strip()
     if target.casefold().startswith("nick:"):
@@ -660,12 +834,23 @@ async def _resolve_target(
 
 def _is_staff(user) -> bool:
     permissions = getattr(user, "guild_permissions", None)
-    return bool(permissions and (permissions.manage_guild or permissions.administrator))
+    return bool(permissions and (permissions.manage_guild or permissions.administrator)) or _has_migration_role(user)
 
 
 def _is_admin(user) -> bool:
     permissions = getattr(user, "guild_permissions", None)
-    return bool(permissions and permissions.administrator)
+    return bool(permissions and permissions.administrator) or any(
+        name in {"migration-admin", "migration_admin", "migration admin"}
+        for name in _role_names(user)
+    )
+
+
+def _role_names(user) -> tuple[str, ...]:
+    return tuple(str(getattr(role, "name", "")).casefold().strip() for role in (getattr(user, "roles", None) or ()))
+
+
+def _has_migration_role(user) -> bool:
+    return any(name in {"staff", "migration-admin", "migration_admin", "migration admin"} for name in _role_names(user))
 
 
 def _user_id(target) -> str:
@@ -860,10 +1045,13 @@ def _error_message(error: Exception) -> str:
             MigrationErrorCode.ALREADY_EXECUTED: "Migration ja executada.",
             MigrationErrorCode.ROLLBACK_UNAVAILABLE: "Rollback indisponivel.",
             MigrationErrorCode.CONFLICT: "Conflito detectado pelo Migration Engine.",
+            MigrationErrorCode.STALE_PLAN: "O plano ficou desatualizado; gere uma nova operacao.",
+            MigrationErrorCode.QUIESCENCE_REQUIRED: "O Engine exige uma janela segura de manutencao.",
+            MigrationErrorCode.RECOVERY_REQUIRED: "O Engine exige recuperacao operacional manual.",
         }
-        details[0] = f"Motivo: {mapped.get(error.code, str(error))}"
+        details[0] = f"Motivo: {mapped.get(error.code, 'Operacao recusada pelo Migration Engine.')}"
         return "\n".join(details)
-    return str(error)
+    return "Ocorreu uma falha interna na operacao. Tente novamente; nenhum detalhe interno foi exposto."
 
 
 def _account(account) -> str:
@@ -1616,6 +1804,30 @@ class _OperatorBoundView(discord.ui.View):
             await _reply(interaction, "Voce nao tem permissao para esta acao.")
             return False
         return True
+
+
+class _OneClickSourceView(_OperatorBoundView):
+    def __init__(self, operator_id, client, audit, identity, sources, reason):
+        super().__init__(operator_id)
+        self.client, self.audit, self.identity, self.sources, self.reason = client, audit, identity, tuple(sources), reason
+        self.consumed = False
+        for source in self.sources:
+            button = discord.ui.Button(label=f"Usar {source.platform.title()} — {source.username or source.external_id}", style=discord.ButtonStyle.primary)
+            button.callback = self._callback_for(source)
+            self.add_item(button)
+
+    def _callback_for(self, source):
+        async def callback(interaction):
+            if not await self._allowed(interaction):
+                return
+            if self.consumed:
+                await _reply(interaction, "Esta operacao ja foi iniciada.")
+                return
+            self.consumed = True
+            for child in self.children:
+                child.disabled = True
+            await _execute_one_click(interaction, self.client, self.audit, identity=self.identity, source=source, all_sources=self.sources, reason=self.reason)
+        return callback
 
 
 class _PlanActionView(_OperatorBoundView):

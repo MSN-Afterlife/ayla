@@ -31,6 +31,19 @@ class MinecraftConflict(MinecraftLinkError):
     pass
 
 
+class MinecraftOfflineSessionRequiresLogin(MinecraftConflict):
+    """The Bot cannot prove ownership of a different offline Java identity."""
+
+    pass
+
+
+CANONICAL_FOUND = "CANONICAL_FOUND"
+LINK_REQUIRED = "LINK_REQUIRED"
+OFFLINE_SESSION_REQUIRES_LOGIN = "OFFLINE_SESSION_REQUIRES_LOGIN"
+AMBIGUOUS = "AMBIGUOUS"
+UNKNOWN = "UNKNOWN"
+
+
 def normalize_java_uuid(value: str) -> str:
     try:
         return str(uuid.UUID(str(value).strip())).lower()
@@ -122,9 +135,9 @@ class MinecraftIdentityStore:
         username = sanitize_minecraft_username(platform, username)
         now = self._clock()
         with closing(self._connect()) as connection:
-            account = connection.execute("SELECT i.* FROM minecraft_accounts a JOIN minecraft_identities i ON i.id=a.identity_id WHERE a.platform=? AND a.external_id=?", (platform, external_id)).fetchone()
+            account = connection.execute("SELECT i.*, a.identity_id FROM minecraft_accounts a JOIN minecraft_identities i ON i.id=a.identity_id WHERE a.platform=? AND a.external_id=?", (platform, external_id)).fetchone()
             if account:
-                return {"linked": True, "enabled": bool(account["enabled"]), "identity": self._identity_payload(account)}
+                return {"linked": True, "identity_state": CANONICAL_FOUND, "message": "Sua identidade Minecraft ja esta vinculada. Clientes Java offline/Prism nao precisam de um novo vinculo; autentique-se no servidor.", "enabled": bool(account["enabled"]), "identity": self._identity_payload(connection, account)}
             cutoff = _iso(now)
             if connection.execute("SELECT COUNT(*) n FROM minecraft_link_codes WHERE platform=? AND external_id=? AND consumed_at IS NULL AND expires_at > ?", (platform, external_id, cutoff)).fetchone()["n"] >= MAX_ACTIVE_CODES_PER_ACCOUNT:
                 raise MinecraftLinkError("Limite de codigos ativos atingido para esta conta. Aguarde a expiracao.")
@@ -166,10 +179,19 @@ class MinecraftIdentityStore:
                 connection.commit()
                 raise MinecraftConflict("Esta conta Minecraft ja esta vinculada a outro Discord.")
             identity = connection.execute("SELECT * FROM minecraft_identities WHERE discord_user_id=?", (str(discord_user_id),)).fetchone()
-            if identity and connection.execute("SELECT 1 FROM minecraft_accounts WHERE identity_id=? AND platform=? AND external_id<>?", (identity["id"], row["platform"], row["external_id"])).fetchone():
+            if owner and owner["discord_user_id"] == str(discord_user_id):
+                connection.execute("UPDATE minecraft_link_codes SET consumed_at=? WHERE id=? AND consumed_at IS NULL", (_iso(now), row["id"]))
+                self._audit(connection, "link_reaffirmed", discord_user_id=discord_user_id, platform=row["platform"], external_id=row["external_id"], metadata={"identity_state": CANONICAL_FOUND})
+                connection.commit()
+                return {"linked": True, "identity_state": CANONICAL_FOUND, "message": "Sua identidade Minecraft ja esta vinculada. Clientes Java offline/Prism nao precisam de um novo vinculo; autentique-se no servidor.", "identity": self._identity_payload(connection, owner), "minecraft_account": {"platform": row["platform"], "external_id": row["external_id"], "current_username": row["username"]}}
+            if identity and row["platform"] == "java" and connection.execute("SELECT 1 FROM minecraft_accounts WHERE identity_id=? AND platform='java' AND external_id<>?", (identity["id"], row["external_id"])).fetchone():
                 self._audit(connection, "link_conflict", discord_user_id=discord_user_id, platform=row["platform"], external_id=row["external_id"], metadata={"reason": "discord_has_java"})
                 connection.commit()
-                raise MinecraftConflict("Este Discord ja possui outra conta Java vinculada.")
+                raise MinecraftOfflineSessionRequiresLogin("Sua identidade Minecraft ja esta vinculada. Este cliente Java offline/Prism nao deve criar outro vinculo; entre com sua identidade existente e autentique-se no servidor.")
+            if identity and row["platform"] == "bedrock" and connection.execute("SELECT 1 FROM minecraft_accounts WHERE identity_id=? AND platform='bedrock' AND external_id<>?", (identity["id"], row["external_id"])).fetchone():
+                self._audit(connection, "link_conflict", discord_user_id=discord_user_id, platform=row["platform"], external_id=row["external_id"], metadata={"reason": "discord_has_bedrock"})
+                connection.commit()
+                raise MinecraftConflict("Este Discord ja possui uma conta Bedrock vinculada.")
             if not identity:
                 name = self._unique_name(connection, normalize_minecraft_canonical_name(discord_name), str(discord_user_id))
                 identity_id = connection.execute("INSERT INTO minecraft_identities(discord_user_id, canonical_uuid, canonical_name, discord_name_original, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id", (str(discord_user_id), str(uuid.uuid4()), name, str(discord_name or "")[:255], _iso(now), _iso(now))).fetchone()["id"]
@@ -179,7 +201,8 @@ class MinecraftIdentityStore:
             connection.execute("UPDATE minecraft_link_codes SET consumed_at=? WHERE id=? AND consumed_at IS NULL", (_iso(now), row["id"]))
             self._audit(connection, "account_linked", discord_user_id=discord_user_id, platform=row["platform"], external_id=row["external_id"], metadata={"username": row["username"]})
             connection.commit()
-        return {"identity": self._identity_payload(identity), "minecraft_account": {"platform": row["platform"], "external_id": row["external_id"], "current_username": row["username"]}}
+            identity_payload = self._identity_payload(connection, identity)
+        return {"identity_state": CANONICAL_FOUND, "identity": identity_payload, "minecraft_account": {"platform": row["platform"], "external_id": row["external_id"], "current_username": row["username"]}}
 
     def _unique_name(self, connection, base: str, discord_user_id: str) -> str:
         if not connection.execute("SELECT 1 FROM minecraft_identities WHERE canonical_name=? COLLATE NOCASE", (base,)).fetchone():
@@ -191,17 +214,19 @@ class MinecraftIdentityStore:
         platform = normalize_platform(platform)
         external_id = normalize_external_id(platform, external_id)
         with closing(self._connect()) as connection:
-            row = connection.execute("SELECT i.*, a.platform, a.external_id, a.current_username FROM minecraft_accounts a JOIN minecraft_identities i ON i.id=a.identity_id WHERE a.platform=? AND a.external_id=?", (platform, external_id)).fetchone()
+            row = connection.execute("SELECT i.*, a.identity_id, a.platform, a.external_id, a.current_username FROM minecraft_accounts a JOIN minecraft_identities i ON i.id=a.identity_id WHERE a.platform=? AND a.external_id=?", (platform, external_id)).fetchone()
         if not row:
-            return {"linked": False}
-        return {"linked": True, "enabled": bool(row["enabled"]), "identity": self._identity_payload(row), "minecraft_account": {"platform": row["platform"], "external_id": row["external_id"], "current_username": row["current_username"]}}
+            return {"linked": False, "identity_state": LINK_REQUIRED}
+        with closing(self._connect()) as connection:
+            return {"linked": True, "identity_state": CANONICAL_FOUND, "enabled": bool(row["enabled"]), "identity": self._identity_payload(connection, row), "minecraft_account": {"platform": row["platform"], "external_id": row["external_id"], "current_username": row["current_username"]}}
 
     def lookup_java(self, external_id: str) -> dict[str, Any]:
         return self.lookup_account("java", external_id)
 
-    @staticmethod
-    def _identity_payload(row) -> dict[str, str]:
-        return {"discord_user_id": row["discord_user_id"], "canonical_uuid": row["canonical_uuid"], "canonical_name": row["canonical_name"]}
+    def _identity_payload(self, connection, row) -> dict[str, Any]:
+        accounts = connection.execute("SELECT platform, external_id, current_username FROM minecraft_accounts WHERE identity_id=? ORDER BY CASE platform WHEN 'java' THEN 0 ELSE 1 END", (row["id"],)).fetchall()
+        sources = [{"platform": account["platform"], "external_id": account["external_id"], "username": account["current_username"], "source_type": "linked"} for account in accounts]
+        return {"discord_user_id": row["discord_user_id"], "canonical_uuid": row["canonical_uuid"], "canonical_name": row["canonical_name"], "sources": sources, "legacy_java_aliases": []}
 
 
 def valid_internal_token(expected: str | None, supplied: str | None) -> bool:

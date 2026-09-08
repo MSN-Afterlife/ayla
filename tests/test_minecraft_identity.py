@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 from bot.config import Settings
 from bot.client import AylaBot, create_bot
-from bot.commands.minecraft import _status
+from bot.commands.minecraft import _link, _status
 from bot.services.minecraft_identity import (
     MinecraftConflict,
     MinecraftIdentityStore,
@@ -79,7 +79,7 @@ class MinecraftIdentityTests(unittest.TestCase):
             self.store.link_code("discord-a", "A", discord_conflict)
 
     def test_lookup_unlinked_and_disabled(self):
-        self.assertEqual(self.store.lookup_java(self.uuid), {"linked": False})
+        self.assertEqual(self.store.lookup_java(self.uuid), {"linked": False, "identity_state": "LINK_REQUIRED"})
         self.store.link_code("1", "User", self.code())
         with closing(self.store._connect()) as connection:
             connection.execute("UPDATE minecraft_identities SET enabled=0 WHERE discord_user_id='1'")
@@ -150,6 +150,37 @@ class MinecraftIdentityTests(unittest.TestCase):
         self.assertFalse(lookup["enabled"])
         self.assertFalse(linked_request["enabled"])
 
+    def test_relinking_same_java_is_idempotent_and_preserves_one_account(self):
+        first = self.store.link_code("1", "Ayla", self.code())
+        reaffirmation = self.store.request_link_code("java", self.uuid, "PlayerTeste")
+        self.assertEqual(reaffirmation["identity_state"], "CANONICAL_FOUND")
+        self.assertIn("ja esta vinculada", reaffirmation["message"])
+        with closing(self.store._connect()) as connection:
+            count = connection.execute("SELECT COUNT(*) AS n FROM minecraft_accounts WHERE identity_id=(SELECT id FROM minecraft_identities WHERE discord_user_id='1') AND platform='java'").fetchone()["n"]
+        self.assertEqual(count, 1)
+        self.assertEqual(first["identity"]["canonical_uuid"], reaffirmation["identity"]["canonical_uuid"])
+
+    def test_different_java_for_existing_discord_requires_server_login(self):
+        self.store.link_code("1", "Ayla", self.code())
+        with self.assertRaisesRegex(MinecraftConflict, "autentique-se no servidor"):
+            self.store.link_code("1", "Ayla", self.code("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"))
+        lookup = self.store.lookup_java("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+        self.assertEqual(lookup["identity_state"], "LINK_REQUIRED")
+
+    def test_username_never_associates_an_unknown_java_identity(self):
+        self.store.link_code("1", "Ayla", self.code())
+        unknown = self.store.request_link_code("java", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "PlayerTeste")
+        self.assertFalse(unknown["linked"])
+        with closing(self.store._connect()) as connection:
+            count = connection.execute("SELECT COUNT(*) AS n FROM minecraft_accounts").fetchone()["n"]
+        self.assertEqual(count, 1)
+
+    def test_identity_payload_exposes_known_sources_without_alias_inference(self):
+        self.store.link_code("1", "Ayla", self.code())
+        result = self.store.link_code("1", "Ayla", self.bedrock_code())
+        self.assertEqual([source["platform"] for source in result["identity"]["sources"]], ["java", "bedrock"])
+        self.assertEqual(result["identity"]["legacy_java_aliases"], [])
+
     def test_dual_bedrock_consumption_only_one_succeeds(self):
         code = self.bedrock_code()
         results = []
@@ -194,7 +225,9 @@ class MinecraftApiTests(unittest.IsolatedAsyncioTestCase):
         request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, match_info={"external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
         response = await self.server._minecraft_java_lookup(request)
         self.assertEqual(response.status, 200)
-        self.assertIn('"linked": false', response.text)
+        payload = json.loads(response.text)
+        self.assertFalse(payload["linked"])
+        self.assertEqual(payload["identity_state"], "LINK_REQUIRED")
 
     async def test_bedrock_and_legacy_java_lookup_routes(self):
         code = self.server._minecraft.request_link_code("bedrock", "2533274791234567", "BedrockTag")["code"]
@@ -202,7 +235,10 @@ class MinecraftApiTests(unittest.IsolatedAsyncioTestCase):
         bedrock_request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, match_info={"platform": "bedrock", "external_id": "2533274791234567"})
         response = await self.server._minecraft_account_lookup(bedrock_request)
         self.assertEqual(response.status, 200)
-        self.assertTrue(json.loads(response.text)["linked"])
+        payload = json.loads(response.text)
+        self.assertTrue(payload["linked"])
+        self.assertEqual(payload["identity_state"], "CANONICAL_FOUND")
+        self.assertEqual(payload["identity"]["sources"][0]["platform"], "bedrock")
 
         java_request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, match_info={"external_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"})
         response = await self.server._minecraft_java_lookup(java_request)
@@ -218,6 +254,17 @@ class MinecraftApiTests(unittest.IsolatedAsyncioTestCase):
         message = target.send.await_args.args[0]
         self.assertIn("JavaTag", message)
         self.assertIn("BedrockTag", message)
+
+    async def test_link_command_explains_offline_prism_login_instead_of_generic_conflict(self):
+        store = self.server._minecraft
+        store.link_code("1", "Ayla", store.request_link_code("java", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "JavaTag")["code"])
+        code = store.request_link_code("java", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "JavaTag")["code"]
+        target = SimpleNamespace(author=SimpleNamespace(id=1, display_name="Ayla"), send=AsyncMock())
+        await _link(target, store, code)
+        message = target.send.await_args.args[0]
+        self.assertIn("ja esta vinculada", message)
+        self.assertIn("autentique-se no servidor", message)
+        self.assertNotIn("outra conta Java", message)
 
 
 class MinecraftStartupTests(unittest.TestCase):

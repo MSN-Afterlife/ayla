@@ -541,11 +541,28 @@ def _source_key(source: MigrationSource) -> tuple[str, str, str | None]:
 
 
 def _identity_sources(identity: IdentitySummary) -> tuple[MigrationSource, ...]:
-    result = []
+    result = [source for source in identity.sources if source.semantic_type != "CANONICAL_TARGET"]
     for account in (identity.java, identity.bedrock):
         if account:
-            result.append(MigrationSource(account.platform, account.external_id, account.username, source_type="linked"))
-    return tuple(result)
+            source_type = "LINKED_JAVA" if account.platform.casefold() == "java" else "BEDROCK"
+            result.append(MigrationSource(account.platform, account.external_id, account.username, source_type=source_type))
+    unique = []
+    seen = set()
+    for source in result:
+        key = (source.platform.casefold(), source.external_id)
+        if key not in seen and source.semantic_type != "CANONICAL_TARGET":
+            seen.add(key)
+            unique.append(source)
+    return tuple(unique)
+
+
+def _source_kind_label(source: MigrationSource) -> str:
+    return {
+        "LEGACY_JAVA": "Java legado",
+        "LINKED_JAVA": "Java vinculado",
+        "BEDROCK": "Bedrock",
+        "UNKNOWN": f"{source.platform.title()} source",
+    }.get(source.semantic_type, source.semantic_type.replace("_", " ").title())
 
 
 def _safe_one_click_metadata(*, operator_id: str, target_discord_id: str, canonical_uuid: str, source: MigrationSource, all_sources: tuple[MigrationSource, ...], migration_id: str | None = None, execution_mode: str | None = None, result: object | None = None) -> dict[str, object]:
@@ -888,14 +905,18 @@ def _format_inspection(result) -> str:
         "Migration inspect",
         f"Identidade canonica: `{identity.canonical_uuid}`",
         f"Discord: `{identity.discord_user_id or 'desconhecido'}`",
+        f"Nome canonico: `{identity.canonical_name or 'desconhecido'}`",
         f"Java: {_account(identity.java)}",
         f"Bedrock: {_account(identity.bedrock)}",
+        "Fontes anexadas:",
         f"Presence: `{result.presence.value}`",
         f"Gateway Lock: `{result.lock_state.value}`",
         f"Dados encontrados: {_csv(result.detected_data)}",
         f"Warnings: {_csv(result.warnings)}",
         f"Blockers: {_csv(result.blockers)}",
     ]
+    sources = _identity_sources(identity)
+    lines[7:7] = [f"- {_source_kind_label(source)}: `{source.username or source.external_id}` — `{source.external_id}`" for source in sources] or ["- `nenhuma`"]
     return "\n".join(lines)
 
 
@@ -964,6 +985,17 @@ def _format_player_list(matches: tuple[PlayerReference, ...]) -> str:
 
 
 def _format_source_selection(player_name: str, sources: tuple[MigrationSource, ...], target_discord_id: str) -> str:
+    lines = [f"Contas Minecraft encontradas para `{player_name}`:", f"Discord alvo: `{target_discord_id}`", ""]
+    for source in sources:
+        if source.semantic_type == "CANONICAL_TARGET":
+            continue
+        name = source.username or source.external_id
+        lines.append(f"{_source_kind_label(source)} — {name}\n`{source.external_id}`")
+    lines.append("\nEscolha explicitamente as sources que serao migradas.")
+    return "\n".join(lines)
+
+
+def _format_source_selection_legacy(player_name: str, sources: tuple[MigrationSource, ...], target_discord_id: str) -> str:
     lines = [f"Contas Minecraft encontradas para `{player_name}`:", f"Discord alvo: `{target_discord_id}`", ""]
     for source in sources:
         icon = "☕" if source.platform == "java" else "📱" if source.platform == "bedrock" else "🔹"
@@ -1090,7 +1122,13 @@ async def _player_autocomplete(client: MigrationEngineClient, current: str) -> l
         matches = await asyncio.wait_for(client.search_players(text, limit=10), timeout=1.5)
     except (MigrationEngineError, asyncio.TimeoutError):
         return []
-    return [app_commands.Choice(name=item.label()[:100], value=f"nick:{item.player_name}") for item in matches[:10]]
+    return [
+        app_commands.Choice(
+            name=item.label()[:100],
+            value=f"player:{item.canonical_uuid}" if item.canonical_uuid else f"nick:{item.player_name}",
+        )
+        for item in matches[:10]
+    ]
 
 
 def _looks_like_advanced_target(value: str) -> bool:
@@ -1154,7 +1192,7 @@ class _SourceSelectionView(discord.ui.View):
         self.audit = audit
         self.reason = reason
         self.player_name = player_name
-        self.sources = tuple(sources)
+        self.sources = tuple(source for source in sources if source.semantic_type != "CANONICAL_TARGET")
         self.target_discord_id = str(target_discord_id)
 
         platform_counts = Counter(s.platform for s in self.sources)
@@ -1219,7 +1257,7 @@ class _DatasetPolicyView(discord.ui.View):
         super().__init__(timeout=120)
         self.client = client
         self.audit = audit
-        self.sources = tuple(sources)
+        self.sources = tuple(source for source in sources if source.semantic_type != "CANONICAL_TARGET")
         self.target = dict(target)
         self.reason = reason
 
@@ -1372,7 +1410,8 @@ def _render_summary_page(comparison: ComparisonSummary, player_name: str, target
             continue
         icon = "☕" if prof.platform == "java" else "📱"
         name = prof.username or prof.external_id
-        lines.append(f"{icon} **{prof.platform.title()}** (`{name}`):")
+        source = MigrationSource(prof.platform, prof.external_id, prof.username, source_type=prof.source_type)
+        lines.append(f"{icon} **{_source_kind_label(source)}** (`{name}`):")
 
         if not prof.playerdata.available:
             lines.append(f"  • Playerdata: ⚠️ *indisponível* ({prof.playerdata.error_message or 'sem dados'})")
@@ -1521,7 +1560,7 @@ class _ComparisonPaginationView(discord.ui.View):
         super().__init__(timeout=180)
         self.client = client
         self.audit = audit
-        self.sources = tuple(sources)
+        self.sources = tuple(source for source in sources if source.semantic_type != "CANONICAL_TARGET")
         self.target_discord_id = str(target_discord_id)
         self.player_name = str(player_name)
         self.reason = reason
@@ -1637,7 +1676,7 @@ class _CategoryPolicySelectionView(discord.ui.View):
         super().__init__(timeout=180)
         self.client = client
         self.audit = audit
-        self.sources = tuple(sources)
+        self.sources = tuple(source for source in sources if source.semantic_type != "CANONICAL_TARGET")
         self.target_discord_id = str(target_discord_id)
         self.player_name = str(player_name)
         self.reason = reason

@@ -17,6 +17,7 @@ from bot.commands.migration import (
     _confirm,
     _execute_target,
     _format_plan,
+    _format_inspection,
     _is_admin,
     _migration_id_autocomplete,
     _plan,
@@ -461,8 +462,16 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(status())
         client.players = [PlayerReference(canonical_uuid="bbbbbbbb-cccc-dddd-eeee-ffffffffffff", player_name="Mounk", confidence=0.95)]
         choices = await _player_autocomplete(client, "mou")
-        self.assertEqual(choices[0].value, "nick:Mounk")
+        self.assertEqual(choices[0].value, "player:bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
         self.assertIn("Mounk", choices[0].name)
+
+    def test_source_selection_excludes_canonical_target_and_labels_legacy(self):
+        canonical = MigrationSource("canonical", "047398a1-4e44-4efc-92af-a28e1fd59e86", "MdA", source_type="canonical")
+        legacy = MigrationSource("java", "033da90b-ad57-3894-a162-52cd829b137e", "Dafakn", source_type="legacy")
+        linked = MigrationSource("java", "linked-java", "MdA", source_type="linked")
+        view = _SourceSelectionView(FakeClient(status()), self.audit, None, "MdA", (canonical, legacy, linked), "42")
+        self.assertEqual(len(view.sources), 2)
+        self.assertIn("legacy", view.children[0].label.casefold())
 
     async def test_reply_normal_sem_view_nao_envia_view_none(self):
         interaction = fake_interaction(42, self.confirmations, deferred=False)

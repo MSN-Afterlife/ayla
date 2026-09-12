@@ -30,12 +30,12 @@ class LastFmError(Exception):
 class LastFmService:
     def __init__(self, settings: Settings, repository: LastFmRepository | None = None) -> None:
         self.settings = settings
-        self.repository = repository or LastFmRepository(settings.lastfm_database_path)
+        self.repository = repository or LastFmRepository(settings.lastfm_database_path, settings.lastfm_encryption_key)
         self._session: aiohttp.ClientSession | None = None
 
     @property
     def available(self) -> bool:
-        return bool(self.settings.lastfm_enabled and self.settings.lastfm_api_key and self.settings.lastfm_api_secret and self.settings.lastfm_callback_url)
+        return bool(self.settings.lastfm_enabled and self.settings.lastfm_api_key and self.settings.lastfm_api_secret and self.settings.lastfm_callback_url and self.settings.lastfm_encryption_key)
 
     async def close(self) -> None:
         if self._session:

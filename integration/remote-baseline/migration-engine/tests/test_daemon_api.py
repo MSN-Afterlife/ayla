@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import socketserver
 import tempfile
 import threading
 import time
@@ -36,9 +37,13 @@ class TestDaemonApi(unittest.TestCase):
         cls.tcp_thread = threading.Thread(target=cls.tcp_server.serve_forever, daemon=True)
         cls.tcp_thread.start()
 
-        cls.unix_server = UnixThreadingHTTPServer(str(cls.sock_path), handler_cls)
-        cls.unix_thread = threading.Thread(target=cls.unix_server.serve_forever, daemon=True)
-        cls.unix_thread.start()
+        cls.unix_server = None
+        cls.unix_thread = None
+        cls.client_unix = None
+        if hasattr(socketserver, "UnixStreamServer"):
+            cls.unix_server = UnixThreadingHTTPServer(str(cls.sock_path), handler_cls)
+            cls.unix_thread = threading.Thread(target=cls.unix_server.serve_forever, daemon=True)
+            cls.unix_thread.start()
 
         time.sleep(0.1)
 
@@ -46,10 +51,8 @@ class TestDaemonApi(unittest.TestCase):
             token=cls.token,
             base_url=f"127.0.0.1:{cls.port}",
         )
-        cls.client_unix = MigrationDaemonClient(
-            token=cls.token,
-            socket_path=cls.sock_path,
-        )
+        if cls.unix_server is not None:
+            cls.client_unix = MigrationDaemonClient(token=cls.token, socket_path=cls.sock_path)
 
         cls.identity = MigrationIdentity(
             discord_user_id="123",
@@ -62,8 +65,9 @@ class TestDaemonApi(unittest.TestCase):
     def tearDownClass(cls):
         cls.tcp_server.shutdown()
         cls.tcp_server.server_close()
-        cls.unix_server.shutdown()
-        cls.unix_server.server_close()
+        if cls.unix_server is not None:
+            cls.unix_server.shutdown()
+            cls.unix_server.server_close()
         cls.temp_dir.cleanup()
 
     def test_23_inspect_authorized_tcp_and_unix(self):
@@ -71,9 +75,10 @@ class TestDaemonApi(unittest.TestCase):
         self.assertEqual(insp_tcp.identity.canonical_name, "TestPlayer")
         self.assertTrue(len(insp_tcp.findings) > 0)
 
-        insp_unix = self.client_unix.inspect(self.identity)
-        self.assertEqual(insp_unix.identity.canonical_name, "TestPlayer")
-        self.assertEqual(insp_tcp.inspection_fingerprint, insp_unix.inspection_fingerprint)
+        if self.client_unix is not None:
+            insp_unix = self.client_unix.inspect(self.identity)
+            self.assertEqual(insp_unix.identity.canonical_name, "TestPlayer")
+            self.assertEqual(insp_tcp.inspection_fingerprint, insp_unix.inspection_fingerprint)
 
     def test_24_plan_authorized(self):
         plan = self.client_tcp.plan(self.identity)
@@ -85,6 +90,24 @@ class TestDaemonApi(unittest.TestCase):
         bad_client = MigrationDaemonClient(token="wrong-token", base_url=f"127.0.0.1:{self.port}")
         with self.assertRaises(PermissionError):
             bad_client.inspect(self.identity)
+
+    def test_25_public_health_hides_operational_details(self):
+        import urllib.request
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health") as response:
+            public = json.loads(response.read())
+        self.assertEqual(public, {"status": "ok"})
+        self.assertNotIn("server_root", public)
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/health",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        with urllib.request.urlopen(request) as response:
+            authenticated = json.loads(response.read())
+        self.assertIn("mode", authenticated)
+        self.assertNotIn("server_root", authenticated)
+        self.assertNotIn(str(self.server_root), json.dumps(authenticated))
 
     def test_26_payload_invalid_json(self):
         import http.client

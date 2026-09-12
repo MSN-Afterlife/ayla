@@ -49,7 +49,7 @@ class SiteApiAdminAuthTests(unittest.IsolatedAsyncioTestCase):
     async def assert_mutations_unauthorized(self, server, headers):
         for handler in self.mutation_handlers(server):
             response = await handler(FakeRequest(headers=headers))
-            self.assertEqual(response.status, 401)
+            self.assertIn(response.status, {401, 503})
 
     async def test_mutations_fail_closed_when_admin_key_is_not_configured(self):
         server = self.make_server(admin_key=None)

@@ -1,10 +1,7 @@
-"""Persistência isolada da integração Last.fm.
-
-O projeto não possui um cofre/criptografia de secrets. A session key fica
-somente nesta base, fora dos logs; a limitação está documentada na documentação.
-"""
+"""Persistência isolada da integração Last.fm com session keys cifradas."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import sqlite3
@@ -12,6 +9,11 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+_CIPHERTEXT_PREFIX = "enc:v1:"
 
 
 @dataclass(frozen=True)
@@ -24,10 +26,38 @@ class LastFmAccount:
 
 
 class LastFmRepository:
-    def __init__(self, database_path: str) -> None:
+    def __init__(self, database_path: str, encryption_key: str | None = None) -> None:
         self.database_path = database_path
+        self._cipher_key = self._decode_key(encryption_key) if encryption_key else None
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    @staticmethod
+    def _decode_key(value: str) -> bytes:
+        try:
+            key = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except (ValueError, TypeError) as error:
+            raise ValueError("LASTFM_ENCRYPTION_KEY must be URL-safe base64 for exactly 32 bytes.") from error
+        if len(key) != 32:
+            raise ValueError("LASTFM_ENCRYPTION_KEY must decode to exactly 32 bytes.")
+        return key
+
+    def _encrypt(self, user_id: int, value: str) -> str:
+        if self._cipher_key is None:
+            raise RuntimeError("Last.fm storage is disabled until LASTFM_ENCRYPTION_KEY is configured.")
+        nonce = secrets.token_bytes(12)
+        encrypted = AESGCM(self._cipher_key).encrypt(nonce, value.encode("utf-8"), str(user_id).encode("ascii"))
+        return _CIPHERTEXT_PREFIX + base64.urlsafe_b64encode(nonce + encrypted).decode("ascii").rstrip("=")
+
+    def _decrypt(self, user_id: int, value: str) -> str:
+        if not value.startswith(_CIPHERTEXT_PREFIX):
+            raise RuntimeError("A legacy Last.fm session key must be migrated before it can be used.")
+        if self._cipher_key is None:
+            raise RuntimeError("Last.fm storage is disabled until LASTFM_ENCRYPTION_KEY is configured.")
+        encoded = value.removeprefix(_CIPHERTEXT_PREFIX)
+        payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        nonce, ciphertext = payload[:12], payload[12:]
+        return AESGCM(self._cipher_key).decrypt(nonce, ciphertext, str(user_id).encode("ascii")).decode("utf-8")
 
     @contextmanager
     def _connect(self):
@@ -60,6 +90,17 @@ class LastFmRepository:
             CREATE INDEX IF NOT EXISTS idx_lastfm_auth_states_expiry
                 ON lastfm_auth_states(expires_at);
             """)
+            if self._cipher_key is not None:
+                db.execute("BEGIN IMMEDIATE")
+                legacy = db.execute(
+                    "SELECT discord_user_id, lastfm_session_key FROM lastfm_accounts WHERE lastfm_session_key NOT LIKE ?",
+                    (_CIPHERTEXT_PREFIX + "%",),
+                ).fetchall()
+                for row in legacy:
+                    db.execute(
+                        "UPDATE lastfm_accounts SET lastfm_session_key=?, updated_at=? WHERE discord_user_id=?",
+                        (self._encrypt(int(row["discord_user_id"]), row["lastfm_session_key"]), int(time.time()), int(row["discord_user_id"])),
+                    )
 
     def create_state(self, discord_user_id: int, ttl_seconds: int = 900) -> str:
         state = secrets.token_urlsafe(32)
@@ -87,14 +128,15 @@ class LastFmRepository:
                 VALUES (?, ?, ?, 1, 'requested', ?, ?)
                 ON CONFLICT(discord_user_id) DO UPDATE SET lastfm_username=excluded.lastfm_username,
                 lastfm_session_key=excluded.lastfm_session_key, scrobble_enabled=1, scrobble_mode='requested', updated_at=excluded.updated_at""",
-                (discord_user_id, username, session_key, now, now))
+                (discord_user_id, username, self._encrypt(discord_user_id, session_key), now, now))
 
     def get_account(self, discord_user_id: int) -> LastFmAccount | None:
         with self._connect() as db:
             row = db.execute("SELECT * FROM lastfm_accounts WHERE discord_user_id=?", (discord_user_id,)).fetchone()
         if not row:
             return None
-        return LastFmAccount(int(row["discord_user_id"]), row["lastfm_username"], row["lastfm_session_key"], bool(row["scrobble_enabled"]), row["scrobble_mode"])
+        user_id = int(row["discord_user_id"])
+        return LastFmAccount(user_id, row["lastfm_username"], self._decrypt(user_id, row["lastfm_session_key"]), bool(row["scrobble_enabled"]), row["scrobble_mode"])
 
     def set_enabled(self, discord_user_id: int, enabled: bool) -> bool:
         with self._connect() as db:

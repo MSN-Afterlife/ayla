@@ -76,15 +76,17 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/health":
-            self._send_json(200, {
-                "status": "ok",
-                "mode": "READ_ONLY",
-                "server_root": str(self.server_root),
-                "write_api": "PREPARED_DISABLED",
-                "write_enabled": FeatureFlags.from_env().write_enabled,
-                "production_enabled": FeatureFlags.from_env().production_enabled,
-                "timestamp": time.time(),
-            }, req_id)
+            health = {"status": "ok"}
+            if self._check_auth():
+                flags = FeatureFlags.from_env()
+                health.update({
+                    "mode": "READ_ONLY",
+                    "write_api": "PREPARED_DISABLED",
+                    "write_enabled": flags.write_enabled,
+                    "production_enabled": flags.production_enabled,
+                    "timestamp": time.time(),
+                })
+            self._send_json(200, health, req_id)
             elapsed_ms = int((time.time() - start_time) * 1000)
             logger.info("GET /health 200 %dms", elapsed_ms, extra={"request_id": req_id})
             return
@@ -240,8 +242,13 @@ class DaemonRequestHandler(BaseHTTPRequestHandler):
             self._send_json(422, {"error": str(err)}, req_id)
 
 
-class UnixThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+if hasattr(socketserver, "UnixStreamServer"):
+    class UnixThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+else:
+    class UnixThreadingHTTPServer:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise OSError("Unix domain sockets are not supported on this platform.")
 
 
 class TCPThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):

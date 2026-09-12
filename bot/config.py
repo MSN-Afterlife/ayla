@@ -49,7 +49,7 @@ class Settings:
     site_api_enabled: bool = True
     site_api_host: str = "0.0.0.0"
     site_api_port: int = 8090
-    site_api_cors_origin: str = "*"
+    site_api_cors_origin: str = "https://msnafterlife.online"
     site_api_key: str | None = None
     site_admin_api_key: str | None = None
     ayla_minecraft_internal_token: str | None = None
@@ -88,6 +88,7 @@ class Settings:
     lastfm_callback_url: str | None = None
     lastfm_enabled: bool = False
     lastfm_database_path: str = "data/lastfm.sqlite3"
+    lastfm_encryption_key: str | None = None
     lastfm_timeout_seconds: float = 10
 
 
@@ -140,7 +141,7 @@ def load_settings() -> Settings:
         site_api_enabled=_load_bool("SITE_API_ENABLED", True),
         site_api_host=os.getenv("SITE_API_HOST", "0.0.0.0"),
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),
-        site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
+        site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "https://msnafterlife.online"),
         site_api_key=os.getenv("SITE_API_KEY"),
         site_admin_api_key=os.getenv("SITE_ADMIN_API_KEY"),
         ayla_minecraft_internal_token=os.getenv("AYLA_MINECRAFT_INTERNAL_TOKEN"),
@@ -178,6 +179,7 @@ def load_settings() -> Settings:
         lastfm_callback_url=os.getenv("LASTFM_CALLBACK_URL"),
         lastfm_enabled=_load_bool("LASTFM_ENABLED", True),
         lastfm_database_path=os.getenv("LASTFM_DATABASE_PATH", "data/lastfm.sqlite3"),
+        lastfm_encryption_key=os.getenv("LASTFM_ENCRYPTION_KEY"),
         lastfm_timeout_seconds=float(os.getenv("LASTFM_TIMEOUT_SECONDS", "10")),
     )
 

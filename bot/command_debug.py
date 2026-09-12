@@ -1,9 +1,11 @@
 import functools
 import os
 import platform
+import re
 import sys
 import time
 import traceback
+import uuid
 from collections.abc import Awaitable
 from collections.abc import Callable
 from datetime import UTC
@@ -22,6 +24,7 @@ DEFAULT_DEBUG_REPORT_DIR = "data/command-debug-reports"
 DEBUG_GUILD_ID = int(os.getenv("COMMAND_DEBUG_GUILD_ID", str(DEFAULT_DEBUG_GUILD_ID)))
 DEBUG_LOG_PATH = Path(os.getenv("COMMAND_DEBUG_LOG_PATH", DEFAULT_DEBUG_LOG_PATH))
 DEBUG_REPORT_DIR = Path(os.getenv("COMMAND_DEBUG_REPORT_DIR", DEFAULT_DEBUG_REPORT_DIR))
+COMMAND_DEBUG_ENABLED = os.getenv("COMMAND_DEBUG_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 
 
 def setup_command_debug(bot: commands.Bot) -> None:
@@ -56,10 +59,11 @@ def setup_command_debug(bot: commands.Bot) -> None:
 
     @bot.event
     async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
-        report_path = None
+        error_id = uuid.uuid4().hex[:12]
         if _is_debug_guild(ctx.guild):
-            report_path = _log(
+            _log(
                 "TEXT ERROR",
+                error_id=error_id,
                 command=ctx.command.qualified_name if ctx.command else None,
                 guild=ctx.guild,
                 channel=ctx.channel,
@@ -81,16 +85,17 @@ def setup_command_debug(bot: commands.Bot) -> None:
             await ctx.send("Faltou informar um argumento obrigatorio.")
             return
 
-        await _send_failure_message(ctx, "Esse comando falhou. Segue o debug em anexo.", report_path)
+        await _send_failure_message(ctx, f"Esse comando falhou. Referencia: {error_id}")
 
     _wrap_app_commands(bot)
 
     @bot.tree.error
     async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        report_path = None
+        error_id = uuid.uuid4().hex[:12]
         if _is_debug_guild(interaction.guild):
-            report_path = _log(
+            _log(
                 "SLASH ERROR",
+                error_id=error_id,
                 command=interaction.command.qualified_name if interaction.command else None,
                 guild=interaction.guild,
                 channel=interaction.channel,
@@ -101,12 +106,11 @@ def setup_command_debug(bot: commands.Bot) -> None:
                 traceback="".join(traceback.format_exception(type(error), error, error.__traceback__)),
             )
 
-        message = "Esse comando falhou. Segue o debug em anexo."
-        file = _debug_file(report_path)
+        message = f"Esse comando falhou. Referencia: {error_id}"
         if interaction.response.is_done():
-            await interaction.followup.send(message, file=file, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True)
         else:
-            await interaction.response.send_message(message, file=file, ephemeral=True)
+            await interaction.response.send_message(message, ephemeral=True)
 
 
 def _wrap_app_commands(bot: commands.Bot) -> None:
@@ -183,7 +187,7 @@ def _find_interaction(args: tuple[Any, ...], kwargs: dict[str, Any]) -> discord.
 
 
 def _is_debug_guild(guild: discord.Guild | None) -> bool:
-    return guild is not None and guild.id == DEBUG_GUILD_ID
+    return COMMAND_DEBUG_ENABLED and guild is not None and guild.id == DEBUG_GUILD_ID
 
 
 def _interaction_options(interaction: discord.Interaction) -> Any:
@@ -198,9 +202,8 @@ def _elapsed_ms(started_at: float | None) -> int | None:
     return round((time.perf_counter() - started_at) * 1000)
 
 
-async def _send_failure_message(ctx: commands.Context, message: str, report_path: Path | None) -> None:
-    file = _debug_file(report_path)
-    await ctx.send(message, file=file)
+async def _send_failure_message(ctx: commands.Context, message: str) -> None:
+    await ctx.send(message)
 
 
 def _debug_file(report_path: Path | None) -> discord.File | None:
@@ -224,7 +227,7 @@ def _log(event: str, **fields: Any) -> Path | None:
         f"cwd: {Path.cwd()}",
     ]
     lines.extend(f"{key}: {_format_value(value)}" for key, value in fields.items())
-    text = "\n".join(lines)
+    text = _redact_secrets("\n".join(lines))
 
     print(text, flush=True)
     _append_debug_file(text)
@@ -265,7 +268,18 @@ def _format_value(value: Any) -> str:
 
 
 def _safe_repr(value: Any, limit: int = 1800) -> str:
-    text = repr(value)
+    text = _redact_secrets(repr(value))
     if len(text) > limit:
         return f"{text[:limit]}... <truncated {len(text) - limit} chars>"
     return text
+
+
+def _redact_secrets(value: str) -> str:
+    value = re.sub(
+        r"(?im)(\b(?:authorization|cookie|set-cookie|token|secret|password|code|headers?)\b\s*[:=]\s*)([^\r\n,}]+)",
+        r"\1[REDACTED]",
+        value,
+    )
+    value = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", value)
+    value = re.sub(r"\b[MN][A-Za-z0-9]{23}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}\b", "[REDACTED_DISCORD_TOKEN]", value)
+    return value

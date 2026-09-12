@@ -1,3 +1,4 @@
+import hmac
 import json
 import mimetypes
 import re
@@ -137,7 +138,27 @@ class SiteApiServer:
         temporary.write_text(json.dumps(monsters, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
 
+    def _admin_auth_failure(self, request: web.Request) -> web.Response | None:
+        expected_token = self._settings.site_admin_api_key
+        authorization = request.headers.get("Authorization", "")
+        scheme, separator, token = authorization.partition(" ")
+        if (
+            not expected_token
+            or not separator
+            or scheme.lower() != "bearer"
+            or not hmac.compare_digest(token.strip(), expected_token)
+        ):
+            return web.json_response(
+                {"ok": False, "error": "unauthorized"},
+                status=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return None
+
     async def _create_monster(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
         try:
             monster = _validate_monster(await request.json())
         except (json.JSONDecodeError, ValueError, TypeError, web.HTTPException) as error:
@@ -150,6 +171,9 @@ class SiteApiServer:
         return web.json_response(monster, status=201)
 
     async def _update_monster(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
         monster_id = request.match_info["monster_id"]
         try:
             monster = _validate_monster(await request.json(), expected_id=monster_id)
@@ -164,6 +188,9 @@ class SiteApiServer:
         return web.json_response({"ok": False, "message": "Monstro nao encontrado."}, status=404)
 
     async def _delete_monster(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
         monster_id = request.match_info["monster_id"]
         monsters = self._load_monsters()
         remaining = [item for item in monsters if item.get("id") != monster_id]
@@ -173,6 +200,9 @@ class SiteApiServer:
         return web.json_response({"ok": True, "id": monster_id})
 
     async def _upload_monster_image(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
         monster_id = request.match_info["monster_id"]
         monsters = self._load_monsters()
         if not any(item.get("id") == monster_id for item in monsters):

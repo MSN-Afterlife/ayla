@@ -146,7 +146,7 @@ class SiteApiServer:
             not expected_token
             or not separator
             or scheme.lower() != "bearer"
-            or not hmac.compare_digest(token.strip(), expected_token)
+            or not hmac.compare_digest(token.strip().encode("utf-8"), expected_token.encode("utf-8"))
         ):
             return web.json_response(
                 {"ok": False, "error": "unauthorized"},
@@ -267,10 +267,21 @@ class SiteApiServer:
         return web.json_response({"ok": True, "status": "ready"})
 
     async def _daily(self, request: web.Request) -> web.Response:
-        if self._settings.site_api_key:
-            sent_key = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-            if sent_key != self._settings.site_api_key:
-                return web.json_response({"ok": False, "message": "Nao autorizado."}, status=401)
+        expected_token = self._settings.site_api_key
+        authorization = request.headers.get("Authorization", "")
+        scheme, separator, token = authorization.partition(" ")
+        if not expected_token:
+            return web.json_response({"ok": False, "error": "daily_api_disabled"}, status=503)
+        if (
+            not separator
+            or scheme.lower() != "bearer"
+            or not hmac.compare_digest(token.strip().encode("utf-8"), expected_token.encode("utf-8"))
+        ):
+            return web.json_response(
+                {"ok": False, "message": "Nao autorizado."},
+                status=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
         try:
             payload = await request.json()

@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -552,7 +553,7 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
 
     def test_audit_store_legacy_schema_migration_and_row_preservation(self):
         db_path = Path(self.directory.name) / "legacy_audit.sqlite3"
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 """
                 CREATE TABLE minecraft_migration_audit_events (
@@ -576,7 +577,7 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
         # Initialize store on legacy DB - triggers migration
         store = MigrationAuditStore(db_path)
 
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(minecraft_migration_audit_events)").fetchall()}
             expected_cols = {
                 "id", "event_type", "discord_user_id", "canonical_uuid", "migration_id",
@@ -595,7 +596,7 @@ class MigrationCommandTests(unittest.IsolatedAsyncioTestCase):
 
         # Verify new writes succeed
         store.record("NEW_EVENT", discord_user_id="999888", result="ok")
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             count = conn.execute("SELECT count(*) FROM minecraft_migration_audit_events").fetchone()[0]
             self.assertEqual(count, 2)
 

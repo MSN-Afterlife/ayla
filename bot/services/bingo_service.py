@@ -3,7 +3,10 @@ from __future__ import annotations
 import json, secrets, sqlite3, time
 from contextlib import closing
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
+
+from bot.services.economy_write_gate import EconomyWriteGate
 
 RANGES = (range(1, 16), range(16, 31), range(31, 46), range(46, 61), range(61, 76))
 PATTERNS = ("line",)
@@ -30,9 +33,18 @@ def generate_card(card_id: str | None = None, rng=None) -> Card:
 
 class BingoError(Exception): pass
 
+
+def _economic_write(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._write_gate.write():
+            return method(self, *args, **kwargs)
+    return wrapped
+
 class BingoService:
-    def __init__(self, database_path: str | Path, entry_sink_percent: int = 5, max_players: int = 20, min_players: int = 2):
+    def __init__(self, database_path: str | Path, entry_sink_percent: int = 5, max_players: int = 20, min_players: int = 2, write_gate: EconomyWriteGate | None = None):
         self.path = Path(database_path); self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_gate = write_gate or EconomyWriteGate.bootstrap_open(self.path.with_name(self.path.name + ".economy_gate.json"))
         self.entry_sink_percent, self.max_players, self.min_players = entry_sink_percent, max_players, min_players
         self._initialize()
 
@@ -57,6 +69,7 @@ class BingoService:
     def set_message(self, game_id, message_id):
         with closing(self._connect()) as db:
             db.execute("UPDATE bingo_games SET message_id=? WHERE game_id=?", (message_id, game_id)); db.commit()
+    @_economic_write
     def cancel(self, game_id, actor_id, force=False):
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE"); g=db.execute("SELECT * FROM bingo_games WHERE game_id=?",(game_id,)).fetchone()
@@ -65,6 +78,7 @@ class BingoService:
             for p in db.execute("SELECT * FROM bingo_players WHERE game_id=? AND refunded=0",(game_id,)).fetchall():
                 key=f"bingo:{game_id}:refund:{p['user_id']}"; db.execute("UPDATE economy_profiles SET balance=balance+?,updated_at=? WHERE user_id=?",(g['entry'],now,p['user_id'])); db.execute("INSERT OR IGNORE INTO economy_transactions VALUES(?,?,?,?,?)",(key,p['user_id'],g['entry'],'credit',now)); db.execute("UPDATE bingo_players SET refunded=1 WHERE game_id=? AND user_id=?",(game_id,p['user_id']))
             db.execute("UPDATE bingo_games SET state='CANCELLED',finished_at=? WHERE game_id=?",(now,game_id)); db.commit()
+    @_economic_write
     def leave(self, game_id, user_id):
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE"); g=db.execute("SELECT * FROM bingo_games WHERE game_id=?",(game_id,)).fetchone(); p=db.execute("SELECT * FROM bingo_players WHERE game_id=? AND user_id=?",(game_id,user_id)).fetchone()
@@ -75,6 +89,7 @@ class BingoService:
     def game(self, game_id=None, channel_id=None):
         with closing(self._connect()) as db:
             return db.execute("SELECT * FROM bingo_games WHERE game_id = ? OR channel_id = ?", (game_id, channel_id)).fetchone()
+    @_economic_write
     def join(self, game_id, user_id):
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE"); game=db.execute("SELECT * FROM bingo_games WHERE game_id=?",(game_id,)).fetchone()
@@ -107,6 +122,7 @@ class BingoService:
             if number not in values: raise BingoError("Esse numero nao esta na sua cartela.")
             if marked and number not in drawn: raise BingoError("Esse numero ainda nao foi sorteado.")
             marks.add(number) if marked else marks.discard(number); db.execute("UPDATE bingo_players SET marked=?,revision=revision+1 WHERE game_id=? AND user_id=?",(json.dumps(sorted(marks)),game_id,user_id)); db.commit()
+    @_economic_write
     def claim(self, game_id, user_id):
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE"); g=db.execute("SELECT * FROM bingo_games WHERE game_id=?",(game_id,)).fetchone(); p=db.execute("SELECT * FROM bingo_players WHERE game_id=? AND user_id=?",(game_id,user_id)).fetchone()

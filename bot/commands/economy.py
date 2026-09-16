@@ -31,7 +31,7 @@ HIGHLOW_CHOICES = [
 
 
 def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
-    economy = EconomyService(settings)
+    economy = EconomyService(settings, write_gate=getattr(bot, "_economy_write_gate", None))
 
     @bot.hybrid_command(name="saldo", aliases=["balance", "bal", "coins"], description="Mostra seu saldo.")
     async def balance(ctx: commands.Context, member: discord.Member | None = None) -> None:

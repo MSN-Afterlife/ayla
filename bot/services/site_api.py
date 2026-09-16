@@ -9,6 +9,8 @@ from aiohttp import web
 from bot.config import Settings
 from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
+from bot.services.economy_write_gate import EconomyWriteGate
+from bot.services.economy_write_gate import EconomyWriteRejected
 from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 from bot.services.minecraft_identity import MinecraftIdentityStore, MinecraftLinkError, valid_internal_token
 from bot.commands.uno import CHAOS_CHARACTERS
@@ -21,10 +23,11 @@ class SiteApiServer:
         readiness_check: Callable[[], bool],
         lastfm: LastFmService | None = None,
         minecraft_store: MinecraftIdentityStore | None = None,
+        write_gate: EconomyWriteGate | None = None,
     ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
-        self._economy = EconomyService(settings)
+        self._economy = EconomyService(settings, write_gate=write_gate)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._lastfm = lastfm
@@ -258,7 +261,13 @@ class SiteApiServer:
             and payload.get("source") == "site"
             and bool(self._settings.site_api_key)
         )
-        claim = self._economy.claim_daily(user_id, bypass_cooldown=bypass_cooldown)
+        try:
+            claim = self._economy.claim_daily(user_id, bypass_cooldown=bypass_cooldown)
+        except EconomyWriteRejected:
+            return web.json_response(
+                {"ok": False, "message": "A economia da Ayla está temporariamente em manutenção. Tente novamente em alguns minutos."},
+                status=503,
+            )
         profile = claim.profile
         remaining = claim.remaining_seconds
         if remaining:

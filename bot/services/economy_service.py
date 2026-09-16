@@ -6,6 +6,7 @@ from datetime import datetime, time as datetime_time, timedelta
 from pathlib import Path
 
 from bot.config import Settings
+from bot.services.economy_write_gate import EconomyWriteGate
 
 
 DAILY_AMOUNT = 1500
@@ -28,9 +29,10 @@ class DailyClaim:
 
 
 class EconomyService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, write_gate: EconomyWriteGate | None = None) -> None:
         self._database_path = Path(settings.levels_database_path)
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_gate = write_gate or EconomyWriteGate.bootstrap_open(settings.economy_write_gate_state_path)
         self._initialize()
 
     def get_profile(self, user_id: int) -> EconomyProfile:
@@ -40,7 +42,8 @@ class EconomyService:
                 (user_id,),
             ).fetchone()
             if not row:
-                self._ensure_profile(connection, user_id)
+                with self._write_gate.write():
+                    self._ensure_profile(connection, user_id)
                 connection.commit()
                 row = connection.execute(
                     "SELECT user_id, balance, daily_streak, last_daily_at FROM economy_profiles WHERE user_id = ?",
@@ -57,40 +60,36 @@ class EconomyService:
     def claim_daily(self, user_id: int, *, bypass_cooldown: bool = False) -> DailyClaim:
         now = int(time.time())
         today = _local_date(now)
-        with closing(self._connect()) as connection:
-            profile = self.get_profile(user_id)
-            same_day = profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today
-            if same_day and not bypass_cooldown:
-                # O daily continua bloqueado, mas o site precisa conseguir exibir
-                # quanto o usuario receberia. Este e apenas um preview: nenhum
-                # dado da economia e alterado neste caminho.
-                streak = max(profile.daily_streak, 1)
+        with self._write_gate.write():
+            with closing(self._connect()) as connection:
+                profile = self.get_profile(user_id)
+                same_day = profile.last_daily_at is not None and _local_date(profile.last_daily_at) == today
+                if same_day and not bypass_cooldown:
+                    # O daily continua bloqueado, mas o site precisa conseguir exibir
+                    # quanto o usuario receberia. Este e apenas um preview: nenhum
+                    # dado da economia e alterado neste caminho.
+                    streak = max(profile.daily_streak, 1)
+                    bonus = min(streak * 100, 1000)
+                    amount = DAILY_AMOUNT + bonus
+                    return DailyClaim(profile, _seconds_until_next_local_midnight(now), amount, bonus)
+
+                yesterday = today - timedelta(days=1)
+                if same_day:
+                    # Repeated admin tests do not inflate the streak; they only bypass the lockout.
+                    streak = max(profile.daily_streak, 1)
+                else:
+                    streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
                 bonus = min(streak * 100, 1000)
                 amount = DAILY_AMOUNT + bonus
-                return DailyClaim(
-                    profile,
-                    _seconds_until_next_local_midnight(now),
-                    amount,
-                    bonus,
+                connection.execute(
+                    """
+                    UPDATE economy_profiles
+                    SET balance = balance + ?, daily_streak = ?, last_daily_at = ?, updated_at = ?
+                    WHERE user_id = ?
+                    """,
+                    (amount, streak, now, now, user_id),
                 )
-
-            yesterday = today - timedelta(days=1)
-            if same_day:
-                # Repeated admin tests do not inflate the streak; they only bypass the lockout.
-                streak = max(profile.daily_streak, 1)
-            else:
-                streak = profile.daily_streak + 1 if profile.last_daily_at is not None and _local_date(profile.last_daily_at) == yesterday else 1
-            bonus = min(streak * 100, 1000)
-            amount = DAILY_AMOUNT + bonus
-            connection.execute(
-                """
-                UPDATE economy_profiles
-                SET balance = balance + ?, daily_streak = ?, last_daily_at = ?, updated_at = ?
-                WHERE user_id = ?
-                """,
-                (amount, streak, now, now, user_id),
-            )
-            connection.commit()
+                connection.commit()
 
         return DailyClaim(self.get_profile(user_id), None, amount, bonus)
 
@@ -101,32 +100,34 @@ class EconomyService:
             raise ValueError("Voce nao pode pagar a si mesmo.")
 
         now = int(time.time())
-        with closing(self._connect()) as connection:
-            self._ensure_profile(connection, sender_id)
-            self._ensure_profile(connection, receiver_id)
-            sender = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (sender_id,)).fetchone()
-            if int(sender["balance"]) < amount:
-                raise ValueError("Saldo insuficiente.")
+        with self._write_gate.write():
+            with closing(self._connect()) as connection:
+                self._ensure_profile(connection, sender_id)
+                self._ensure_profile(connection, receiver_id)
+                sender = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (sender_id,)).fetchone()
+                if int(sender["balance"]) < amount:
+                    raise ValueError("Saldo insuficiente.")
 
-            connection.execute("UPDATE economy_profiles SET balance = balance - ?, updated_at = ? WHERE user_id = ?", (amount, now, sender_id))
-            connection.execute("UPDATE economy_profiles SET balance = balance + ?, updated_at = ? WHERE user_id = ?", (amount, now, receiver_id))
-            connection.commit()
+                connection.execute("UPDATE economy_profiles SET balance = balance - ?, updated_at = ? WHERE user_id = ?", (amount, now, sender_id))
+                connection.execute("UPDATE economy_profiles SET balance = balance + ?, updated_at = ? WHERE user_id = ?", (amount, now, receiver_id))
+                connection.commit()
 
         return self.get_profile(sender_id), self.get_profile(receiver_id)
 
     def add_balance(self, user_id: int, amount: int) -> EconomyProfile:
         now = int(time.time())
-        with closing(self._connect()) as connection:
-            self._ensure_profile(connection, user_id)
-            row = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (user_id,)).fetchone()
-            new_balance = int(row["balance"]) + amount
-            if new_balance < 0:
-                raise ValueError("Saldo insuficiente.")
-            connection.execute(
+        with self._write_gate.write():
+            with closing(self._connect()) as connection:
+                self._ensure_profile(connection, user_id)
+                row = connection.execute("SELECT balance FROM economy_profiles WHERE user_id = ?", (user_id,)).fetchone()
+                new_balance = int(row["balance"]) + amount
+                if new_balance < 0:
+                    raise ValueError("Saldo insuficiente.")
+                connection.execute(
                 "UPDATE economy_profiles SET balance = ?, updated_at = ? WHERE user_id = ?",
-                (new_balance, now, user_id),
-            )
-            connection.commit()
+                    (new_balance, now, user_id),
+                )
+                connection.commit()
         return self.get_profile(user_id)
 
     def can_afford(self, user_id: int, amount: int) -> bool:

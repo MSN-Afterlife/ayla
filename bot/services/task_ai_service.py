@@ -13,6 +13,7 @@ except ImportError:
     AsyncOpenAI = None
 
 logger = logging.getLogger(__name__)
+NATIVE_LINEAR_FIELDS_INSTRUCTION = """When the Linear provider is used, also return optional team, project, status, assignee, due_date, cycle and milestone. Use null unless the original user message provides clear evidence; never infer them from Discord origin metadata. due_date must be ISO YYYY-MM-DD only when unambiguous. Estimate is points only when confidence is sufficient; risk and priority are separate."""
 DEFAULT_TASK_AI_TIMEOUT_SECONDS = 120
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 4000
@@ -67,6 +68,13 @@ class TaskAnalysis:
     reproduction_steps: list[str] = field(default_factory=list)
     resolution_deadline_days: int | None = None
     custom_field_values: dict[str, Any] = field(default_factory=dict)
+    team: str | None = None
+    project: str | None = None
+    status: str | None = None
+    assignee: str | None = None
+    due_date: str | None = None
+    cycle: str | None = None
+    milestone: str | None = None
 
 
 class TaskAIService:
@@ -89,7 +97,7 @@ class TaskAIService:
                 self._client.chat.completions.create(
                     model=self._model,
                     messages=[
-                        {"role": "system", "content": self._build_prompt(catalog, custom_fields)},
+                        {"role": "system", "content": self._build_prompt(catalog, custom_fields) + "\n" + NATIVE_LINEAR_FIELDS_INSTRUCTION},
                         {"role": "user", "content": cleaned_content},
                     ],
                     response_format={"type": "json_object"},
@@ -228,6 +236,10 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
         reproduction_steps=_string_list(payload.get("reproduction_steps")),
         resolution_deadline_days=resolution_deadline_days,
         custom_field_values=custom_field_values,
+        team=_nullable_text(payload.get("team")), project=_nullable_text(payload.get("project")),
+        status=_nullable_text(payload.get("status")), assignee=_nullable_text(payload.get("assignee")),
+        due_date=_nullable_text(payload.get("due_date")), cycle=_nullable_text(payload.get("cycle")),
+        milestone=_nullable_text(payload.get("milestone")),
         priority=priority, risk=risk, **{key: values[key] for key in ("category", "area", "environment", "confidence")},
     )
     logger.info("Task AI normalized analysis=%s", analysis)

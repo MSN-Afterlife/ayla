@@ -30,6 +30,13 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         settings.linear_api_key,
         timeout_seconds=settings.linear_timeout_seconds,
         cache_seconds=settings.linear_catalog_cache_seconds,
+        create_subissues=settings.linear_create_subissues,
+        max_subissues=settings.linear_max_subissues,
+        use_estimates=settings.linear_use_estimates,
+        use_assignee=settings.linear_use_assignee,
+        use_due_date=settings.linear_use_due_date,
+        use_cycles=settings.linear_use_cycles,
+        use_milestones=settings.linear_use_milestones,
     )
     task_ai_service = TaskAIService(settings)
     bot._task_ai_service = task_ai_service
@@ -214,16 +221,23 @@ async def _create_linear_task(
         except Exception as error:
             logger.warning("Linear task AI analysis failed message_id=%s error=%s", message.id, _safe_error_name(error))
     if analysis is None:
-        draft = TaskDraft(title=title, description=description, priority=priority)
+        draft = TaskDraft(title=title, description=description, priority=priority, source_content=message.content)
     else:
-        draft = task_draft_from_analysis(analysis, description=description)
-        if draft.subtasks:
-            description += "\n\n## Subtarefas sugeridas\n" + "\n".join(f"- **{item.title}** — {item.description}" for item in draft.subtasks)
-            draft = TaskDraft(
-                title=draft.title, description=description, priority=draft.priority,
-                project=draft.project, team=draft.team, type=draft.type, area=draft.area,
-                environment=draft.environment, subtasks=draft.subtasks, metadata=draft.metadata,
-            )
+        draft = task_draft_from_analysis(analysis, description=description, source_content=message.content)
+    draft = replace(
+        draft,
+        source_url=getattr(message, "jump_url", None),
+        source_metadata={
+            "message_id": str(getattr(message, "id", "")),
+            "channel_id": str(getattr(getattr(message, "channel", None), "id", "")),
+            "guild_id": str(getattr(getattr(message, "guild", None), "id", "")),
+            "author_id": str(getattr(getattr(message, "author", None), "id", "")),
+            "created_at": str(getattr(message, "created_at", "")),
+        },
+    )
+    if draft.subtasks and not settings.linear_create_subissues:
+        description += "\n\n## Subtarefas sugeridas\n" + "\n".join(f"- **{item.title}** — {item.description}" for item in draft.subtasks)
+        draft = replace(draft, description=description)
     try:
         issue = await service.create_task(draft, context=f"discord message_id={message.id}")
     except LinearError as error:

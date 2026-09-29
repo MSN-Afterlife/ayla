@@ -1,10 +1,12 @@
 import asyncio
 import json
 import unittest
+from datetime import date
 
 from bot.config import Settings
 from bot.services.linear_service import LINEAR_PRIORITY_VALUES, LinearError, LinearService
 from bot.services.task_provider import TaskDraft
+from bot.services.task_ai_service import TaskSubtask
 from bot.services.task_ai_service import _parse_analysis
 
 
@@ -77,6 +79,36 @@ class LinearRoutingTests(unittest.TestCase):
             area = {"Ayla": "ayla", "Site": "site", "Minecraft Server": "minecraft", "Discord Server": "discord", "Infraestrutura": "infrastructure"}[project]
             self.assertEqual(LinearService.route(TaskDraft("x", "x", area=area)), expected)
 
+    def test_staging_ambiguous_manual_triage_routes_operations_without_project(self):
+        draft = TaskDraft(
+            "staging morreu ao vivo", "descrição com **Servidor:** Discord",
+            area="infrastructure", environment="staging",
+            metadata={"destination": "manual_triage", "confidence": "low"},
+            source_content="staging morreu ao vivo",
+        )
+        self.assertEqual(LinearService.route(draft), ("Operations", None))
+
+    def test_discord_origin_does_not_imply_discord_project(self):
+        draft = TaskDraft(
+            "staging morreu ao vivo", "**Canal:** #bugs **Servidor:** Ayla Discord",
+            area="infrastructure", source_content="staging morreu ao vivo",
+        )
+        self.assertEqual(LinearService.route(draft), ("Operations", "Infraestrutura"))
+
+    def test_explicit_discord_problem_routes_discord_server(self):
+        draft = TaskDraft("Permissões do servidor Discord", "cargo não consegue acessar o canal", area="discord", source_content="Permissões do servidor Discord")
+        self.assertEqual(LinearService.route(draft), ("Operations", "Discord Server"))
+
+    def test_explicit_minecraft_problem_routes_minecraft_server(self):
+        self.assertEqual(LinearService.route(TaskDraft("/skin quebrada", "falha no Minecraft", area="minecraft", source_content="falha no Minecraft")), ("Operations", "Minecraft Server"))
+
+    def test_explicit_infrastructure_routes_infrastructure_project(self):
+        self.assertEqual(LinearService.route(TaskDraft("VPS fora", "rede da VPS indisponível", area="infrastructure", source_content="rede da VPS indisponível")), ("Operations", "Infraestrutura"))
+
+    def test_ayla_and_site_routes(self):
+        self.assertEqual(LinearService.route(TaskDraft("Comando Ayla", "bug no bot", area="ayla", source_content="bug no bot Ayla")), ("Software", "Ayla"))
+        self.assertEqual(LinearService.route(TaskDraft("Página quebrada", "erro no site", area="site", source_content="erro no site")), ("Software", "Site"))
+
     def test_minecraft_message_routes_to_operations(self):
         self.assertEqual(LinearService.route(TaskDraft("Corrigir /skin", "falha após migração para Velocity")), ("Operations", "Minecraft Server"))
 
@@ -90,12 +122,19 @@ class LinearRoutingTests(unittest.TestCase):
     def test_priority_mapping(self):
         self.assertEqual(LINEAR_PRIORITY_VALUES, {"urgent": 1, "high": 2, "normal": 3, "low": 4})
 
+    def test_source_url_and_metadata_never_contaminate_routing(self):
+        draft = TaskDraft("staging caiu", "https://discord.com/channels/1/2/3", area="infrastructure", source_content="staging caiu", source_url="https://discord.com/channels/1/2/3", source_metadata={"guild": "Discord Server"})
+        self.assertEqual(LinearService.route(draft), ("Operations", "Infraestrutura"))
+
+    def test_low_confidence_does_not_select_project_or_advanced_scope(self):
+        draft = TaskDraft("problema", "sem contexto", area="infrastructure", confidence="low", milestone="M1", assignee="someone")
+        self.assertEqual(LinearService.route(draft), ("Operations", None))
+
     def test_label_resolution_uses_group_and_omits_unknown_environment(self):
         service = LinearService("token")
         labels = service.resolve_labels(metadata(), TaskDraft("x", "y", type="bug", area="minecraft"))
         self.assertEqual(labels, ["bug", "minecraft-area"])
-        with self.assertRaises(LinearError):
-            service.resolve_labels(metadata(), TaskDraft("x", "y", type="research", area="minecraft"))
+        self.assertEqual(service.resolve_labels(metadata(), TaskDraft("x", "y", type="research", area="minecraft")), ["minecraft-area"])
 
 
 class LinearApiTests(unittest.IsolatedAsyncioTestCase):
@@ -157,6 +196,76 @@ class LinearApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_key_is_disabled_safely(self):
         with self.assertRaisesRegex(LinearError, "LINEAR_API_KEY"):
             await LinearService(None).get_metadata()
+
+    async def test_advanced_fields_use_real_scoped_metadata(self):
+        service = LinearService("secret-token", use_estimates=True, use_assignee=True, use_due_date=True, use_cycles=True, use_milestones=True)
+        md = metadata()
+        md["teams"][1]["estimateValues"] = [1, 2, 3, 5, 8]
+        md["members"] = [{"id": "u1", "name": "Ana", "displayName": "Ana", "email": "ana@example.test"}]
+        md["cycles"] = [{"id": "c1", "name": "Sprint 1", "team": {"id": "ops"}}]
+        md["milestones"] = [{"id": "m1", "name": "Outage", "project": {"id": "infra"}}]
+        md["states"].append({"id": "ops-todo", "name": "Todo", "team": {"id": "ops"}})
+        service._metadata = md
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service._session = FakeSession([(200, {"data": {"issueCreate": {"success": True, "issue": {"id": "i1", "identifier": "OPS-1", "url": "https://linear.test/OPS-1"}}}})])
+        draft = TaskDraft("VPS", "desc", area="infrastructure", type="bug", environment="staging", estimate=5, assignee="ana@example.test", due_date=date(2026, 10, 3), cycle="Sprint 1", milestone="Outage")
+        await service.create_task(draft)
+        data = service._session.requests[0][1]["json"]["variables"]["input"]
+        self.assertEqual(data["estimate"], 5)
+        self.assertEqual(data["assigneeId"], "u1")
+        self.assertEqual(data["dueDate"], "2026-10-03")
+        self.assertEqual(data["cycleId"], "c1")
+        self.assertEqual(data["projectMilestoneId"], "m1")
+
+    async def test_advanced_fields_are_omitted_by_default(self):
+        service = LinearService("secret-token")
+        service._metadata = metadata()
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service._session = FakeSession([(200, {"data": {"issueCreate": {"success": True, "issue": {"id": "i1", "identifier": "OPS-1"}}}})])
+        await service.create_task(TaskDraft("x", "y", area="infrastructure", estimate=5, assignee="u1", due_date=date(2026, 10, 3), cycle="Sprint 1", milestone="M1"))
+        data = service._session.requests[0][1]["json"]["variables"]["input"]
+        for key in ("estimate", "assigneeId", "dueDate", "cycleId", "projectMilestoneId"):
+            self.assertNotIn(key, data)
+
+    async def test_manual_triage_suppresses_all_optional_scope_fields(self):
+        service = LinearService("secret-token", use_estimates=True, use_assignee=True, use_due_date=True, use_cycles=True, use_milestones=True)
+        md = metadata()
+        md["teams"][1]["estimateValues"] = [5]
+        md["members"] = [{"id": "u1", "name": "Ana"}]
+        md["cycles"] = [{"id": "c1", "name": "Sprint 1", "team": {"id": "ops"}}]
+        md["milestones"] = [{"id": "m1", "name": "Outage", "project": {"id": "infra"}}]
+        md["states"].append({"id": "ops-todo", "name": "Todo", "team": {"id": "ops"}})
+        service._metadata = md
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service._session = FakeSession([(200, {"data": {"issueCreate": {"success": True, "issue": {"id": "i1"}}}})])
+        draft = TaskDraft("triage", "desc", area="infrastructure", manual_triage=True, confidence="low", estimate=5, assignee="Ana", due_date=date(2026, 10, 3), cycle="Sprint 1", milestone="Outage")
+        await service.create_task(draft)
+        data = service._session.requests[0][1]["json"]["variables"]["input"]
+        for key in ("projectId", "estimate", "assigneeId", "dueDate", "cycleId", "projectMilestoneId"):
+            self.assertNotIn(key, data)
+
+    async def test_parent_and_real_subissues_have_parent_id_and_partial_failure_is_reported(self):
+        service = LinearService("secret-token", create_subissues=True, max_subissues=2)
+        service._metadata = metadata()
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service._session = FakeSession([
+            (200, {"data": {"issueCreate": {"success": True, "issue": {"id": "parent", "identifier": "OPS-1"}}}}),
+            (200, {"data": {"issueCreate": {"success": True, "issue": {"id": "child", "identifier": "OPS-2"}}}}),
+            (200, {"errors": [{"message": "child failed"}]}),
+        ])
+        result = await service.create_task(TaskDraft("parent", "desc", area="infrastructure", subtasks=[TaskSubtask("one", "one"), TaskSubtask("two", "two"), TaskSubtask("three", "three")]))
+        self.assertEqual(len(result["subissues"]), 1)
+        self.assertEqual(len(result["subissue_failures"]), 1)
+        child_input = service._session.requests[1][1]["json"]["variables"]["input"]
+        self.assertEqual(child_input["parentId"], "parent")
+        self.assertEqual(len(service._session.requests), 3)
+
+    async def test_metadata_invalidation_forces_refresh(self):
+        service = LinearService("secret-token")
+        service._metadata = metadata()
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service.invalidate_metadata()
+        self.assertIsNone(service._metadata)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,13 @@ class Settings:
     linear_api_key: str | None = None
     linear_timeout_seconds: float = 15
     linear_catalog_cache_seconds: int = 600
+    linear_create_subissues: bool = False
+    linear_max_subissues: int = 5
+    linear_use_estimates: bool = False
+    linear_use_assignee: bool = False
+    linear_use_due_date: bool = False
+    linear_use_cycles: bool = False
+    linear_use_milestones: bool = False
     task_provider: str = "clickup"
     lastfm_api_key: str | None = None
     lastfm_api_secret: str | None = None
@@ -186,6 +193,13 @@ def load_settings() -> Settings:
         linear_api_key=os.getenv("LINEAR_API_KEY"),
         linear_timeout_seconds=float(os.getenv("LINEAR_TIMEOUT_SECONDS", "15")),
         linear_catalog_cache_seconds=int(os.getenv("LINEAR_CATALOG_CACHE_SECONDS", "600")),
+        linear_create_subissues=_load_bool("LINEAR_CREATE_SUBISSUES", False),
+        linear_max_subissues=max(0, min(10, int(os.getenv("LINEAR_MAX_SUBISSUES", "5")))),
+        linear_use_estimates=_load_bool("LINEAR_USE_ESTIMATES", False),
+        linear_use_assignee=_load_bool("LINEAR_USE_ASSIGNEE", False),
+        linear_use_due_date=_load_bool("LINEAR_USE_DUE_DATE", False),
+        linear_use_cycles=_load_bool("LINEAR_USE_CYCLES", False),
+        linear_use_milestones=_load_bool("LINEAR_USE_MILESTONES", False),
         task_provider=os.getenv("TASK_PROVIDER", "clickup").strip().lower(),
         lastfm_api_key=os.getenv("LASTFM_API_KEY"),
         lastfm_api_secret=os.getenv("LASTFM_API_SECRET"),

@@ -84,6 +84,11 @@ class Settings:
     clickup_workspace_id: str | None = None
     clickup_catalog_cache_seconds: int = 600
     clickup_manual_triage_query: str = "Backlog > Triage Manual"
+    linear_enabled: bool = False
+    linear_api_key: str | None = None
+    linear_timeout_seconds: float = 15
+    linear_catalog_cache_seconds: int = 600
+    task_provider: str = "clickup"
     lastfm_api_key: str | None = None
     lastfm_api_secret: str | None = None
     lastfm_callback_url: str | None = None
@@ -177,6 +182,11 @@ def load_settings() -> Settings:
         clickup_workspace_id=os.getenv("CLICKUP_WORKSPACE_ID"),
         clickup_catalog_cache_seconds=int(os.getenv("CLICKUP_CATALOG_CACHE_SECONDS", "600")),
         clickup_manual_triage_query=os.getenv("CLICKUP_MANUAL_TRIAGE_QUERY", "Backlog > Triage Manual"),
+        linear_enabled=_load_bool("LINEAR_ENABLED", False),
+        linear_api_key=os.getenv("LINEAR_API_KEY"),
+        linear_timeout_seconds=float(os.getenv("LINEAR_TIMEOUT_SECONDS", "15")),
+        linear_catalog_cache_seconds=int(os.getenv("LINEAR_CATALOG_CACHE_SECONDS", "600")),
+        task_provider=os.getenv("TASK_PROVIDER", "clickup").strip().lower(),
         lastfm_api_key=os.getenv("LASTFM_API_KEY"),
         lastfm_api_secret=os.getenv("LASTFM_API_SECRET"),
         lastfm_callback_url=os.getenv("LASTFM_CALLBACK_URL"),

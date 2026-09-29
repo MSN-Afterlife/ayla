@@ -20,8 +20,8 @@ MAX_SUBTASKS = 5
 MAX_FIELD_LENGTH = 1000
 SUBTASK_TYPES = {"investigation", "implementation", "validation"}
 ALLOWED_VALUES = {
-    "category": {"bug", "improvement", "security", "content", "infrastructure", "other"},
-    "area": {"ayla", "site", "api", "database", "discord", "infrastructure", "other"},
+    "category": {"bug", "feature", "improvement", "maintenance", "research", "security", "content", "infrastructure", "other"},
+    "area": {"ayla", "site", "api", "backend", "frontend", "database", "discord", "minecraft", "network", "security", "devops", "infrastructure", "other"},
     "environment": {"production", "staging", "both", "local", "unknown"},
     "priority": {"urgent", "high", "normal", "low"},
     "risk": {"critical", "high", "medium", "low"},
@@ -150,7 +150,7 @@ class TaskAIService:
 
 _TASK_ANALYSIS_PROMPT = """Transforme a mensagem do Discord em um chamado técnico acionável.
 Retorne exclusivamente JSON válido com title, description, category, area, environment, priority, risk, confidence, destination, possible_cause, possible_solution, acceptance_criteria, missing_information, estimated_minutes, estimate_confidence, estimate_basis, points, tags e subtasks.
-Valores internos permitidos: category=bug|improvement|security|content|infrastructure|other; area=ayla|site|api|database|discord|infrastructure|other; environment=production|staging|both|local|unknown; priority=urgent|high|normal|low; risk=critical|high|medium|low; confidence=high|medium|low.
+Valores internos permitidos: category=bug|feature|improvement|maintenance|research|security|content|infrastructure|other; area=ayla|site|api|backend|frontend|database|discord|minecraft|network|security|devops|infrastructure|other; environment=production|staging|both|local|unknown; priority=urgent|high|normal|low; risk=critical|high|medium|low; confidence=high|medium|low.
 destination deve ser exatamente o id numérico da lista, nunca o caminho ou nome. Para solicitação de funcionalidade sem falha, possible_cause deve ser null ou explicar que não se aplica. possible_solution deve ser técnica, concreta e assumir-se como hipótese. acceptance_criteria deve conter resultados verificáveis. missing_information deve listar o que impede investigação.
 subtasks é uma lista de 0 a 5 objetos com title, description e type (investigation|implementation|validation). Para ticket acionável, gere 2 a 5 etapas distintas seguindo investigar/reproduzir, implementar/configurar e validar. Uma etapa isolada útil também deve ser preservada. Não use títulos genéricos como analisar o problema, resolver o problema ou testar a solução; mencione o componente e a ação concreta. Não invente fatos ou evidências."""
 

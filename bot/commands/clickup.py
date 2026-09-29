@@ -9,7 +9,9 @@ from discord.ext import commands
 
 from bot.config import Settings, validate_clickup_settings
 from bot.services.clickup_service import ClickUpError, ClickUpService
+from bot.services.linear_service import LinearError, LinearService
 from bot.services.task_ai_service import TaskAIService, TaskAnalysis, priority_from_content
+from bot.services.task_provider import TaskDraft, task_draft_from_analysis
 from bot.services.staging_rbac import can_use_admin_command
 
 
@@ -24,14 +26,27 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
     except RuntimeError as error:
         logger.error("ClickUp configuration invalid: %s", error)
     service = ClickUpService(settings.clickup_api_token, free_mode=settings.clickup_free_mode)
+    linear_service = LinearService(
+        settings.linear_api_key,
+        timeout_seconds=settings.linear_timeout_seconds,
+        cache_seconds=settings.linear_catalog_cache_seconds,
+    )
     task_ai_service = TaskAIService(settings)
     bot._task_ai_service = task_ai_service
+    bot._linear_service = linear_service
 
     async def create_task_from_message(interaction: discord.Interaction, message: discord.Message) -> None:
         if not _is_allowed(interaction, settings.clickup_allowed_role_ids or []):
             await interaction.response.send_message(
                 "Você não tem permissão para criar tarefas no ClickUp.", ephemeral=True
             )
+            return
+
+        use_linear = settings.linear_enabled and (
+            settings.task_provider == "linear" or not settings.clickup_api_token
+        )
+        if use_linear:
+            await _create_linear_task(interaction, message, settings, task_ai_service, linear_service)
             return
 
         if not settings.clickup_api_token:
@@ -173,6 +188,51 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
     )
     bot.tree.add_command(context_menu)
     return service
+
+
+async def _create_linear_task(
+    interaction: discord.Interaction,
+    message: discord.Message,
+    settings: Settings,
+    task_ai_service: TaskAIService,
+    service: LinearService,
+) -> None:
+    if not settings.linear_api_key:
+        await interaction.response.send_message("A integração com o Linear não está configurada. Avise um administrador.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    title = _task_title(message)
+    description = _task_description(message, interaction.user)
+    analysis: TaskAnalysis | None = None
+    priority = priority_from_content(message.content) if message.content.strip() else "normal"
+    if message.content.strip():
+        try:
+            analysis = await task_ai_service.analyze_task(message.content)
+            title = analysis.title
+            priority = analysis.priority
+            description = _task_description(message, interaction.user, analysis.description, analysis)
+        except Exception as error:
+            logger.warning("Linear task AI analysis failed message_id=%s error=%s", message.id, _safe_error_name(error))
+    if analysis is None:
+        draft = TaskDraft(title=title, description=description, priority=priority)
+    else:
+        draft = task_draft_from_analysis(analysis, description=description)
+        if draft.subtasks:
+            description += "\n\n## Subtarefas sugeridas\n" + "\n".join(f"- **{item.title}** — {item.description}" for item in draft.subtasks)
+            draft = TaskDraft(
+                title=draft.title, description=description, priority=draft.priority,
+                project=draft.project, team=draft.team, type=draft.type, area=draft.area,
+                environment=draft.environment, subtasks=draft.subtasks, metadata=draft.metadata,
+            )
+    try:
+        issue = await service.create_task(draft, context=f"discord message_id={message.id}")
+    except LinearError as error:
+        logger.error("Linear task creation failed message_id=%s error=%s", message.id, error)
+        await interaction.followup.send("❌ Não consegui criar a issue no Linear. O erro foi registrado para análise.", ephemeral=True)
+        return
+    url = issue.get("url") if isinstance(issue, dict) else None
+    suffix = f"\n[ Abrir issue no Linear ]({url})" if url else ""
+    await interaction.followup.send(f"✅ Issue criada no Linear: **{title}**{suffix}", ephemeral=True)
 
 
 def _is_allowed(interaction: discord.Interaction, allowed_role_ids: list[int]) -> bool:

@@ -1,13 +1,14 @@
 import asyncio
 import json
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 from types import SimpleNamespace
 
 from bot.commands.clickup import _custom_fields, resolve_destination
 from bot.config import Settings, _load_destination_map, validate_clickup_settings
 from bot.services.clickup_service import CLICKUP_PRIORITY_VALUES, ClickUpService, priority_to_clickup
-from bot.services.task_ai_service import _deterministic_overrides, _parse_analysis, _parse_subtasks, priority_from_content
+from bot.services.task_ai_service import _deterministic_overrides, _parse_analysis, _parse_subtasks, parse_due_date, priority_from_content
 
 
 class FakeResponse:
@@ -51,7 +52,33 @@ class TaskTriageTests(unittest.TestCase):
         self.assertEqual(priority_from_content("bug visual deixou um usuário cego e houve convulsão, corrigir com urgência"), "urgent")
         self.assertEqual(_deterministic_overrides("função importante quebrada em produção", "low", "low", "production")[0], "high")
         self.assertEqual(_deterministic_overrides("erro apenas visual de CSS", "high", "low", "unknown")[0], "low")
-        self.assertEqual(_deterministic_overrides("erro somente em staging", "urgent", "low", "staging")[0], "normal")
+        self.assertEqual(_deterministic_overrides("erro somente em staging", "urgent", "low", "staging")[0], "high")
+        self.assertEqual(_deterministic_overrides("site em staging retorna erro 500 e precisa corrigir até sexta", "urgent", "high", "staging")[0], "high")
+        self.assertEqual(_deterministic_overrides("staging com vazamento de credenciais ativo", "high", "critical", "staging")[0], "urgent")
+        self.assertEqual(_deterministic_overrides("site staging está fora do ar", "urgent", "high", "staging")[0], "high")
+        self.assertEqual(_deterministic_overrides("produção inteira está fora do ar agora", "high", "high", "production")[0], "urgent")
+
+    def test_field_confidence_and_relative_due_dates_are_normalized(self):
+        reference = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
+        payload = {"title": "Site", "description": "500", "destination": "manual_triage", "project": "Site", "due_date": "sexta", "field_confidence": {"project": "high", "due_date": "high", "area": "medium"}}
+        analysis = _parse_analysis(json.dumps(payload), {"manual_triage"}, source_content="O site em staging precisa estar resolvido até sexta.", reference_at=reference)
+        self.assertEqual(analysis.project, "Site")
+        self.assertEqual(analysis.due_date, "2026-10-02")
+        self.assertEqual(analysis.field_confidence["project"], "high")
+
+    def test_due_date_parser_supports_controlled_relative_and_explicit_dates(self):
+        reference = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
+        self.assertEqual(parse_due_date(None, "resolver amanhã", reference_at=reference), "2026-09-30")
+        self.assertEqual(parse_due_date(None, "resolver até sexta", reference_at=reference), "2026-10-02")
+        self.assertEqual(parse_due_date("2026-10-05", reference_at=reference), "2026-10-05")
+        self.assertIsNone(parse_due_date(None, "resolver em breve", reference_at=reference))
+
+    def test_prompt_receives_explicit_datetime_and_timezone(self):
+        from bot.services.task_ai_service import TaskAIService
+        settings = Settings("token")
+        prompt = TaskAIService(settings)._build_prompt(reference_at=datetime(2026, 9, 29, 12, tzinfo=timezone.utc))
+        self.assertIn("Current datetime:", prompt)
+        self.assertIn("Timezone: America/Sao_Paulo", prompt)
 
     def test_one_valid_subtask_is_preserved(self):
         subtasks, discarded = _parse_subtasks([{"title": "Validar endpoint /audit", "description": "Consultar o endpoint e confirmar o status HTTP.", "type": "validation"}])

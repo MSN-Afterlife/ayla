@@ -6,7 +6,7 @@ from datetime import date
 
 from bot.config import Settings
 from bot.services.linear_service import LINEAR_PRIORITY_VALUES, LinearError, LinearService
-from bot.services.task_provider import TaskDraft
+from bot.services.task_provider import TaskDraft, task_draft_from_analysis
 from bot.services.task_ai_service import TaskSubtask
 from bot.services.task_ai_service import _parse_analysis
 
@@ -130,6 +130,30 @@ class LinearRoutingTests(unittest.TestCase):
     def test_low_confidence_does_not_select_project_or_advanced_scope(self):
         draft = TaskDraft("problema", "sem contexto", area="infrastructure", confidence="low", milestone="M1", assignee="someone")
         self.assertEqual(LinearService.route(draft), ("Operations", None))
+
+    def test_manual_triage_generic_area_without_component_evidence_stays_unset(self):
+        draft = TaskDraft("staging morreu ao vivo", "", area="infrastructure", manual_triage=True, field_confidence={"area": "medium"})
+        self.assertEqual(LinearService.route(draft), ("Operations", None))
+
+    def test_manual_triage_preserves_independently_confident_site_project(self):
+        draft = TaskDraft("site", "500", team="Software", project="Site", area="api", manual_triage=True, confidence="medium", source_content="O site em staging retorna 500", field_confidence={"team": "high", "project": "high", "area": "medium"})
+        self.assertEqual(LinearService.route(draft), ("Software", "Site"))
+
+    def test_manual_triage_medium_project_requires_direct_evidence(self):
+        direct = TaskDraft("site", "500", project="Site", manual_triage=True, source_content="O site retorna 500", field_confidence={"project": "medium"})
+        ambiguous = TaskDraft("staging morreu", "", project="Site", manual_triage=True, source_content="staging morreu", field_confidence={"project": "medium"})
+        self.assertEqual(LinearService.route(direct), ("Software", "Site"))
+        self.assertEqual(LinearService.route(ambiguous), ("Software", None))
+
+    def test_manual_triage_low_project_confidence_unsets_project(self):
+        draft = TaskDraft("site", "ambiguous", team="Software", project="Site", manual_triage=True, field_confidence={"project": "low"})
+        self.assertEqual(LinearService.route(draft), ("Software", None))
+
+    def test_analysis_to_draft_transports_native_fields(self):
+        analysis = _parse_analysis('{"title":"site","description":"500","project":"Site","team":"Software","area":"api","environment":"staging","due_date":"2026-10-02","field_confidence":{"project":"high","due_date":"high"}}', {"manual_triage"})
+        draft = task_draft_from_analysis(analysis, source_content="O site em staging")
+        self.assertEqual((draft.team, draft.project, draft.environment, draft.due_date.isoformat()), ("Software", "Site", "staging", "2026-10-02"))
+        self.assertEqual(draft.field_confidence["due_date"], "high")
 
     def test_label_resolution_uses_group_and_omits_unknown_environment(self):
         service = LinearService("token")
@@ -266,6 +290,19 @@ class LinearApiTests(unittest.IsolatedAsyncioTestCase):
         data = service._session.requests[0][1]["json"]["variables"]["input"]
         for key in ("projectId", "estimate", "assigneeId", "dueDate", "cycleId", "projectMilestoneId"):
             self.assertNotIn(key, data)
+
+    async def test_manual_triage_keeps_high_confidence_project_and_due_date(self):
+        service = LinearService("secret-token", use_due_date=True)
+        md = metadata()
+        md["states"].append({"id": "software-backlog", "name": "Backlog", "team": {"id": "software"}})
+        service._metadata = md
+        service._metadata_cached_at = asyncio.get_running_loop().time()
+        service._session = FakeSession([(200, {"data": {"issueCreate": {"success": True, "issue": {"id": "i1"}}}})])
+        draft = TaskDraft("site", "desc", team="Software", project="Site", area="api", manual_triage=True, confidence="medium", due_date=date(2026, 10, 2), field_confidence={"team": "high", "project": "high", "due_date": "high"})
+        await service.create_task(draft)
+        data = service._session.requests[0][1]["json"]["variables"]["input"]
+        self.assertEqual(data["projectId"], "site")
+        self.assertEqual(data["dueDate"], "2026-10-02")
 
     async def test_parent_and_real_subissues_have_parent_id_and_partial_failure_is_reported(self):
         service = LinearService("secret-token", create_subissues=True, max_subissues=2)

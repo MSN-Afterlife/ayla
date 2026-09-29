@@ -8,6 +8,8 @@ O context menu `📋 Criar tarefa` continua sendo a única entrada. Discord cole
 
 Além de título, descrição, prioridade, tipo, área e ambiente, o draft pode carregar status, estimate, assignee, due date, cycle, milestone, parent, subtasks, confiança, risco, destino/manual triage e metadados de origem. O ClickUp ignora os campos que não possui. O Linear só envia propriedades avançadas quando a feature flag correspondente está habilitada.
 
+Campos possuem confiança independente em `field_confidence`. `manual_triage` indica que ainda há aspectos para decisão humana; não apaga campos independentes com evidência alta ou média. Campos sem confiança suficiente ficam unset.
+
 ## Routing e taxonomia
 
 Team e Project são dimensões diferentes. A rota atual é `Software/Ayla`, `Software/Site`, `Operations/Minecraft Server`, `Operations/Discord Server` e `Operations/Infraestrutura`, mas project só é selecionado por área/conteúdo explícito. `manual_triage` ou confiança baixa deixa project, assignee, cycle e milestone sem valor. Texto enriquecido com canal, servidor, autor ou URL do Discord não é analisado para routing. Tokens são delimitados; não há busca ingênua por substring.
@@ -15,6 +17,8 @@ Team e Project são dimensões diferentes. A rota atual é `Software/Ayla`, `Sof
 Labels são descobertas por metadata e aplicadas por grupo `Type`, `Area` e `Environment`. `infrastructure` roteia para o componente `Infraestrutura`, mas não é convertido automaticamente em label `DevOps`; `DevOps` só é usado quando essa é a área explícita. Label ausente é omitida e registrada como aviso, sem impedir uma issue básica. `production-change` nunca é automática.
 
 Priority usa a escala nativa do Linear: urgent=1, high=2, normal=3, low=4 e ausência=0. Risk não aumenta priority sozinho. Status é resolvido pelo nome no Team; manual triage prefere `Backlog` se existir, com fallback determinístico para `Todo`.
+
+Para prioridade, produção indisponível, segurança ativa, perda/corrupção de dados ou bloqueio operacional imediato podem justificar `urgent`. Erros 500 em staging, mesmo com prazo próximo, ficam no máximo em `high` pela regra determinística. Datas relativas são interpretadas com o timestamp da mensagem, timezone `America/Sao_Paulo` e contexto explícito enviado ao prompt; datas ambíguas ficam unset.
 
 ## Metadata e propriedades nativas
 

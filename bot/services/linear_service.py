@@ -82,20 +82,19 @@ class LinearService:
         state = self._find_state(metadata["states"], state_name, str(team["id"]))
         if state:
             data["stateId"] = state["id"]
-        uncertain = draft.manual_triage or draft.confidence.casefold() == "low" or str(draft.metadata.get("destination", "")).casefold() == "manual_triage" or str(draft.metadata.get("confidence", "")).casefold() == "low"
-        if not uncertain and self._use_estimates and self._valid_estimate(metadata, team, draft.estimate):
+        if self._use_estimates and self._field_is_confident(draft, "estimate") and self._valid_estimate(metadata, team, draft.estimate):
             data["estimate"] = draft.estimate
-        if not uncertain and self._use_assignee:
+        if self._use_assignee and self._field_is_confident(draft, "assignee"):
             member = self._find_member(metadata.get("members", []), draft.assignee)
             if member:
                 data["assigneeId"] = member["id"]
-        if not uncertain and self._use_due_date and draft.due_date:
+        if self._use_due_date and self._field_is_confident(draft, "due_date") and draft.due_date:
             data["dueDate"] = draft.due_date.isoformat()
-        if not uncertain and self._use_cycles:
+        if self._use_cycles and self._field_is_confident(draft, "cycle"):
             cycle = self._find_scoped(metadata.get("cycles", []), draft.cycle, str(team["id"]))
             if cycle:
                 data["cycleId"] = cycle["id"]
-        if not uncertain and self._use_milestones and project:
+        if self._use_milestones and self._field_is_confident(draft, "milestone") and project:
             milestone = self._find_milestone(metadata.get("milestones", []), draft.milestone, str(project["id"]))
             if milestone:
                 data["projectMilestoneId"] = milestone["id"]
@@ -142,8 +141,10 @@ class LinearService:
         area = (draft.area or "other").casefold()
         manual = draft.manual_triage or str(draft.metadata.get("destination", "")).casefold() == "manual_triage" or draft.confidence.casefold() == "low" or str(draft.metadata.get("confidence", "")).casefold() == "low"
         tokens = {item.casefold() for item in _TOKEN_RE.findall(text)}
-        project = None if manual else draft.project
-        if not project and not manual:
+        project = draft.project if (draft.project and (not manual or (LinearService._field_is_confident(draft, "project") and LinearService._project_has_direct_evidence(draft, draft.project)))) else None
+        direct_component_evidence = bool({"site", "frontend", "ayla", "minecraft", "velocity", "vps", "infraestrutura", "datacenter"} & tokens) or ("discord" in tokens and any(word in text for word in ("canal", "cargo", "permiss", "moder", "role")))
+        can_infer = not manual or (LinearService._field_is_confident(draft, "area") and direct_component_evidence)
+        if not project and can_infer:
             if area == "minecraft" or {"minecraft", "velocity"} & tokens or "/skin" in text:
                 project = "Minecraft Server"
             elif area == "discord" or ("discord" in tokens and any(word in text for word in ("canal", "cargo", "permiss", "moder", "role"))):
@@ -154,8 +155,28 @@ class LinearService:
                 project = "Site"
             elif area in {"ayla", "api", "backend", "database", "security"} or "ayla" in tokens:
                 project = "Ayla"
-        team = draft.team or ("Operations" if project in {"Minecraft Server", "Discord Server", "Infraestrutura"} or area in {"minecraft", "discord", "infrastructure", "network", "devops"} else "Software")
+        team = (draft.team if draft.team and (not manual or LinearService._field_is_confident(draft, "team")) else None) or ("Operations" if project in {"Minecraft Server", "Discord Server", "Infraestrutura"} or area in {"minecraft", "discord", "infrastructure", "network", "devops"} else "Software")
         return team, project
+
+    @staticmethod
+    def _field_is_confident(draft: TaskDraft, field_name: str) -> bool:
+        level = str(draft.field_confidence.get(field_name, "")).casefold()
+        if level in {"high", "medium"}:
+            return True
+        manual = draft.manual_triage or str(draft.metadata.get("destination", "")).casefold() == "manual_triage" or str(draft.metadata.get("confidence", "")).casefold() == "low"
+        return not manual and draft.confidence.casefold() != "low"
+
+    @staticmethod
+    def _project_has_direct_evidence(draft: TaskDraft, project: str) -> bool:
+        text = f"{draft.title} {draft.source_content}".casefold()
+        evidence = {
+            "site": ("site", "frontend"),
+            "ayla": ("ayla", "bot", "comando"),
+            "minecraft server": ("minecraft", "velocity", "/skin"),
+            "discord server": ("discord", "canal", "cargo", "permiss", "moder", "role"),
+            "infraestrutura": ("vps", "rede", "infraestrutura", "datacenter"),
+        }.get(project.casefold(), ())
+        return any(token in text for token in evidence)
 
     def resolve_labels(self, metadata: dict[str, Any], draft: TaskDraft, *, team_id: str | None = None) -> list[str]:
         values = [("type", self._type_label(draft.type)), ("area", self._area_label(draft.area))]

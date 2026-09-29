@@ -3,7 +3,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
 
 from bot.config import Settings
 
@@ -13,7 +19,8 @@ except ImportError:
     AsyncOpenAI = None
 
 logger = logging.getLogger(__name__)
-NATIVE_LINEAR_FIELDS_INSTRUCTION = """When the Linear provider is used, also return optional team, project, status, assignee, due_date, cycle and milestone. Use null unless the original user message provides clear evidence; never infer them from Discord origin metadata. due_date must be ISO YYYY-MM-DD only when unambiguous. Estimate is points only when confidence is sufficient; risk and priority are separate."""
+NATIVE_LINEAR_FIELDS_INSTRUCTION = """When the Linear provider is used, also return optional team, project, status, assignee, due_date, cycle and milestone plus field_confidence. field_confidence is an object keyed by fields such as team, project, type, area, environment, priority, due_date, estimate, assignee, cycle and milestone with only high|medium|low. Use null unless the original user message provides clear evidence; never infer fields from Discord origin metadata. due_date must be ISO YYYY-MM-DD only when unambiguous. Estimate is points only when confidence is sufficient; risk and priority are separate. manual_triage identifies unresolved aspects and must not erase independently high-confidence fields."""
+DEFAULT_TASK_TIMEZONE = "America/Sao_Paulo"
 DEFAULT_TASK_AI_TIMEOUT_SECONDS = 120
 MAX_TITLE_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 4000
@@ -75,6 +82,7 @@ class TaskAnalysis:
     due_date: str | None = None
     cycle: str | None = None
     milestone: str | None = None
+    field_confidence: dict[str, str] = field(default_factory=dict)
 
 
 class TaskAIService:
@@ -86,7 +94,7 @@ class TaskAIService:
         if self._client is None and settings.openai_api_key and AsyncOpenAI is not None:
             self._client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
 
-    async def analyze_task(self, content: str, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None) -> TaskAnalysis:
+    async def analyze_task(self, content: str, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None, *, reference_at: datetime | None = None, timezone_name: str = DEFAULT_TASK_TIMEZONE) -> TaskAnalysis:
         cleaned_content = content.strip()
         if not cleaned_content:
             raise TaskAIError("mensagem sem conteúdo textual")
@@ -97,7 +105,7 @@ class TaskAIService:
                 self._client.chat.completions.create(
                     model=self._model,
                     messages=[
-                        {"role": "system", "content": self._build_prompt(catalog, custom_fields) + "\n" + NATIVE_LINEAR_FIELDS_INSTRUCTION},
+                        {"role": "system", "content": self._build_prompt(catalog, custom_fields, reference_at=reference_at, timezone_name=timezone_name) + "\n" + NATIVE_LINEAR_FIELDS_INSTRUCTION},
                         {"role": "user", "content": cleaned_content},
                     ],
                     response_format={"type": "json_object"},
@@ -116,9 +124,10 @@ class TaskAIService:
             if item.get("name"):
                 allowed.add(str(item["name"]))
         allowed = allowed or self._destinations
-        return _parse_analysis(_response_content(response), allowed, source_content=cleaned_content, custom_field_schema=custom_fields)
+        return _parse_analysis(_response_content(response), allowed, source_content=cleaned_content, custom_field_schema=custom_fields, reference_at=reference_at, timezone_name=timezone_name)
 
-    def _build_prompt(self, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None) -> str:
+    def _build_prompt(self, catalog: list[dict[str, str]] | None = None, custom_fields: list[dict[str, Any]] | None = None, *, reference_at: datetime | None = None, timezone_name: str = DEFAULT_TASK_TIMEZONE) -> str:
+        date_context = f"\nCurrent datetime: {_format_current_datetime(reference_at, timezone_name)}\nTimezone: {timezone_name}\nNormalize relative due dates against this context; do not use implicit current date.\n"
         field_lines = []
         for field in custom_fields or []:
             if not field.get("id"):
@@ -129,6 +138,7 @@ class TaskAIService:
         field_instruction = "\nCustom Fields reais da lista (use somente estes IDs e opções; não crie nomes nem IDs):\n" + "\n".join(field_lines) + "\ncustom_field_values é obrigatório para todo campo aplicável com evidência. Formato: {\"ID_DO_CAMPO\": \"ID_DA_OPCAO\"}. Para dropdown, use EXATAMENTE o ID da opção, nunca o nome traduzido. Se não houver evidência, não inclua o campo." if field_lines else ""
         if catalog:
             lines = [f"- id={item['id']} | path={item['path']} | name={item.get('name', '')}" for item in catalog[:150] if item.get("id") and item.get("path")]
+            lines.insert(0, date_context)
             lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")
             if field_instruction:
                 lines.insert(0, field_instruction)
@@ -143,6 +153,7 @@ class TaskAIService:
             "manual_triage": "mensagem realmente ambígua ou sem dados suficientes",
         }
         lines = [f"- {key}: {destinations.get(key, 'destino configurado pelo sistema')}" for key in sorted(self._destinations)]
+        lines.insert(0, date_context)
         lines.insert(0, "Inclua estimated_minutes, estimate_confidence, estimate_basis, points, tags, browser_version, operating_system, reproduction_steps e resolution_deadline_days; nao invente dados ausentes.")
         if field_instruction:
             lines.insert(0, field_instruction)
@@ -173,7 +184,7 @@ def _response_content(response: Any) -> str:
     return content.strip()
 
 
-def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, source_content: str | None = None, custom_field_schema: list[dict[str, Any]] | None = None) -> TaskAnalysis:
+def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, source_content: str | None = None, custom_field_schema: list[dict[str, Any]] | None = None, *, reference_at: datetime | None = None, timezone_name: str = DEFAULT_TASK_TIMEZONE) -> TaskAnalysis:
     logger.debug("Task AI raw JSON=%s", content[:8000])
     candidate = content.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
@@ -216,6 +227,7 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
     estimate_confidence = _enum(estimate_confidence_value, {"high", "medium", "low"}, "low", "estimate_confidence") if estimate_confidence_value is not None else "low"
     tags = _parse_tags(payload.get("tags"))
     custom_field_values = _validate_custom_field_values(payload.get("custom_field_values"), custom_field_schema or [])
+    field_confidence = _parse_field_confidence(payload.get("field_confidence"))
     browser_version = _text(payload.get("browser_version"), 100) or _extract_browser(source_content or "")
     operating_system = _text(payload.get("operating_system"), 100) or _extract_operating_system(source_content or "")
     if points is None:
@@ -224,6 +236,7 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
         estimated_minutes = points * 60
     if resolution_deadline_days is None:
         resolution_deadline_days = _default_deadline_days(priority)
+    normalized_due_date = parse_due_date(payload.get("due_date"), source_content or content, reference_at=reference_at, timezone_name=timezone_name)
     logger.info("Task AI subtasks received=%s valid=%s discarded=%s", len(payload.get("subtasks", [])) if isinstance(payload.get("subtasks", []), list) else 0, len(subtasks), discarded)
     analysis = TaskAnalysis(
         title=title, description=description, subtasks=subtasks, destination=destination,
@@ -238,12 +251,92 @@ def _parse_analysis(content: str, allowed_destinations: set[str] | None = None, 
         custom_field_values=custom_field_values,
         team=_nullable_text(payload.get("team")), project=_nullable_text(payload.get("project")),
         status=_nullable_text(payload.get("status")), assignee=_nullable_text(payload.get("assignee")),
-        due_date=_nullable_text(payload.get("due_date")), cycle=_nullable_text(payload.get("cycle")),
+        due_date=normalized_due_date, cycle=_nullable_text(payload.get("cycle")),
         milestone=_nullable_text(payload.get("milestone")),
+        field_confidence=field_confidence,
         priority=priority, risk=risk, **{key: values[key] for key in ("category", "area", "environment", "confidence")},
     )
     logger.info("Task AI normalized analysis=%s", analysis)
     return analysis
+
+
+def _parse_field_confidence(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_fields = {"team", "project", "status", "type", "area", "environment", "priority", "due_date", "estimate", "assignee", "cycle", "milestone"}
+    return {str(key): str(level).casefold() for key, level in value.items() if str(key) in allowed_fields and str(level).casefold() in {"high", "medium", "low"}}
+
+
+def _format_current_datetime(reference_at: datetime | None, timezone_name: str) -> str:
+    value = reference_at or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    try:
+        if ZoneInfo is not None:
+            value = value.astimezone(ZoneInfo(timezone_name))
+    except Exception:
+        pass
+    return value.isoformat(timespec="seconds")
+
+
+def parse_due_date(value: Any, source_content: str = "", *, reference_at: datetime | None = None, timezone_name: str = DEFAULT_TASK_TIMEZONE) -> str | None:
+    """Normalize only unambiguous absolute or Portuguese relative dates."""
+    raw = value.strip().casefold() if isinstance(value, str) else ""
+    text = f"{raw} {source_content.casefold()}"
+    now = reference_at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    try:
+        if ZoneInfo is not None:
+            now = now.astimezone(ZoneInfo(timezone_name))
+    except Exception:
+        pass
+    today = now.date()
+    iso = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if iso:
+        try:
+            return date.fromisoformat(iso.group(1)).isoformat()
+        except ValueError:
+            return None
+    full = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2})\b", text)
+    if full:
+        try:
+            return date(int(full.group(3)), int(full.group(2)), int(full.group(1))).isoformat()
+        except ValueError:
+            return None
+    if re.search(r"\b(hoje|today)\b", text):
+        return today.isoformat()
+    if re.search(r"\b(amanh[ãa]|tomorrow)\b", text):
+        return (today + timedelta(days=1)).isoformat()
+    weekdays = {"segunda": 0, "segunda-feira": 0, "monday": 0, "terca": 1, "terça": 1, "terça-feira": 1, "tuesday": 1, "quarta": 2, "quarta-feira": 2, "wednesday": 2, "quinta": 3, "quinta-feira": 3, "thursday": 3, "sexta": 4, "sexta-feira": 4, "friday": 4, "sabado": 5, "sábado": 5, "saturday": 5, "domingo": 6, "sunday": 6}
+    weekday = next((day for name, day in weekdays.items() if re.search(rf"\b{name}\b", text)), None)
+    if weekday is not None:
+        delta = (weekday - today.weekday()) % 7
+        if delta == 0:
+            delta = 7
+        return (today + timedelta(days=delta)).isoformat()
+    months = {"janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3, "abril": 4, "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12}
+    month_match = re.search(r"\b([0-3]?\d)\s+de\s+([a-zç]+)(?:\s+de\s+(20\d{2}))?\b", text)
+    if month_match and month_match.group(2) in months:
+        day, month = int(month_match.group(1)), months[month_match.group(2)]
+        year = int(month_match.group(3) or today.year)
+        if not month_match.group(3) and (month, day) < (today.month, today.day):
+            year += 1
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    day_match = re.search(r"\b(?:até|ate|dia)\s+(?:dia\s+)?([0-3]?\d)\b", text)
+    if day_match:
+        day = int(day_match.group(1))
+        month = today.month + (1 if day <= today.day else 0)
+        year = today.year + (1 if month == 13 else 0)
+        month = 1 if month == 13 else month
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_subtasks(value: Any) -> tuple[list[TaskSubtask], list[str]]:
@@ -371,7 +464,7 @@ def _default_deadline_days(priority: str) -> int:
     return {"urgent": 1, "high": 3, "normal": 7, "low": 14}.get(priority, 7)
 
 
-def _deterministic_overrides(content: str, priority: str, risk: str, environment: str) -> tuple[str, str]:
+def _legacy_deterministic_overrides(content: str, priority: str, risk: str, environment: str) -> tuple[str, str]:
     text = content.casefold()
     old_priority, old_risk = priority, risk
     explicit_urgent = (
@@ -394,6 +487,35 @@ def _deterministic_overrides(content: str, priority: str, risk: str, environment
         priority = "urgent"
         if any(word in text for word in ("cego", "cegueira", "convulsao", "convulsão", "epileptic", "epiléptic", "risco à saúde", "risco a saude")):
             risk = "critical"
+    if (old_priority, old_risk) != (priority, risk):
+        logger.info("Task AI deterministic override priority=%s->%s risk=%s->%s", old_priority, priority, old_risk, risk)
+    return priority, risk
+
+
+def _deterministic_overrides(content: str, priority: str, risk: str, environment: str) -> tuple[str, str]:
+    """Apply bounded urgency rules without conflating risk with priority."""
+    text = content.casefold()
+    old_priority, old_risk = priority, risk
+    security_or_data = any(word in text for word in ("token", "senha", "credencial", "credential", "vazamento", "exposto", "exposta", "perda de dados", "corrupção de dados", "corrupcao de dados"))
+    health_critical = any(word in text for word in ("cego", "cegueira", "convulsão", "convulsao", "epileptic", "epiléptic", "risco à saúde", "risco a saude"))
+    outage = environment != "staging" and any(word in text for word in ("produção inteira", "producao inteira", "produção indisponível", "producao indisponivel", "site fora", "serviço crítico fora", "servico critico fora", "tudo fora do ar"))
+    immediate = any(word in text for word in ("agora", "imediatamente", "imediato", "bloqueio operacional", "impactando todos", "todos os usuarios", "todos os usuários"))
+    strong_urgent = security_or_data or health_critical or outage or (immediate and (environment == "production" or "fora do ar" in text or "bloqueio operacional" in text))
+    if security_or_data:
+        priority, risk = "urgent", "critical"
+    elif health_critical:
+        priority, risk = "urgent", "critical"
+    elif outage:
+        priority = "urgent"
+    elif environment == "production" and any(word in text for word in ("função importante quebrada", "funcao importante quebrada", "não funciona", "nao funciona", "erro crítico", "erro critico")):
+        priority = _max_priority(priority, "high")
+    elif environment == "staging":
+        if priority == "urgent" or any(word in text for word in ("erro 500", "erro crítico", "erro critico", "regressão", "regressao", "indisponível", "indisponivel")):
+            priority = "high"
+    elif any(word in text for word in ("visual", "cor", "css", "alinhamento", "texto errado")) and not any(word in text for word in ("não funciona", "nao funciona", "indisponível", "indisponivel")):
+        priority = "low"
+    if strong_urgent:
+        priority = "urgent"
     if (old_priority, old_risk) != (priority, risk):
         logger.info("Task AI deterministic override priority=%s->%s risk=%s->%s", old_priority, priority, old_risk, risk)
     return priority, risk

@@ -25,6 +25,7 @@ class TaskDraft:
     milestone: str | None = None
     parent_issue: str | None = None
     confidence: str = ""
+    field_confidence: dict[str, str] = field(default_factory=dict)
     risk: str = "low"
     manual_triage: bool = False
     source_content: str = ""
@@ -60,6 +61,7 @@ def task_draft_from_analysis(
         team=analysis.team, project=analysis.project, status=analysis.status,
         assignee=analysis.assignee, due_date=parsed_due_date, cycle=analysis.cycle, milestone=analysis.milestone,
         confidence=analysis.confidence,
+        field_confidence=dict(analysis.field_confidence),
         risk=analysis.risk,
         manual_triage=analysis.destination == "manual_triage",
         source_content=source_content,

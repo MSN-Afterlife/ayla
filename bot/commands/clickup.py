@@ -89,7 +89,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
         if message.content.strip():
             logger.info("Task AI analysis requested for Discord message %s", message.id)
             try:
-                analysis = await task_ai_service.analyze_task(message.content, catalog)
+                analysis = await task_ai_service.analyze_task(message.content, catalog, reference_at=message.created_at)
                 title = analysis.title
                 description = _task_description(message, interaction.user, analysis.description if analysis else None, analysis)
                 subtasks = analysis.subtasks if analysis else []
@@ -108,7 +108,7 @@ def setup_clickup_commands(bot: commands.Bot, settings: Settings) -> ClickUpServ
                 logger.info("ClickUp Free mode enabled message_id=%s; using native fields, tags and markdown", message.id)
             if analysis is not None and fields_metadata and message.content.strip():
                 try:
-                    enriched_analysis = await task_ai_service.analyze_task(message.content, catalog, fields_metadata)
+                    enriched_analysis = await task_ai_service.analyze_task(message.content, catalog, fields_metadata, reference_at=message.created_at)
                     if enriched_analysis.destination == "manual_triage" and destination != "manual_triage":
                         enriched_analysis = replace(enriched_analysis, destination=destination)
                         logger.warning("Task AI enrichment returned invalid/triage destination; preserving first valid destination=%s message_id=%s", destination, message.id)
@@ -214,7 +214,7 @@ async def _create_linear_task(
     priority = priority_from_content(message.content) if message.content.strip() else "normal"
     if message.content.strip():
         try:
-            analysis = await task_ai_service.analyze_task(message.content)
+            analysis = await task_ai_service.analyze_task(message.content, reference_at=message.created_at)
             title = analysis.title
             priority = analysis.priority
             description = _task_description(message, interaction.user, analysis.description, analysis)

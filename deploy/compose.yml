@@ -9,6 +9,7 @@ services:
     env_file:
       - ${RUNTIME_ENV_FILE:?RUNTIME_ENV_FILE is required}
     environment:
+      AYLA_ENV: ${AYLA_ENV:?AYLA_ENV is required}
       YOUTUBE_COOKIES_PATH: /run/secrets/cookies.txt
     ports:
       - "127.0.0.1:${BOT_HOST_PORT:?BOT_HOST_PORT is required}:8090"

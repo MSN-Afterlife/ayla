@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest import mock
+from pathlib import Path
 
 import discord
 
@@ -10,6 +11,10 @@ from bot.services.migration_engine_client import MigrationEngineClient
 
 
 class ProdMigrationReleaseTests(unittest.TestCase):
+    def test_compose_passes_environment_into_bot_container(self):
+        compose = (Path(__file__).parents[1] / "deploy" / "compose.yml").read_text(encoding="utf-8")
+        self.assertIn("AYLA_ENV: ${AYLA_ENV:?AYLA_ENV is required}", compose)
+
     def test_prod_config_parses_migration_engine_without_secret_defaults(self):
         env = {
             "DISCORD_TOKEN": "discord-token",

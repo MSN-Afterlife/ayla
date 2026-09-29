@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
+from bot.services.staging_rbac import can_use_admin_command
 
 COLORS = {"B": (67, 132, 235), "I": (224, 92, 92), "N": (55, 176, 112), "G": (235, 170, 58), "O": (158, 91, 205)}
 RANGES = {"B": range(1, 16), "I": range(16, 31), "N": range(31, 46), "G": range(46, 61), "O": range(61, 76)}
@@ -32,9 +33,9 @@ class BingoGame:
         self.called: list[int] = []
         self.started = self.finished = False
         self.mode, self.draw_interval, self.draw_task = "manual", DEFAULT_DRAW_INTERVAL, None
-    def is_host_or_mod(self, user: discord.Member | discord.User) -> bool:
+    def is_host_or_mod(self, user: discord.Member | discord.User, context=None) -> bool:
         permissions = getattr(user, "guild_permissions", None)
-        return user.id == self.host_id or bool(permissions and permissions.manage_guild)
+        return user.id == self.host_id or bool(context and can_use_admin_command(context, required="manage_guild")) or bool(permissions and permissions.manage_guild)
     def add_player(self, member: discord.Member | discord.User) -> bool:
         if self.started or self.finished or _find_player(self, member.id): return False
         self.players.append(BingoPlayer(member)); return True
@@ -105,17 +106,17 @@ class LobbyView(discord.ui.View):
     @discord.ui.button(label="Modo manual", style=discord.ButtonStyle.primary, row=1)
     async def manual(self, interaction, button):
         if not self.allowed(interaction): return
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
         self.game.mode = "manual"; await interaction.response.edit_message(embed=_table_embed(self.game, "Modo manual selecionado."), view=_lobby_view(self.game, self.games, self.bot))
     @discord.ui.button(label="Modo automatico", style=discord.ButtonStyle.primary, row=1)
     async def automatic(self, interaction, button):
         if not self.allowed(interaction): return
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
         self.game.mode = "automatico"; await interaction.response.edit_message(embed=_table_embed(self.game, "Modo automatico selecionado."), view=_lobby_view(self.game, self.games, self.bot))
     @discord.ui.button(label="Configurar intervalo", style=discord.ButtonStyle.secondary, row=1)
     async def configure(self, interaction, button):
         if not self.allowed(interaction): return
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode configurar.", ephemeral=True); return
         await interaction.response.send_modal(IntervalModal(self.game, interaction.message, self.games, self.bot))
     @discord.ui.button(label="Iniciar mesa", style=discord.ButtonStyle.success, row=2)
     async def start(self, interaction, button):
@@ -130,7 +131,7 @@ class LobbyView(discord.ui.View):
     @discord.ui.button(label="Cancelar mesa", style=discord.ButtonStyle.danger, row=2)
     async def cancel(self, interaction, button):
         if not self.allowed(interaction): return
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode cancelar.", ephemeral=True); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode cancelar.", ephemeral=True); return
         self.games.pop(self.game.channel_id, None); await interaction.response.edit_message(content="Mesa de Bingo cancelada.", embed=None, view=None)
 
 def _lobby_view(game, games, bot): return LobbyView(game, games, bot)
@@ -168,13 +169,13 @@ class ActiveView(discord.ui.View):
     @discord.ui.button(label="Sortear agora", style=discord.ButtonStyle.primary, row=1)
     async def draw(self, interaction, button):
         if self.game.mode != "manual": await interaction.response.send_message("A mesa esta no modo automatico.", ephemeral=bool(interaction.guild)); return
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode sortear.", ephemeral=bool(interaction.guild)); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode sortear.", ephemeral=bool(interaction.guild)); return
         number = self.game.draw()
         if number is None: await interaction.response.send_message("Nao ha mais numeros para sortear.", ephemeral=bool(interaction.guild)); return
         await _announce_draw(self.game, number, self.games, self.bot); await interaction.response.send_message(f"Numero {number} anunciado.", ephemeral=bool(interaction.guild))
     @discord.ui.button(label="Cancelar mesa", style=discord.ButtonStyle.danger, row=1)
     async def cancel(self, interaction, button):
-        if not self.game.is_host_or_mod(interaction.user): await interaction.response.send_message("Apenas o criador ou moderador pode cancelar.", ephemeral=bool(interaction.guild)); return
+        if not self.game.is_host_or_mod(interaction.user, interaction): await interaction.response.send_message("Apenas o criador ou moderador pode cancelar.", ephemeral=bool(interaction.guild)); return
         self.games.pop(self.game.channel_id, None)
         if self.game.draw_task: self.game.draw_task.cancel()
         await interaction.response.edit_message(content="Mesa de Bingo cancelada.", embed=None, view=None)

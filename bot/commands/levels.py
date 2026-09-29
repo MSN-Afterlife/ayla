@@ -15,6 +15,7 @@ from bot.services.level_service import LevelService
 from bot.services.media_search import MediaSearch
 from bot.services.media_search import MediaSearchError
 from bot.services.profile_background_storage import ProfileBackgroundError
+from bot.services.staging_rbac import can_use_admin_command, staging_prefix_check
 
 
 BACKGROUND_MODE_CHOICES = [
@@ -43,7 +44,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(file=file)
 
     @bot.command(name="addxp")
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def add_xp(ctx: commands.Context, member: discord.Member, amount: int) -> None:
         if not ctx.guild:
             await ctx.send("Esse comando so funciona dentro de um servidor.")
@@ -210,7 +211,7 @@ def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
 
     @bot.command(name="perfilstatus", aliases=["profilestatus"])
     async def profile_status_admin(ctx: commands.Context) -> None:
-        if not ctx.guild or not isinstance(ctx.author, discord.Member) or not ctx.author.guild_permissions.administrator:
+        if not ctx.guild or not isinstance(ctx.author, discord.Member) or not can_use_admin_command(ctx, required="administrator"):
             await ctx.send("Esse comando é exclusivo para administradores.")
             return
 

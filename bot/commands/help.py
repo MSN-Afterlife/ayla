@@ -4,6 +4,7 @@ from discord.ext import commands
 
 from bot.commands.interactions import INTERACTIONS
 from bot.config import Settings
+from bot.services.staging_rbac import staging_app_command_check, staging_prefix_check
 
 
 HELP_CATEGORIES = {
@@ -211,7 +212,7 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=build_help_embed("inicio", settings.command_prefix), view=view)
 
     @bot.command(name="helpadmin", aliases=["adminhelp", "ajudaadmin", "comandosadmin"])
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def admin_help_command(ctx: commands.Context) -> None:
         await ctx.send(embed=build_help_embed("admin", settings.command_prefix))
 
@@ -226,7 +227,7 @@ def setup_help_command(bot: commands.Bot, settings: Settings) -> None:
                 await interaction.channel.send(embed=build_help_embed("inicio", "/"), view=view)
 
     @bot.tree.command(name="helpadmin", description="Abre a ajuda administrativa do bot.")
-    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(staging_app_command_check("manage_guild"))
     async def admin_help_slash(interaction: discord.Interaction) -> None:
         try:
             await interaction.response.defer(ephemeral=True)

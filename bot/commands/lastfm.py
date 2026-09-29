@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 from bot.services.lastfm_service import LastFmError, LastFmService
+from bot.services.staging_rbac import staging_prefix_check
 
 
 def setup_lastfm_commands(bot: commands.Bot, service: LastFmService) -> None:
@@ -65,7 +66,7 @@ def setup_lastfm_commands(bot: commands.Bot, service: LastFmService) -> None:
 
     @lastfm.command(name="diagnostico", description="Mostra o resultado do último scrobble de um usuário.")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def diagnostic(ctx: commands.Context, usuario: discord.Member | None = None) -> None:
         target = usuario or ctx.author
         result = getattr(bot, "_lastfm_scrobbler").diagnostic(ctx.guild.id, target.id)

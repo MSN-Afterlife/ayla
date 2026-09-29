@@ -5,6 +5,7 @@ from typing import Any
 import discord
 from discord.ext import commands
 from discord.utils import utcnow
+from bot.services.staging_rbac import staging_prefix_check
 
 
 ANNOUNCEMENT_DIR = Path("bot/announcements")
@@ -12,7 +13,7 @@ ANNOUNCEMENT_DIR = Path("bot/announcements")
 
 def setup_announcement_commands(bot: commands.Bot) -> None:
     @bot.hybrid_command(name="avisoayla", aliases=["anunciarayla"], description="Envia o aviso oficial de chegada da Ayla.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def announce_ayla(ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
         if not ctx.guild:
             await ctx.send("Esse comando funciona dentro de um servidor.")
@@ -24,7 +25,7 @@ def setup_announcement_commands(bot: commands.Bot) -> None:
         await _confirm(ctx, target_channel)
 
     @bot.hybrid_command(name="aviso", aliases=["announce"], description="Envia um aviso em embed.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def announce(ctx: commands.Context, channel: discord.TextChannel, *, message: str) -> None:
         embed = discord.Embed(
             title="Aviso",
@@ -40,7 +41,7 @@ def setup_announcement_commands(bot: commands.Bot) -> None:
         await _confirm(ctx, channel)
 
     @bot.hybrid_command(name="avisojson", aliases=["embedjson"], description="Envia um aviso a partir de JSON anexado.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def announce_json(
         ctx: commands.Context,
         channel: discord.TextChannel,
@@ -62,7 +63,7 @@ def setup_announcement_commands(bot: commands.Bot) -> None:
         await _confirm(ctx, channel)
 
     @bot.hybrid_command(name="avisomodelo", aliases=["avisofile"], description="Envia um aviso salvo em bot/announcements.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def announce_file(ctx: commands.Context, channel: discord.TextChannel, filename: str) -> None:
         try:
             path = _announcement_path(filename)
@@ -76,7 +77,7 @@ def setup_announcement_commands(bot: commands.Bot) -> None:
         await _confirm(ctx, channel)
 
     @bot.hybrid_command(name="avisoimportar", aliases=["salvaraviso"], description="Salva um modelo de aviso JSON.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def import_announcement(ctx: commands.Context, name: str, attachment: discord.Attachment | None = None) -> None:
         attachment = attachment or (ctx.message.attachments[0] if ctx.message and ctx.message.attachments else None)
         if not attachment:

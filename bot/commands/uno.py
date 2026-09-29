@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from bot.config import Settings
 from bot.services.uno_images import UnoImageBuilder
+from bot.services.staging_rbac import can_use_admin_command
 
 
 COLORS = {
@@ -723,7 +724,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
         if not game:
             await ctx.send("Nao tem mesa de UNO neste canal.")
             return
-        can_cancel = ctx.author.id == game.host_id or getattr(ctx.author.guild_permissions, "manage_guild", False)
+        can_cancel = ctx.author.id == game.host_id or can_use_admin_command(ctx, required="manage_guild")
         if not can_cancel:
             await ctx.send("Apenas quem criou a mesa ou alguem com permissao de gerenciar servidor pode cancelar.")
             return
@@ -918,8 +919,7 @@ def setup_uno_commands(bot: commands.Bot, settings: Settings | None = None) -> N
         if not game:
             await interaction.response.send_message("Nao tem mesa de UNO neste canal.", ephemeral=True)
             return
-        permissions = getattr(interaction.user, "guild_permissions", None)
-        can_cancel = interaction.user.id == game.host_id or bool(permissions and permissions.manage_guild)
+        can_cancel = interaction.user.id == game.host_id or can_use_admin_command(interaction, required="manage_guild")
         if not can_cancel:
             await interaction.response.send_message("Apenas quem criou a mesa ou alguem com permissao de gerenciar servidor pode cancelar.", ephemeral=True)
             return

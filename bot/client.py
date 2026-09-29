@@ -18,6 +18,7 @@ from bot.commands.minecraft import setup_minecraft_commands
 from bot.commands.music import setup_music_commands
 from bot.commands.presence import setup_presence_commands
 from bot.commands.presence import start_presence_rotation
+from bot.commands.staging import setup_minecraft_auth_commands
 from bot.commands.uno import setup_uno_commands
 from bot.commands.bingo import setup_bingo_commands
 from bot.config import Settings
@@ -25,6 +26,7 @@ from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
 from bot.services.minecraft_identity import MinecraftIdentityStore
+from bot.services.staging_rbac import StagingRbacStore
 from bot.services.site_api import SiteApiServer
 from bot.services.lastfm_service import LastFmService
 from bot.services.lastfm_scrobble import LastFmScrobbler
@@ -115,6 +117,8 @@ def create_bot(settings: Settings) -> commands.Bot:
 
     bot = AylaBot(settings, command_prefix=settings.command_prefix, intents=intents, help_command=None)
     bot._settings = settings
+    if settings.environment == "staging":
+        bot._staging_rbac = StagingRbacStore(settings.levels_database_path)
     bot._slash_synced = False
     bot.started_at = utcnow()
     chat_config = ChatConfigStore(settings.chat_config_path)
@@ -146,6 +150,8 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_help_command(bot, settings)
     setup_minecraft_commands(bot, bot._minecraft_identity_store)
     setup_migration_commands(bot, settings)
+    if settings.environment == "staging":
+        setup_minecraft_auth_commands(bot, settings, client=bot._migration_engine_client, rbac_store=bot._staging_rbac)
     setup_message_events(bot, settings, chat_config)
     setup_command_debug(bot)
     return bot

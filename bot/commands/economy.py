@@ -9,6 +9,7 @@ from bot.services.economy_service import DAILY_AMOUNT
 from bot.services.economy_service import EconomyService
 from bot.services.economy_images import SYMBOLS
 from bot.services.economy_images import build_bet_card
+from bot.services.staging_rbac import staging_prefix_check
 
 
 DAILY_URL_SETTING = "daily_site_url"
@@ -81,7 +82,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=embed, view=DailyRedirectView(daily_url))
 
     @bot.hybrid_command(name="dailyconfig", aliases=["configdaily"], description="Configura o link do daily no site.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def daily_config(ctx: commands.Context, url: str | None = None) -> None:
         if not url:
             daily_url = economy.get_setting(DAILY_URL_SETTING, settings.daily_site_url)
@@ -96,7 +97,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(f"Link do daily atualizado para: {url}")
 
     @bot.hybrid_command(name="dailybot", aliases=["dailymodo", "dailyinterruptor"], description="Liga ou desliga o resgate direto do daily pelo Discord.")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     @app_commands.choices(enabled=BOOLEAN_CHOICES)
     async def daily_bot(ctx: commands.Context, enabled: str | None = None) -> None:
         if enabled is None:
@@ -117,7 +118,7 @@ def setup_economy_commands(bot: commands.Bot, settings: Settings) -> None:
             await ctx.send("Daily direto desativado. Agora `/daily` volta a direcionar para o site.")
 
     @bot.command(name="addmoney")
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def add_money(ctx: commands.Context, member: discord.Member, amount: int) -> None:
         try:
             profile = economy.add_balance(member.id, amount)

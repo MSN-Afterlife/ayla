@@ -10,6 +10,7 @@ from discord.ext import commands
 from bot.config import Settings, validate_clickup_settings
 from bot.services.clickup_service import ClickUpError, ClickUpService
 from bot.services.task_ai_service import TaskAIService, TaskAnalysis, priority_from_content
+from bot.services.staging_rbac import can_use_admin_command
 
 
 logger = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ def _is_allowed(interaction: discord.Interaction, allowed_role_ids: list[int]) -
     user = interaction.user
     if not isinstance(user, discord.Member):
         return False
-    return user.guild_permissions.administrator or any(role.id in allowed_role_ids for role in user.roles)
+    return can_use_admin_command(interaction, required="administrator") or any(role.id in allowed_role_ids for role in user.roles)
 
 
 def resolve_destination(settings: Settings, destination: str, catalog: list[dict[str, str]] | None = None) -> str:

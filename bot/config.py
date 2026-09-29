@@ -88,6 +88,7 @@ class Settings:
     lastfm_enabled: bool = False
     lastfm_database_path: str = "data/lastfm.sqlite3"
     lastfm_timeout_seconds: float = 10
+    environment: str = "production"
 
 
 def load_settings() -> Settings:
@@ -99,6 +100,7 @@ def load_settings() -> Settings:
 
     return Settings(
         discord_token=token,
+        environment=os.getenv("AYLA_ENV", "production").strip().lower(),
         command_prefix=os.getenv("COMMAND_PREFIX", "a!"),
         character_file=os.getenv("CHARACTER_FILE", "bot/characters/default.json"),
         memory_limit=int(os.getenv("MEMORY_LIMIT", "12")),

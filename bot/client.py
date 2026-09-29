@@ -28,6 +28,7 @@ from bot.services.chat_config import ChatConfigStore
 from bot.services.minecraft_identity import MinecraftIdentityStore
 from bot.services.staging_rbac import StagingRbacStore
 from bot.services.site_api import SiteApiServer
+from bot.services.economy_write_gate import EconomyWriteGate
 from bot.services.lastfm_service import LastFmService
 from bot.services.lastfm_scrobble import LastFmScrobbler
 from bot.commands.lastfm import setup_lastfm_commands
@@ -36,6 +37,9 @@ from bot.commands.lastfm import setup_lastfm_commands
 class AylaBot(commands.Bot):
     def __init__(self, settings: Settings, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        # This is the explicit application bootstrap. A missing operational
+        # state starts OPEN only here; a constructed gate elsewhere fails closed.
+        self._economy_write_gate = EconomyWriteGate.bootstrap_open(settings.economy_write_gate_state_path)
         self._lastfm = LastFmService(settings)
         self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
         self._minecraft_identity_store = MinecraftIdentityStore(settings)
@@ -44,6 +48,7 @@ class AylaBot(commands.Bot):
             self.is_ready,
             lastfm=self._lastfm,
             minecraft_store=self._minecraft_identity_store,
+            write_gate=self._economy_write_gate,
         ) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:

@@ -5,7 +5,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.services.minecraft_identity import MinecraftConflict, MinecraftIdentityStore, MinecraftLinkError
+from bot.services.minecraft_identity import (
+    MinecraftConflict,
+    MinecraftIdentityStore,
+    MinecraftLinkError,
+    MinecraftOfflineSessionRequiresLogin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +46,19 @@ async def _link(target, store: MinecraftIdentityStore, code: str) -> None:
     user = target.user if isinstance(target, discord.Interaction) else target.author
     try:
         result = store.link_code(str(user.id), user.display_name, code)
+    except MinecraftOfflineSessionRequiresLogin:
+        logger.info("Minecraft offline session requires server authentication discord_user_id=%s", user.id)
+        await _reply(target, "Sua identidade Minecraft ja esta vinculada. Este cliente nao precisa de um novo vinculo; entre com sua identidade existente e autentique-se no servidor.")
+        return
     except MinecraftConflict as error:
         logger.warning("Minecraft link conflict discord_user_id=%s reason=%s", user.id, error)
         await _reply(target, f"Nao foi possivel vincular: {error}")
         return
     except MinecraftLinkError as error:
         await _reply(target, str(error))
+        return
+    if result.get("identity_state") == "CANONICAL_FOUND" and result.get("message"):
+        await _reply(target, result["message"])
         return
     account = result["minecraft_account"]
     identity = result["identity"]

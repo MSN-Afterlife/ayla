@@ -27,7 +27,7 @@ BACKGROUND_MODE_CHOICES = [
 
 def setup_level_commands(bot: commands.Bot, settings: Settings) -> None:
     level_service = LevelService(settings)
-    economy_service = EconomyService(settings)
+    economy_service = EconomyService(settings, write_gate=getattr(bot, "_economy_write_gate", None))
     media_search = MediaSearch(settings)
     profile_group = app_commands.Group(name="perfil", description="Configura e mostra seu perfil de rank.")
 

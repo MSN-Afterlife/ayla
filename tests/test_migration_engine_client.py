@@ -324,6 +324,31 @@ class MigrationEngineClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0].player_name, "Mounk")
         self.assertIn("query=mou", FakeSession.calls[0][1])
 
+    async def test_attached_legacy_source_is_preserved_on_identity(self):
+        FakeSession.responses = [(200, {**INSPECT_PAYLOAD, "identity": {
+            **INSPECT_PAYLOAD["identity"],
+            "canonical_name": "MdA",
+            "sources": [
+                {"platform": "java", "external_id": "033da90b-ad57-3894-a162-52cd829b137e", "username": "Dafakn", "source_type": "legacy"},
+                {"platform": "canonical", "external_id": INSPECT_PAYLOAD["identity"]["canonical_uuid"], "source_type": "canonical"},
+            ],
+        }})]
+        result = await self.client.inspect(MigrationInspectRequest(canonical_uuid=INSPECT_PAYLOAD["identity"]["canonical_uuid"]))
+        self.assertEqual(len(result.identity.sources), 1)
+        self.assertEqual(result.identity.sources[0].semantic_type, "LEGACY_JAVA")
+        self.assertEqual(result.identity.sources[0].username, "Dafakn")
+
+    async def test_legacy_alias_search_collapses_to_canonical_identity(self):
+        FakeSession.responses = [(200, {"players": [
+            {"canonical_uuid": "047398a1-4e44-4efc-92af-a28e1fd59e86", "canonical_name": "MdA", "discord_user_id": "42", "sources": [{"platform": "java", "external_id": "033da90b-ad57-3894-a162-52cd829b137e", "username": "Dafakn", "source_type": "legacy"}]},
+            {"canonical_uuid": "047398a1-4e44-4efc-92af-a28e1fd59e86", "canonical_name": "MdA", "discord_user_id": "42", "sources": [{"platform": "java", "external_id": "linked-java", "username": "MdA", "source_type": "linked"}]},
+        ]})]
+        result = await self.client.search_players("Dafakn")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].player_name, "MdA")
+        self.assertEqual({source.username for source in result[0].source_list()}, {"Dafakn", "MdA"})
+        self.assertIn("Dafakn", result[0].label())
+
     async def test_staging_auth_bypass_status_success(self):
         FakeSession.responses = [(200, {"enabled": True})]
         result = await self.client.staging_auth_bypass_status()

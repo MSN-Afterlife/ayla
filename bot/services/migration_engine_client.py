@@ -121,6 +121,10 @@ class MigrationSource:
             result["physical_uuid"] = self.physical_uuid
         return result
 
+    @property
+    def semantic_type(self) -> str:
+        return _normalize_source_type(self.source_type, self.platform)
+
 
 @dataclass(frozen=True)
 class IdentitySummary:
@@ -130,6 +134,7 @@ class IdentitySummary:
     java: MinecraftAccountRef | None = None
     bedrock: MinecraftAccountRef | None = None
     source_uuids: tuple[str, ...] = ()
+    sources: tuple[MigrationSource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -252,17 +257,20 @@ class PlayerReference:
     username: str | None = None
     sources: tuple[MigrationSource, ...] = ()
     source_type: str | None = None
+    canonical_name: str | None = None
 
     def label(self) -> str:
         score = f" | {self.confidence:.0%}" if self.confidence is not None else ""
         identity = self.platform or (f"{len(self.sources)} sources" if self.sources else self.canonical_uuid[:8] or "identidade")
         stype = f" [{self.source_type}]" if self.source_type else ""
-        return f"{self.player_name} | {identity}{stype}{score}"
+        aliases = tuple(dict.fromkeys(source.username for source in self.source_list() if source.username and source.username.casefold() != self.player_name.casefold()))
+        alias_text = f" ({' · '.join(aliases[:2])})" if aliases else ""
+        return f"{self.player_name}{alias_text} | {identity}{stype}{score}"
 
     def source_list(self) -> tuple[MigrationSource, ...]:
         if self.sources:
-            return self.sources
-        stype = "legacy" if (self.source_type == "minecraft_legacy" or not self.canonical_uuid) else "linked"
+            return tuple(source for source in self.sources if source.semantic_type != "CANONICAL_TARGET")
+        stype = _normalize_source_type(self.source_type, self.platform)
         if self.platform and self.external_id:
             return (MigrationSource(self.platform, self.external_id, self.username or self.player_name, source_type=stype),)
         result = []
@@ -383,6 +391,7 @@ class SourceProfilePreview:
     platform: str
     external_id: str
     username: str | None = None
+    source_type: str | None = None
     playerdata: PlayerdataPreview = field(default_factory=PlayerdataPreview)
     advancements: AdvancementsPreview = field(default_factory=AdvancementsPreview)
     stats: StatsPreview = field(default_factory=StatsPreview)
@@ -527,7 +536,7 @@ class MigrationEngineClient:
         players = data.get("players")
         if not isinstance(players, list):
             raise MigrationEngineInvalidResponse("Campo obrigatorio ausente: players.")
-        return tuple(_parse_player_reference(item) for item in players)
+        return _collapse_player_references(tuple(_parse_player_reference(item) for item in players))
 
     async def staging_auth_bypass_status(self) -> bool:
         payload = await self._request("GET", "/api/v1/staging/auth-bypass")
@@ -696,15 +705,10 @@ def _parse_player_reference(payload: object) -> PlayerReference:
     sources = tuple(_parse_source(item) for item in _list(data.get("sources")))
     platform = (_optional_str(data.get("platform")) or "").lower() or None
     external_id = _optional_str(data.get("external_id") or data.get("xuid"))
-    source_type = _optional_str(data.get("source"))
-    if not source_type:
-        if data.get("canonical_uuid"):
-            source_type = "linked"
-        elif data.get("external_id"):
-            source_type = "legacy"
+    source_type = _optional_str(data.get("source_type") or data.get("source"))
     return PlayerReference(
         canonical_uuid=_optional_str(data.get("canonical_uuid")) or "",
-        player_name=_optional_str(data.get("player_name") or data.get("username")) or "",
+        player_name=_optional_str(data.get("canonical_name") or data.get("player_name") or data.get("username")) or "",
         discord_user_id=_optional_str(data.get("discord_user_id")) or _target_discord_id(data.get("target")),
         java_external_id=_optional_str(data.get("java_external_id")),
         bedrock_external_id=_optional_str(data.get("bedrock_external_id")),
@@ -713,7 +717,8 @@ def _parse_player_reference(payload: object) -> PlayerReference:
         external_id=external_id,
         username=_optional_str(data.get("username")),
         sources=sources,
-        source_type=source_type,
+        source_type=_normalize_source_type(source_type, platform) if source_type else None,
+        canonical_name=_optional_str(data.get("canonical_name")),
     )
 
 
@@ -721,13 +726,13 @@ def _parse_source(value: object) -> MigrationSource:
     data = _require_dict(value)
     platform = _required_str(data, "platform").lower()
     external_id = _required_str(data, "external_id" if "external_id" in data else "xuid")
-    source_type = _optional_str(data.get("source_type") or data.get("source"))
+    source_type = _optional_str(data.get("source_type") or data.get("source") or data.get("relation") or data.get("type"))
     return MigrationSource(
         platform,
         external_id,
         _optional_str(data.get("username")),
         _optional_str(data.get("physical_uuid") or data.get("floodgate_uuid")),
-        source_type=source_type,
+        source_type=_normalize_source_type(source_type, platform),
     )
 
 
@@ -735,6 +740,53 @@ def _target_discord_id(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
     return _optional_str(value.get("discord_user_id"))
+
+
+def _normalize_source_type(source_type: str | None, platform: str | None) -> str:
+    raw = str(source_type or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    platform_name = str(platform or "").strip().casefold()
+    if raw in {"canonical", "canonical_target", "target", "canonical_identity"} or platform_name in {"canonical", "canonical_target"}:
+        return "CANONICAL_TARGET"
+    if raw in {"legacy", "minecraft_legacy", "legacy_java", "java_legacy"}:
+        return "LEGACY_JAVA" if platform_name in {"", "java"} else raw.upper()
+    if raw in {"linked", "linked_java", "java_linked", "attached"}:
+        return "LINKED_JAVA" if platform_name in {"", "java"} else raw.upper()
+    if platform_name == "bedrock":
+        return "BEDROCK"
+    if raw:
+        return raw.upper()
+    return "UNKNOWN"
+
+
+def _collapse_player_references(players: tuple[PlayerReference, ...]) -> tuple[PlayerReference, ...]:
+    grouped: dict[str, list[PlayerReference]] = {}
+    order: list[str] = []
+    for player in players:
+        key = player.canonical_uuid.casefold() if player.canonical_uuid else f"row:{len(order)}"
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(player)
+    collapsed: list[PlayerReference] = []
+    for key in order:
+        rows = grouped[key]
+        if len(rows) == 1 or not rows[0].canonical_uuid:
+            collapsed.append(rows[0])
+            continue
+        sources = tuple(dict.fromkeys(source for row in rows for source in row.source_list()))
+        discord_ids = tuple(dict.fromkeys(row.discord_user_id for row in rows if row.discord_user_id))
+        display = next((row.canonical_name for row in rows if row.canonical_name), None) or next((row.player_name for row in rows if row.player_name), "")
+        collapsed.append(
+            PlayerReference(
+                canonical_uuid=rows[0].canonical_uuid,
+                player_name=display,
+                canonical_name=display,
+                discord_user_id=discord_ids[0] if len(discord_ids) == 1 else None,
+                confidence=max((row.confidence or 0 for row in rows), default=0) or None,
+                sources=sources,
+            )
+        )
+    return tuple(collapsed)
 
 
 def _parse_policy(value: object) -> dict[str, Any] | None:
@@ -748,13 +800,18 @@ def _optional_dict(value: object) -> dict[str, Any] | None:
 
 
 def _parse_identity(data: dict[str, Any]) -> IdentitySummary:
+    raw_sources = data.get("sources") or data.get("attached_sources") or data.get("attachedSources") or []
+    sources = tuple(_parse_source(item) for item in _list(raw_sources))
+    canonical_uuid = _required_str(data, "canonical_uuid")
+    sources = tuple(source for source in sources if source.semantic_type != "CANONICAL_TARGET")
     return IdentitySummary(
-        canonical_uuid=_required_str(data, "canonical_uuid"),
+        canonical_uuid=canonical_uuid,
         discord_user_id=_optional_str(data.get("discord_user_id")),
         canonical_name=_optional_str(data.get("canonical_name")),
         java=_parse_account(data.get("java")),
         bedrock=_parse_account(data.get("bedrock")),
         source_uuids=_tuple_str(data.get("source_uuids")),
+        sources=sources,
     )
 
 
@@ -865,6 +922,7 @@ def _parse_source_profile_preview(payload: object) -> SourceProfilePreview:
         platform=platform,
         external_id=external_id,
         username=username,
+        source_type=_normalize_source_type(_optional_str(data.get("source_type") or data.get("source")), platform),
         playerdata=playerdata,
         advancements=advancements,
         stats=stats,

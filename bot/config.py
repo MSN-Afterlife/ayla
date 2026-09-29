@@ -51,6 +51,7 @@ class Settings:
     site_api_port: int = 8090
     site_api_cors_origin: str = "*"
     site_api_key: str | None = None
+    site_admin_api_key: str | None = None
     ayla_minecraft_internal_token: str | None = None
     migration_engine_base_url: str | None = None
     migration_engine_token: str | None = None
@@ -143,6 +144,7 @@ def load_settings() -> Settings:
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),
         site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
         site_api_key=os.getenv("SITE_API_KEY"),
+        site_admin_api_key=os.getenv("SITE_ADMIN_API_KEY"),
         ayla_minecraft_internal_token=os.getenv("AYLA_MINECRAFT_INTERNAL_TOKEN"),
         migration_engine_base_url=os.getenv("MIGRATION_ENGINE_BASE_URL"),
         migration_engine_token=os.getenv("MIGRATION_ENGINE_TOKEN"),

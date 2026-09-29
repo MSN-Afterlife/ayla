@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 LINEAR_API_URL = "https://api.linear.app/graphql"
 LINEAR_PRIORITY_VALUES = {"urgent": 1, "high": 2, "normal": 3, "low": 4}
 _TOKEN_RE = re.compile(r"(?<![\w/])([\wÀ-ÿ/-]+)(?![\w])", re.IGNORECASE)
+_GRAPHQL_LOG_TEXT_LIMIT = 500
 
 
 class LinearError(Exception):
@@ -104,12 +105,15 @@ class LinearService:
         if self._metadata is not None and time.monotonic() - self._metadata_cached_at < self._cache_seconds:
             return self._metadata
         teams = await self._graphql("query { teams(first: 250) { nodes { id name key cyclesEnabled defaultIssueEstimate timezone triageEnabled } } }", {}, context="teams")
-        projects = await self._graphql("query { projects(first: 250) { nodes { id name teams { nodes { id } } projectMilestones(first: 250) { nodes { id name targetDate project { id } } } } } }", {}, context="projects")
+        # Fetch milestones separately. Nesting up to 250 milestones below each of
+        # 250 projects exceeds Linear's query-complexity limit, even for small
+        # workspaces, because complexity is calculated from requested bounds.
+        projects = await self._graphql("query { projects(first: 250) { nodes { id name teams(first: 10) { nodes { id } } } } }", {}, context="projects")
+        milestones = await self._graphql("query { projectMilestones(first: 250) { nodes { id name targetDate project { id } } } }", {}, context="milestones")
         labels = await self._graphql("query { issueLabels(first: 250) { nodes { id name isGroup parent { name } team { id } } } }", {}, context="labels")
         states = await self._graphql("query { workflowStates(first: 250) { nodes { id name type team { id } } } }", {}, context="states")
         metadata: dict[str, Any] = {"teams": self._nodes(teams, "teams"), "projects": self._nodes(projects, "projects"), "labels": self._nodes(labels, "issueLabels"), "states": self._nodes(states, "workflowStates"), "members": [], "cycles": [], "milestones": []}
-        for project in metadata["projects"]:
-            metadata["milestones"].extend(self._nodes(project, "projectMilestones"))
+        metadata["milestones"] = self._nodes(milestones, "projectMilestones")
         if not metadata["teams"]:
             raise LinearError("Linear não retornou teams.")
         if self._use_assignee:
@@ -188,7 +192,7 @@ class LinearService:
                     logger.error("Linear rate limited context=%s", context)
                     raise LinearError("Linear atingiu o limite de requisições. Tente novamente mais tarde.")
                 if response.status < 200 or response.status >= 300:
-                    logger.error("Linear API failed context=%s status=%s", context, response.status)
+                    self._log_graphql_errors(body, context=context, status=response.status)
                     raise LinearError(f"Linear recusou a requisição ({response.status}).")
                 try:
                     parsed = json.loads(body)
@@ -196,7 +200,7 @@ class LinearService:
                     logger.error("Linear invalid JSON context=%s status=%s", context, response.status)
                     raise LinearError("Resposta inválida do Linear.") from None
                 if isinstance(parsed, dict) and parsed.get("errors"):
-                    logger.error("Linear GraphQL errors context=%s count=%s", context, len(parsed["errors"]) if isinstance(parsed["errors"], list) else 1)
+                    self._log_graphql_errors(parsed, context=context, status=response.status)
                     raise LinearError("O Linear retornou um erro ao processar a requisição.")
                 data = parsed.get("data") if isinstance(parsed, dict) else None
                 if not isinstance(data, dict):
@@ -207,6 +211,33 @@ class LinearService:
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as error:
             logger.error("Linear connection failed context=%s error=%s", context, type(error).__name__)
             raise LinearError("Não foi possível conectar ao Linear.") from error
+
+    def _log_graphql_errors(self, payload: str | dict[str, Any], *, context: str, status: int) -> None:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        errors = payload.get("errors") if isinstance(payload, dict) else None
+        if not isinstance(errors, list) or not errors:
+            logger.error("Linear API failed context=%s status=%s graphql_errors=unavailable", context, status)
+            return
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            message = self._safe_log_text(error.get("message"))
+            extensions = error.get("extensions") if isinstance(error.get("extensions"), dict) else {}
+            code = self._safe_log_text(extensions.get("code"))
+            logger.error(
+                "Linear GraphQL error context=%s status=%s graphql_error=%r graphql_code=%r path=%r locations=%r",
+                context, status, message, code, error.get("path"), error.get("locations"),
+            )
+
+    def _safe_log_text(self, value: Any) -> str:
+        text = " ".join(str(value or "").split())
+        if self._api_key:
+            text = text.replace(self._api_key, "[REDACTED]")
+        return text[:_GRAPHQL_LOG_TEXT_LIMIT]
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

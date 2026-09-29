@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import unittest
 from datetime import date
 
@@ -144,13 +145,19 @@ class LinearApiTests(unittest.IsolatedAsyncioTestCase):
         service._session = FakeSession([
             (200, {"data": {"teams": {"nodes": md["teams"]}}}),
             (200, {"data": {"projects": {"nodes": md["projects"]}}}),
+            (200, {"data": {"projectMilestones": {"nodes": []}}}),
             (200, {"data": {"issueLabels": {"nodes": md["labels"]}}}),
             (200, {"data": {"workflowStates": {"nodes": md["states"]}}}),
         ])
         first = await service.get_metadata()
         second = await service.get_metadata()
         self.assertEqual(first, second)
-        self.assertEqual(len(service._session.requests), 4)
+        self.assertEqual(len(service._session.requests), 5)
+        project_query = service._session.requests[1][1]["json"]["query"]
+        milestone_query = service._session.requests[2][1]["json"]["query"]
+        self.assertNotIn("projectMilestones", project_query)
+        self.assertIn("teams(first: 10)", project_query)
+        self.assertIn("projectMilestones(first: 250)", milestone_query)
 
     async def test_metadata_and_issue_creation_use_variables(self):
         service = LinearService("secret-token")
@@ -172,6 +179,22 @@ class LinearApiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(LinearError, "erro ao processar") as ctx:
             await service._graphql("query { x }", {}, context="test")
         self.assertNotIn("private detail", str(ctx.exception))
+
+    async def test_graphql_error_details_are_logged_for_http_400(self):
+        service = LinearService("secret-token")
+        service._session = FakeSession([(400, {"errors": [{
+            "message": "Query too complex secret-token", "path": ["projects"],
+            "locations": [{"line": 1, "column": 9}],
+            "extensions": {"code": "INPUT_ERROR"},
+        }]})])
+        with self.assertLogs("bot.services.linear_service", logging.ERROR) as logs:
+            with self.assertRaisesRegex(LinearError, r"recusou a requisição \(400\)"):
+                await service._graphql("query { projects { nodes { id } } }", {}, context="projects")
+        output = "\n".join(logs.output)
+        self.assertIn("graphql_error='Query too complex [REDACTED]'", output)
+        self.assertIn("graphql_code='INPUT_ERROR'", output)
+        self.assertIn("path=['projects']", output)
+        self.assertNotIn("secret-token", output)
 
     async def test_auth_timeout_rate_limit_and_invalid_json(self):
         for status, body, expected in [

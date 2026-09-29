@@ -66,6 +66,24 @@ class TaskTriageTests(unittest.TestCase):
         self.assertEqual(analysis.due_date, "2026-10-02")
         self.assertEqual(analysis.field_confidence["project"], "high")
 
+    def test_sw44_full_message_preserves_structured_triage(self):
+        reference = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
+        message = ("O site em staging começou a retornar erro 500 depois do último deploy. "
+                   "Verifique os logs da API, identifique a regressão, aplique a correção e valide "
+                   "o endpoint. Precisa estar resolvido até sexta.")
+        payload = {
+            "title": "Corrigir erro 500 do site em staging",
+            "description": "Investigar regressão após deploy e validar o endpoint.",
+            "category": "bug", "area": "api", "environment": "staging", "priority": "urgent",
+            "risk": "high", "confidence": "medium", "destination": "manual_triage",
+            "project": "Site", "team": "Software", "due_date": "sexta",
+            "field_confidence": {"team": "high", "project": "high", "category": "high", "area": "medium", "environment": "high", "priority": "medium", "due_date": "high"},
+            "subtasks": [{"title": "Correlacionar logs da API", "description": "Comparar logs com o deploy.", "type": "investigation"}],
+        }
+        analysis = _parse_analysis(json.dumps(payload), {"manual_triage"}, source_content=message, reference_at=reference)
+        self.assertEqual((analysis.category, analysis.area, analysis.environment, analysis.priority, analysis.project, analysis.team, analysis.due_date), ("bug", "api", "staging", "high", "Site", "Software", "2026-10-02"))
+        self.assertEqual(len(analysis.subtasks), 1)
+
     def test_due_date_parser_supports_controlled_relative_and_explicit_dates(self):
         reference = datetime(2026, 9, 29, 12, tzinfo=timezone.utc)
         self.assertEqual(parse_due_date(None, "resolver amanhã", reference_at=reference), "2026-09-30")

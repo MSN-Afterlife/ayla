@@ -14,6 +14,7 @@ from bot.services.music_player import Track
 from bot.services.music_player import build_now_playing_embed
 from bot.services.lyrics_service import LyricsError
 from bot.services.lyrics_service import LyricsService
+from bot.services.staging_rbac import can_use_admin_command
 
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,7 @@ def setup_music_commands(bot: commands.Bot, settings: Settings) -> None:
         if not ctx.guild:
             await _send(ctx, "Esse comando so funciona em servidores.")
             return
-        permissions = getattr(ctx.author, "guild_permissions", None)
-        if not permissions or not permissions.manage_guild:
+        if not can_use_admin_command(ctx, required="manage_guild"):
             await _send(ctx, "Apenas administradores podem usar esse comando.")
             return
 

@@ -28,6 +28,11 @@ class FakeStagingClient:
         return enabled
 
 
+class FakeRbacStore:
+    def role_ids(self, guild_id):
+        return {200}
+
+
 class MutableResponse:
     def __init__(self):
         self.done = False
@@ -45,6 +50,9 @@ class MutableResponse:
 
 
 class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.rbac = FakeRbacStore()
+
     async def test_status_off(self):
         interaction = fake_interaction()
         await _send_status(interaction, FakeStagingClient([False]))
@@ -58,7 +66,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ativacao_confirmada(self):
         client = FakeStagingClient([True])
-        view = _MinecraftAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True, rbac_store=self.rbac, guild_id=100)
         interaction = fake_interaction(user_id=42)
         await view.children[0].callback(interaction)
         self.assertEqual(client.set_calls, [True])
@@ -66,7 +74,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelamento(self):
         client = FakeStagingClient([False])
-        view = _MinecraftAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True, rbac_store=self.rbac, guild_id=100)
         interaction = fake_interaction(user_id=42)
         await view.children[1].callback(interaction)
         self.assertEqual(client.set_calls, [])
@@ -94,7 +102,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_botao_por_outro_operador_recusado(self):
         client = FakeStagingClient([True])
-        view = _MinecraftAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True, rbac_store=self.rbac, guild_id=100)
         interaction = fake_interaction(user_id=99)
         await view.children[0].callback(interaction)
         self.assertEqual(client.set_calls, [])
@@ -102,7 +110,7 @@ class StagingCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_botao_expirado(self):
         client = FakeStagingClient([True])
-        view = _MinecraftAuthBypassView(client, "42", enabled=True)
+        view = _MinecraftAuthBypassView(client, "42", enabled=True, rbac_store=self.rbac, guild_id=100)
         view.expires_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
         interaction = fake_interaction(user_id=42)
         await view.children[0].callback(interaction)
@@ -114,8 +122,10 @@ def fake_interaction(*, user_id=42, admin=True):
     response = MutableResponse()
     followup = SimpleNamespace(send=AsyncMock())
     permissions = SimpleNamespace(administrator=admin)
+    guild = SimpleNamespace(id=100)
     return SimpleNamespace(
-        user=SimpleNamespace(id=user_id, guild_permissions=permissions),
+        user=SimpleNamespace(id=user_id, guild=guild, roles=[SimpleNamespace(id=200)], guild_permissions=permissions),
+        guild=guild,
         response=response,
         followup=followup,
     )

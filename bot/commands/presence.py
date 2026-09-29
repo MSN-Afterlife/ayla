@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
+from bot.services.staging_rbac import can_use_admin_command, staging_app_command_check, staging_prefix_check
 from bot.services.presence_service import PresenceConfig
 from bot.services.presence_service import PresenceConfigStore
 from bot.services.presence_service import PresenceEntry
@@ -43,24 +44,24 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
     slash_group = app_commands.Group(name="statusayla", description="Configura a presenca/status da Ayla.")
 
     @commands.group(name="statusayla", aliases=["presenca", "presence", "aylapresence"], invoke_without_command=True)
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def presence_group(ctx: commands.Context) -> None:
         await ctx.send(embed=_build_presence_embed(store.get()))
 
     @presence_group.command(name="listar", aliases=["list", "status"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def list_presence(ctx: commands.Context) -> None:
         await ctx.send(embed=_build_presence_embed(store.get()))
 
     @presence_group.command(name="imagem", aliases=["img", "preview"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def list_presence_image(ctx: commands.Context) -> None:
         config = store.get()
         file = await build_presence_order_preview(bot.user, config.entries, config.active_index, "Status salvos da Ayla")
         await ctx.send(embed=_build_presence_embed(config, title="Status salvos da Ayla"), file=file, view=PresenceImageListView(bot, store))
 
     @presence_group.command(name="modo", aliases=["mode"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def set_mode(ctx: commands.Context, mode: str) -> None:
         try:
             config = store.set_mode(mode)
@@ -71,7 +72,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(f"Modo atualizado para `{config.mode}`.")
 
     @presence_group.command(name="intervalo", aliases=["tempo", "interval"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def set_interval(ctx: commands.Context, seconds: int) -> None:
         try:
             config = store.set_interval(seconds)
@@ -81,12 +82,12 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(f"Intervalo de rotacao atualizado para `{config.interval_seconds}` segundos.")
 
     @presence_group.command(name="usar", aliases=["ativo", "use"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def set_active(ctx: commands.Context, index: int) -> None:
         await _send_use_preview(ctx, bot, store, index)
 
     @presence_group.command(name="confirmaruso", aliases=["useagora"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def confirm_active_legacy(ctx: commands.Context, index: int) -> None:
         try:
             config = store.set_active(index)
@@ -98,7 +99,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(f"Status ativo atualizado para `{index}`.")
 
     @presence_group.command(name="add", aliases=["adicionar"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def add_presence(ctx: commands.Context, status: str, activity_type: str, *, text: str = "") -> None:
         try:
             cleaned_text, emoji = parse_presence_text(text)
@@ -115,7 +116,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
     @presence_group.command(name="set", aliases=["editar"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def update_presence(ctx: commands.Context, index: int, status: str, activity_type: str, *, text: str = "") -> None:
         try:
             cleaned_text, emoji = parse_presence_text(text)
@@ -132,7 +133,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
     @presence_group.command(name="remover", aliases=["remove", "del", "apagar"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def remove_presence(ctx: commands.Context, index: int) -> None:
         try:
             config = store.remove_entry(index)
@@ -143,12 +144,12 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=_build_presence_embed(config, title="Status removido"))
 
     @presence_group.command(name="mover", aliases=["move"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def move_presence(ctx: commands.Context, source: int, target: int) -> None:
         await _send_move_preview(ctx, bot, store, source, target)
 
     @presence_group.command(name="ordem", aliases=["reordenar", "order"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def reorder_presence(ctx: commands.Context, *order: int) -> None:
         config = store.get()
         try:
@@ -166,7 +167,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
     @presence_group.command(name="confirmarmover", aliases=["moveagora"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def confirm_move_legacy(ctx: commands.Context, source: int, target: int) -> None:
         try:
             config = store.move_entry(source, target)
@@ -177,14 +178,14 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await ctx.send(embed=_build_presence_embed(config, title="Ordem atualizada"))
 
     @presence_group.command(name="limpar", aliases=["clear"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def clear_presence(ctx: commands.Context) -> None:
         config = store.clear()
         await apply_presence(bot)
         await ctx.send(embed=_build_presence_embed(config, title="Presenca limpa"))
 
     @presence_group.command(name="aplicar", aliases=["apply"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def apply_presence_command(ctx: commands.Context) -> None:
         await apply_presence(bot)
         await ctx.send("Presenca aplicada.")
@@ -192,7 +193,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
     bot.add_command(presence_group)
 
     @slash_group.command(name="painel", description="Abre o painel visual para configurar o status da Ayla.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_panel(interaction: discord.Interaction) -> None:
         config = store.get()
         entry = config.entries[config.active_index]
@@ -205,12 +206,12 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         )
 
     @slash_group.command(name="listar", description="Lista os status salvos da Ayla.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_list_slash(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=_build_presence_embed(store.get()), ephemeral=True)
 
     @slash_group.command(name="imagem", description="Lista os status salvos da Ayla como imagem.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_image_slash(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         config = store.get()
@@ -218,7 +219,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.followup.send(embed=_build_presence_embed(config, title="Status salvos da Ayla"), file=file, view=PresenceImageListView(bot, store), ephemeral=True)
 
     @slash_group.command(name="modo", description="Define se a Ayla usa um status fixo ou alterna entre os salvos.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.choices(modo=MODE_CHOICES)
     async def presence_mode_slash(interaction: discord.Interaction, modo: app_commands.Choice[str]) -> None:
         config = store.set_mode(modo.value)
@@ -226,7 +227,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.response.send_message(embed=_build_presence_embed(config, title="Modo atualizado"), ephemeral=True)
 
     @slash_group.command(name="intervalo", description="Define o intervalo da rotacao em segundos.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_interval_slash(interaction: discord.Interaction, segundos: int) -> None:
         try:
             config = store.set_interval(segundos)
@@ -236,7 +237,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.response.send_message(embed=_build_presence_embed(config, title="Intervalo atualizado"), ephemeral=True)
 
     @slash_group.command(name="adicionar", description="Mostra previa e confirma um novo status.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.describe(
         status="Estado padrao da Ayla.",
         tipo="Tipo exibido no perfil: personalizado, jogando, ouvindo etc.",
@@ -249,7 +250,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send_entry_preview(interaction, bot, store, "add", status.value, tipo.value, texto, emoji=emoji)
 
     @slash_group.command(name="atividade", description="Cria uma atividade da Ayla com opcoes prontas e previa.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.describe(
         tipo="Como o Discord vai mostrar a atividade.",
         texto="Texto da atividade.",
@@ -268,7 +269,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send_entry_preview(interaction, bot, store, "add", status.value if status else "online", tipo.value, texto, emoji=emoji)
 
     @slash_group.command(name="editar", description="Mostra previa e confirma a edicao de um status salvo.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.describe(
         indice="Numero do status salvo que sera editado.",
         status="Estado padrao da Ayla.",
@@ -282,19 +283,19 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send_entry_preview(interaction, bot, store, "set", status.value, tipo.value, texto, index=indice, emoji=emoji)
 
     @slash_group.command(name="usar", description="Mostra uma previa e confirma o status ativo.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_use_slash(interaction: discord.Interaction, indice: int) -> None:
         await interaction.response.defer(ephemeral=True)
         await _send_use_preview(interaction, bot, store, indice)
 
     @slash_group.command(name="mover", description="Mostra uma previa e confirma uma mudanca de ordem.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_move_slash(interaction: discord.Interaction, origem: int, destino: int) -> None:
         await interaction.response.defer(ephemeral=True)
         await _send_move_preview(interaction, bot, store, origem, destino)
 
     @slash_group.command(name="ordem", description="Mostra uma previa e confirma uma nova ordem em lote. Ex: 3 1 2")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_order_slash(interaction: discord.Interaction, ordem: str) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
@@ -305,7 +306,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await _send_order_preview(interaction, bot, store, parsed_order)
 
     @slash_group.command(name="remover", description="Remove um status salvo.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_remove_slash(interaction: discord.Interaction, indice: int) -> None:
         try:
             config = store.remove_entry(indice)
@@ -316,7 +317,7 @@ def setup_presence_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.response.send_message(embed=_build_presence_embed(config, title="Status removido"), ephemeral=True)
 
     @slash_group.command(name="limpar", description="Limpa os status salvos da Ayla.")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def presence_clear_slash(interaction: discord.Interaction) -> None:
         config = store.clear()
         await apply_presence(bot)
@@ -1099,5 +1100,4 @@ class PresenceConfirmView(discord.ui.View):
 
 
 def _is_admin(interaction: discord.Interaction) -> bool:
-    permissions = getattr(interaction.user, "guild_permissions", None)
-    return bool(permissions and permissions.administrator)
+    return can_use_admin_command(interaction, required="administrator")

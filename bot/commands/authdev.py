@@ -10,6 +10,7 @@ from bot.services.authentik_service import AuthentikService
 from bot.services.authentik_service import AuthentikServiceError
 from bot.services.authentik_service import AuthentikUnauthorizedError
 from bot.services.authentik_service import AuthentikUnavailableError
+from bot.services.staging_rbac import staging_app_command_check
 
 
 def setup_authdev_commands(bot: commands.Bot, settings: Settings) -> None:
@@ -17,7 +18,7 @@ def setup_authdev_commands(bot: commands.Bot, settings: Settings) -> None:
     group = app_commands.Group(name="authdev", description="Gerencia a allowlist de desenvolvedores no Authentik.")
 
     @group.command(name="add", description="Autoriza um usuario para acesso de desenvolvedor.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.describe(usuario="Usuario que sera autorizado.")
     async def add(interaction: discord.Interaction, usuario: discord.User) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -34,7 +35,7 @@ def setup_authdev_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.followup.send(f"{usuario.mention} ja estava autorizado para acesso de desenvolvedor.", ephemeral=True)
 
     @group.command(name="remove", description="Remove um usuario da allowlist de desenvolvedores.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     @app_commands.describe(usuario="Usuario que sera removido.")
     async def remove(interaction: discord.Interaction, usuario: discord.User) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -51,7 +52,7 @@ def setup_authdev_commands(bot: commands.Bot, settings: Settings) -> None:
         await interaction.followup.send(f"{usuario.mention} nao estava autorizado para acesso de desenvolvedor.", ephemeral=True)
 
     @group.command(name="list", description="Lista usuarios autorizados para acesso de desenvolvedor.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(staging_app_command_check("administrator"))
     async def list_allowed(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         try:

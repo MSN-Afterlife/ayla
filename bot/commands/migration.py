@@ -51,6 +51,7 @@ from bot.services.migration_preview_service import (
     format_position,
     format_xp,
 )
+from bot.services.staging_rbac import can_use_admin_command, staging_prefix_check
 
 
 logger = logging.getLogger(__name__)
@@ -74,36 +75,36 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
         await ctx.send("Use `a!migration inspect`, `plan`, `status`, `execute`, `rollback` ou `confirm`.")
 
     @migration_prefix.command(name="inspect")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def inspect_prefix(ctx: commands.Context, target: str) -> None:
         request = await _resolve_target(ctx, client, target)
         if request:
             await _inspect(ctx, client, audit, request)
 
     @migration_prefix.command(name="plan")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def plan_prefix(ctx: commands.Context, target: str, *, reason: str = "") -> None:
         request = await _resolve_plan_request(ctx, client, audit, target, reason or None)
         if request:
             await _plan(ctx, client, audit, request)
 
     @migration_prefix.command(name="status")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(staging_prefix_check("manage_guild"))
     async def status_prefix(ctx: commands.Context, target: str) -> None:
         await _status_target(ctx, client, audit, target)
 
     @migration_prefix.command(name="execute")
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def execute_prefix(ctx: commands.Context, migration_id: str) -> None:
         await _request_confirmation(ctx, client, audit, confirmations, "execute", migration_id)
 
     @migration_prefix.command(name="rollback")
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def rollback_prefix(ctx: commands.Context, migration_id: str) -> None:
         await _rollback_target(ctx, client, audit, confirmations, migration_id)
 
     @migration_prefix.command(name="confirm")
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def confirm_prefix(ctx: commands.Context, action: str, migration_id: str, token: str) -> None:
         await _confirm(ctx, client, audit, confirmations, action, migration_id, token)
 
@@ -122,7 +123,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @app_commands.describe(nick="Nick Minecraft do jogador")
     @app_commands.autocomplete(nick=autocomplete_player)
     async def inspect_slash(interaction: discord.Interaction, nick: str) -> None:
-        if not _is_staff(interaction.user):
+        if not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para inspecionar migrations.")
             return
         await _defer(interaction)
@@ -133,10 +134,10 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @group.command(name="migrar", description="Migra sua identidade Minecraft com verificacoes de seguranca")
     @app_commands.describe(alvo="Alvo opcional; somente admins podem informar terceiros")
     async def migrar_slash(interaction: discord.Interaction, alvo: str | None = None) -> None:
-        if not _is_staff(interaction.user):
+        if not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para executar migrations.")
             return
-        if alvo and not _is_admin(interaction.user):
+        if alvo and not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Staff comum so pode migrar a propria identidade.")
             return
         await _defer(interaction)
@@ -146,7 +147,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @app_commands.describe(nick="Nick Minecraft do jogador", reason="Motivo administrativo opcional")
     @app_commands.autocomplete(nick=autocomplete_player)
     async def plan_slash(interaction: discord.Interaction, nick: str, reason: str = "") -> None:
-        if not _is_staff(interaction.user):
+        if not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para planejar migrations.")
             return
         await _defer(interaction)
@@ -157,7 +158,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @group.command(name="status", description="Consulta o estado de uma migration")
     @app_commands.autocomplete(nick=autocomplete_player)
     async def status_slash(interaction: discord.Interaction, nick: str) -> None:
-        if not _is_staff(interaction.user):
+        if not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para consultar migrations.")
             return
         await _defer(interaction)
@@ -167,7 +168,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @app_commands.describe(nick="Nick Minecraft do jogador")
     @app_commands.autocomplete(nick=autocomplete_player)
     async def execute_slash(interaction: discord.Interaction, nick: str) -> None:
-        if not _is_admin(interaction.user):
+        if not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para executar migrations.")
             return
         await _defer(interaction)
@@ -176,7 +177,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @group.command(name="rollback", description="Cria uma confirmacao para rollback de migration")
     @app_commands.autocomplete(nick=autocomplete_player)
     async def rollback_slash(interaction: discord.Interaction, nick: str) -> None:
-        if not _is_admin(interaction.user):
+        if not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para fazer rollback de migrations.")
             return
         await _defer(interaction)
@@ -185,7 +186,7 @@ def setup_migration_commands(bot: commands.Bot, settings: Settings) -> Migration
     @group.command(name="confirm", description="Confirma uma execute/rollback pendente")
     @app_commands.autocomplete(migration_id=autocomplete_migration_id)
     async def confirm_slash(interaction: discord.Interaction, action: str, migration_id: str, token: str) -> None:
-        if not _is_admin(interaction.user):
+        if not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para confirmar migrations.")
             return
         await _defer(interaction)
@@ -849,12 +850,16 @@ async def _resolve_target(
     return MigrationInspectRequest(canonical_uuid=matches[0].canonical_uuid)
 
 
-def _is_staff(user) -> bool:
+def _is_staff(user, context=None) -> bool:
+    if context is not None and can_use_admin_command(context, required="manage_guild"):
+        return True
     permissions = getattr(user, "guild_permissions", None)
     return bool(permissions and (permissions.manage_guild or permissions.administrator)) or _has_migration_role(user)
 
 
-def _is_admin(user) -> bool:
+def _is_admin(user, context=None) -> bool:
+    if context is not None and can_use_admin_command(context, required="administrator"):
+        return True
     permissions = getattr(user, "guild_permissions", None)
     return bool(permissions and permissions.administrator) or any(
         name in {"migration-admin", "migration_admin", "migration admin"}
@@ -1361,10 +1366,10 @@ class _ReplaceTargetConfirmationView(discord.ui.View):
         if datetime.now(UTC) >= self.expires_at:
             await _reply(interaction, "Este componente expirou. Gere a acao novamente.")
             return False
-        if admin_required and not _is_admin(interaction.user):
+        if admin_required and not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao administrativa para esta acao.")
             return False
-        if not admin_required and not _is_staff(interaction.user):
+        if not admin_required and not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para esta acao.")
             return False
         return True
@@ -1836,10 +1841,10 @@ class _OperatorBoundView(discord.ui.View):
         if datetime.now(UTC) >= self.expires_at:
             await _reply(interaction, "Este componente expirou. Gere a acao novamente.")
             return False
-        if admin_required and not _is_admin(interaction.user):
+        if admin_required and not _is_admin(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao administrativa para esta acao.")
             return False
-        if not admin_required and not _is_staff(interaction.user):
+        if not admin_required and not _is_staff(interaction.user, interaction):
             await _reply(interaction, "Voce nao tem permissao para esta acao.")
             return False
         return True

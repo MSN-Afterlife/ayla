@@ -12,6 +12,7 @@ from discord.utils import format_dt
 from discord.utils import utcnow
 
 from bot.services.calculator import calculate
+from bot.services.staging_rbac import staging_prefix_check
 
 
 async def _send(ctx: commands.Context, *args, **kwargs) -> discord.Message | None:
@@ -56,7 +57,7 @@ def setup_basic_commands(bot: commands.Bot) -> None:
         await _send(ctx, f"O resultado de {a} {result.symbol} {b} e {result.value}")
 
     @bot.command(name="statusgeral", aliases=["lynstatus", "aylastatus", "botstatus"])
-    @commands.has_permissions(administrator=True)
+    @commands.check(staging_prefix_check("administrator"))
     async def full_status(ctx: commands.Context) -> None:
         embed = _build_full_status_embed(ctx, bot)
         await _send(ctx, embed=embed)

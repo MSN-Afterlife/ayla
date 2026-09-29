@@ -52,6 +52,7 @@ class Settings:
     site_api_port: int = 8090
     site_api_cors_origin: str = "*"
     site_api_key: str | None = None
+    site_admin_api_key: str | None = None
     ayla_minecraft_internal_token: str | None = None
     migration_engine_base_url: str | None = None
     migration_engine_token: str | None = None
@@ -89,6 +90,7 @@ class Settings:
     lastfm_enabled: bool = False
     lastfm_database_path: str = "data/lastfm.sqlite3"
     lastfm_timeout_seconds: float = 10
+    environment: str = "production"
 
 
 def load_settings() -> Settings:
@@ -100,6 +102,7 @@ def load_settings() -> Settings:
 
     return Settings(
         discord_token=token,
+        environment=os.getenv("AYLA_ENV", "production").strip().lower(),
         command_prefix=os.getenv("COMMAND_PREFIX", "a!"),
         character_file=os.getenv("CHARACTER_FILE", "bot/characters/default.json"),
         memory_limit=int(os.getenv("MEMORY_LIMIT", "12")),
@@ -143,6 +146,7 @@ def load_settings() -> Settings:
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),
         site_api_cors_origin=os.getenv("SITE_API_CORS_ORIGIN", "*"),
         site_api_key=os.getenv("SITE_API_KEY"),
+        site_admin_api_key=os.getenv("SITE_ADMIN_API_KEY"),
         ayla_minecraft_internal_token=os.getenv("AYLA_MINECRAFT_INTERNAL_TOKEN"),
         migration_engine_base_url=os.getenv("MIGRATION_ENGINE_BASE_URL"),
         migration_engine_token=os.getenv("MIGRATION_ENGINE_TOKEN"),

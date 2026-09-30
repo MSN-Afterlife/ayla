@@ -53,6 +53,39 @@ require_directory() {
   test -d "$1" || { echo "required directory missing: $1" >&2; exit 1; }
 }
 
+require_nonempty_env_assignment() {
+  local name=$1
+  local file=$2
+  awk -v requested_name="$name" '
+    /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ {
+      assignment=$0
+      key=assignment
+      sub(/^[[:space:]]*(export[[:space:]]+)?/, "", key)
+      sub(/[[:space:]]*=.*/, "", key)
+      if (key != requested_name) next
+      found=1
+      value=assignment
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      configured=(value != "" && value != "\"\"" && value != "\047\047")
+    }
+    END { exit !(found && configured) }
+  ' "$file" || {
+    echo "$name must be configured and non-empty in $file for production" >&2
+    exit 1
+  }
+}
+
+require_secure_production_env() {
+  local file=$1
+  local metadata
+  metadata=$(stat -c '%U:%G:%a' "$file")
+  test "$metadata" = root:ayla:640 || {
+    echo "$file must be owned by root:ayla with mode 0640 for production" >&2
+    exit 1
+  }
+}
+
 compose() {
   local directory=$1
   local sha=$2
@@ -144,6 +177,11 @@ require_file "$runtime_env"
 require_file "$youtube_cookies_host_path"
 require_directory /opt/ayla/scripts
 docker info >/dev/null
+
+if test "$environment" = prod; then
+  require_secure_production_env "$runtime_env"
+  require_nonempty_env_assignment SITE_API_KEY "$runtime_env"
+fi
 
 if tar -tzf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$)|(^|/)\.env(\.|$))'; then
   echo "release archive contains an unsafe path or environment file" >&2

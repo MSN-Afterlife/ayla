@@ -100,7 +100,7 @@ def load_settings() -> Settings:
     if not token:
         raise RuntimeError("Configure DISCORD_TOKEN no arquivo .env antes de iniciar o bot.")
 
-    return Settings(
+    settings = Settings(
         discord_token=token,
         environment=os.getenv("AYLA_ENV", "production").strip().lower(),
         command_prefix=os.getenv("COMMAND_PREFIX", "a!"),
@@ -184,6 +184,19 @@ def load_settings() -> Settings:
         lastfm_database_path=os.getenv("LASTFM_DATABASE_PATH", "data/lastfm.sqlite3"),
         lastfm_timeout_seconds=float(os.getenv("LASTFM_TIMEOUT_SECONDS", "10")),
     )
+    validate_runtime_settings(settings)
+    return settings
+
+
+def validate_runtime_settings(settings: Settings) -> None:
+    if (
+        settings.environment in {"prod", "production"}
+        and settings.site_api_enabled
+        and not (settings.site_api_key or "").strip()
+    ):
+        raise RuntimeError(
+            "SITE_API_KEY deve estar configurada e não vazia quando SITE_API_ENABLED=true em produção."
+        )
 
 
 def validate_clickup_settings(settings: Settings) -> None:

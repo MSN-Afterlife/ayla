@@ -21,6 +21,7 @@ from bot.commands.presence import start_presence_rotation
 from bot.commands.staging import setup_minecraft_auth_commands
 from bot.commands.uno import setup_uno_commands
 from bot.commands.bingo import setup_bingo_commands
+from bot.commands.deathbattle import setup_deathbattle_commands
 from bot.config import Settings
 from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
@@ -155,6 +156,7 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_economy_commands(bot, settings)
     setup_uno_commands(bot, settings)
     setup_bingo_commands(bot)
+    setup_deathbattle_commands(bot)
     setup_help_command(bot, settings)
     setup_minecraft_commands(bot, bot._minecraft_identity_store)
     setup_migration_commands(bot, settings)

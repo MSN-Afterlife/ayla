@@ -1,6 +1,4 @@
-from asyncio import wait
 import random
-from tabnanny import check
 
 import discord
 from discord.ext import commands
@@ -9,7 +7,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(
-    command_prefix="!",
     intents=intents
 )
 
@@ -174,55 +171,67 @@ condicoes = {
 }
 
 def encontrar_habilidade(nome):
-    nome = nome.lower().strip()
-
+    nome = nome.casefold().strip()
     for habilidade_id, habilidade in habilidades.items():
-        if habilidade["nome"].lower() == nome:
+        if habilidade["nome"].casefold() == nome or habilidade_id == nome:
             return habilidade_id
-
     return None
 
-async def esperar_ataque(usuario):
-    await usuario.send('# Seu turno\n Se deseja atacar, digite o nome do ataque\n Se deseja socar o oponente, digite soco\n Se deseja se proteger, digite proteger\n Se deseja usar sua **ultimate**, digite ultimate')
+
+async def esperar_ataque(usuario, mana_atual, moveset):
+    await usuario.send(
+        "# Seu turno\n Se quiser usar um ataquem, digite o nome dele\n Se quiser socar seu oponente, digite soco\n Se quiser se proteger, digite proteger\n Se quiser usar sua **ultimate** (disponível apenas depois de 3 turnos), digite ultimate."
+    )
+
     def check(mensagem):
-        return (mensagem.author == usuario and isinstance(mensagem.channel, discord.DMChannel))
+        return mensagem.author == usuario and isinstance(mensagem.channel, discord.DMChannel)
+
     while True:
         mensagem = await bot.wait_for("message", check=check)
-        texto = mensagem.content.lower().strip()
+        texto = mensagem.content.casefold().strip()
 
-        if texto == "ultimate":
-            return "ultimate"
-        elif texto == "soco":
-            return "soco"
-        elif texto == "proteger":
-            return "proteger"
+        if texto in {"ultimate", "soco", "proteger"}:
+            return texto
 
         ataque = encontrar_habilidade(texto)
-
         if ataque is None:
             await usuario.send("Esse golpe não existe. Digite o nome de um golpe válido.")
             continue
+        habilidade = habilidades[ataque]
+        if habilidade["tipo"] != moveset:
+            await usuario.send(f"O golpe **{habilidade['nome']}** não pertence ao seu moveset de **{moveset}**.")
+            continue
+        if mana_atual < habilidade["mana_gasta"]:
+            await usuario.send(f"Você não tem mana suficiente. Mana atual: **{mana_atual}**.")
+            continue
         return ataque
 
+
 def aplicar_condicao(efeito, condicoes_alvo):
-    dados = condicoes[efeito]
     if efeito is None:
         return
-
+    dados = condicoes.get(efeito)
+    if dados is None:
+        return
     if "duracao" in dados:
         condicoes_alvo[efeito] = dados["duracao"]
     else:
         condicoes_alvo[efeito] = True
 
+
 def criar_embed_ataque(atacante, alvo, ataque, dano):
     habilidade = habilidades[ataque]
     embed = discord.Embed(
         title=habilidade["nome"],
-        description=habilidade["descricao"].format(atacante=atacante.name, alvo=alvo.name, dano=dano),
-        color=discord.Color.red()
+        description=habilidade["descricao"].format(
+            atacante=atacante.display_name, alvo=alvo.display_name, dano=dano
+        ),
+        color=discord.Color.red(),
     )
-    embed.set_image(url=habilidade["gif"])
+    if habilidade.get("gif"):
+        embed.set_image(url=habilidade["gif"])
     return embed
+
 
 async def processar_condicoes(ctx, usuario, vida, condicoes_jogador):
     for efeito in ("queimando", "sangrando"):
@@ -237,14 +246,13 @@ async def processar_condicoes(ctx, usuario, vida, condicoes_jogador):
             await ctx.send(f"{usuario.mention} não está mais {efeito}.")
     return vida
 
+
 async def verificar_ult(usuario, turno, ultimate, pronta, usada):
     if turno >= 3 and not pronta and ultimate != "reviver":
-        await usuario.send(
-            f"Sua ultimate {ultimate} está pronta para uso."
-        )
+        await usuario.send(f"Sua ultimate **{ultimate.replace('_', ' ').title()}** está pronta para uso.")
         return True
-
     return pronta
+
 
 @bot.command(name="deathbattle")
 async def deathbattle(ctx, inimigo: discord.Member):
@@ -271,7 +279,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
     view_acre.add_item(accept_b) 
     view_acre.add_item(reject_b) 
 
-    opcoes2 = [discord.SelectOption(label="Kirim", value="kirim"), discord.SelectOption(label="Reviver", value="reviver"), discord.SelectOption(label="Sol nascente", value="sol nascente"), discord.SelectOption(label="Meta-vision", value="meta vision")]
+    opcoes2 = [discord.SelectOption(label="Kirim", value="kirim"), discord.SelectOption(label="Reviver", value="reviver"), discord.SelectOption(label="Sol nascente", value="sol_nascente"), discord.SelectOption(label="Meta-vision", value="meta_vision")]
     view_ultimate1 = discord.ui.View()
     view_ultimate2 = discord.ui.View()
     select_ultimate1 = discord.ui.Select(placeholder="Escolha sua ultimate", options=opcoes2)
@@ -382,291 +390,208 @@ async def deathbattle(ctx, inimigo: discord.Member):
     ultimate_usada_p2 = False
 
     p1_protegendo = False
-    p2_protegendo = True
+    p2_protegendo = False
 
     await ctx.send(f"{ctx.author.mention} tirou {iniciativa_p1} na iniciativa\n" f"{inimigo.mention} tirou {iniciativa_p2} na iniciativa\n\n" f"{primeiro[0].mention} começa atacando!")
 
-    while vida_p1 > 0 and vida_p2 > 0:
-        for atacante, alvo, moveset, ultimate in (primeiro, segundo):
-            if atacante == ctx.author:
-                vida_p1 = await processar_condicoes(ctx,atacante,vida_p1,condicoes_p1)
-                condicoes_atual = condicoes_p1
-            else:
-                vida_p2 = await processar_condicoes(ctx,atacante,vida_p2,condicoes_p2)
-                condicoes_atual = condicoes_p2
-            ataque = await esperar_ataque(atacante)
-            if alvo == inimigo:
-                turno_p1 += 1
-                if ultimate_inimigo == "sol nascente" and ultimate_usada_p2 == True:
-                    vida_p1 -= 20
-                    await ctx.send("☀ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
-            else:
-                turno_p2 += 1
-                if ultimate_jogador == "sol nascente" and ultimate_usada_p1 == True:
-                    vida_p2 -= 20
-                    await ctx.send("☀ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
-            
+    jogadores = {
+        ctx.author: {
+            "vida": vida_p1, "mana": mana_p1, "turnos": 0,
+            "moveset": moveset_jogador, "ultimate": ultimate_jogador,
+            "ultimate_pronta": False, "ultimate_usada": False,
+            "condicoes": condicoes_p1, "protegendo": False,
+            "sol_nascente": False,
+        },
+        inimigo: {
+            "vida": vida_p2, "mana": mana_p2, "turnos": 0,
+            "moveset": moveset_inimigo, "ultimate": ultimate_inimigo,
+            "ultimate_pronta": False, "ultimate_usada": False,
+            "condicoes": condicoes_p2, "protegendo": False,
+            "sol_nascente": False,
+        },
+    }
+
+    def estado(usuario):
+        return jogadores[usuario]
+
+    async def verificar_fim():
+        for usuario, dados in jogadores.items():
+            if dados["vida"] > 0:
+                continue
+            if dados["ultimate"] == "reviver" and not dados["ultimate_usada"]:
+                dados["vida"] = 50
+                dados["ultimate_usada"] = True
+                embed = discord.Embed(
+                    title="Ressurreição",
+                    description=f"{usuario.mention} morreu, mas voltou à vida!",
+                    color=discord.Color.gold(),
+                )
+                embed.set_image(url="https://c.tenor.com/F7hviGTMsTcAAAAC/tenor.gif")
+                await ctx.send(embed=embed)
+                continue
+            vencedor = inimigo if usuario == ctx.author else ctx.author
+            await ctx.send(f"{usuario.mention} morreu! {vencedor.mention} venceu a batalha!")
+            return True
+        return False
+
+    async def usar_ultimate(atacante, alvo, dados, dados_alvo):
+        nome = dados["ultimate"]
+        if nome == "reviver":
+            await atacante.send("Reviver é ativada automaticamente quando você morre.")
+            return False
+        if not dados["ultimate_pronta"]:
+            await atacante.send("Sua ultimate ainda não está pronta.")
+            return False
+        if dados["ultimate_usada"]:
+            await atacante.send("Você já usou sua ultimate.")
+            return False
+
+        if nome == "kirim":
+            dados["mana"] = 0
+            dados["ultimate_usada"] = True
+            if random.randint(1, 20) == 1:
+                await ctx.send(f"{atacante.mention} invocou Kirim, mas errou!")
+                return True
+            dano = random.randint(60, 80)
+            dano_real = max(0, dano - (15 if dados_alvo["protegendo"] else 0))
+            dados_alvo["vida"] -= dano_real
+            embed = discord.Embed(
+                title="Kirim",
+                description=f"{atacante.mention} gastou toda sua mana usando Kirim e causou {dano_real} de dano!",
+                color=discord.Color.blue(),
+            )
+            embed.set_image(url="https://c.tenor.com/I-STQyYk1QsAAAAC/tenor.gif")
+            await ctx.send(embed=embed)
+        elif nome == "sol_nascente":
+            if dados["mana"] < 20:
+                await atacante.send("Você precisa de 20 de mana para usar Sol Nascente.")
+                return False
+            dados["mana"] -= 20
+            dados["sol_nascente"] = True
+            dados["ultimate_usada"] = True
+            embed = discord.Embed(
+                title="Sol Nascente",
+                description=f"{atacante.mention} invocou um sol nascente. O oponente sofrerá 20 de dano no começo de cada turno.",
+                color=discord.Color.yellow(),
+            )
+            embed.set_image(url="https://c.tenor.com/kRg2pd68FHEAAAAd/tenor.gif")
+            await ctx.send(embed=embed)
+        elif nome == "meta_vision":
+            if dados["mana"] < 35:
+                await atacante.send("Você precisa de 35 de mana para usar Meta-Vision.")
+                return False
+            dados["mana"] -= 35
+            dados["ultimate_usada"] = True
+            dados["meta_vision"] = True
+            embed = discord.Embed(
+                title="Meta-Vision",
+                description=f"{atacante.mention} ativou Meta-Vision: os ataques contra ele ficam mais difíceis de acertar.",
+                color=discord.Color.light_grey(),
+            )
+            embed.set_image(url="https://c.tenor.com/08nSzJF021EAAAAd/tenor.gif")
+            await ctx.send(embed=embed)
+        return True
+
+    while jogadores[ctx.author]["vida"] > 0 and jogadores[inimigo]["vida"] > 0:
+        for atacante, alvo, _, _ in (primeiro, segundo):
+            dados = estado(atacante)
+            dados_alvo = estado(alvo)
+            if await verificar_fim():
+                return
+
+            # Efeitos de dano no começo do turno.
+            dados["vida"] = await processar_condicoes(ctx, atacante, dados["vida"], dados["condicoes"])
+            if dados_alvo["sol_nascente"]:
+                dados["vida"] -= 20
+                await ctx.send(f"O Sol Nascente de {alvo.mention} causa 20 de dano a {atacante.mention}.")
+            if await verificar_fim():
+                return
+
+            # Escolha e validação: uma ação inválida não consome o turno.
+            while True:
+                ataque = await esperar_ataque(atacante, dados["mana"], dados["moveset"])
+                if ataque != "ultimate":
+                    break
+                if dados["ultimate"] == "reviver":
+                    await atacante.send("Reviver é ativada automaticamente quando você morre.")
+                    continue
+                if not dados["ultimate_pronta"]:
+                    await atacante.send("Sua ultimate ainda não está pronta.")
+                    continue
+                if dados["ultimate_usada"]:
+                    await atacante.send("Você já usou sua ultimate.")
+                    continue
+                custo = 20 if dados["ultimate"] == "sol_nascente" else 35 if dados["ultimate"] == "meta_vision" else 0
+                if dados["mana"] < custo:
+                    await atacante.send(f"Você precisa de {custo} de mana para usar essa ultimate.")
+                    continue
+                break
+
+            acao_valida = True
             if ataque == "ultimate":
-                if atacante == ctx.author:
-                    if turno_p1 < 3 or ultimate_usada_p1 == True or ultimate_jogador == "reviver":
-                        await atacante.send("Você não pode usar sua utlimate")
-                        while True:
-                            ataque = await esperar_ataque(atacante)
-                            if ataque != "ultimate":
-                                break
-                            if atacante == ctx.author:
-                                pronta = ultimate_pronta_p1
-                                usada = ultimate_usada_p1
-                                ultimate_escolhida = ultimate_jogador
-                            else:
-                                pronta = ultimate_pronta_p2
-                                usada = ultimate_usada_p2
-                                ultimate_escolhida = ultimate_inimigo
-
-                            if ultimate_escolhida == "reviver":
-                                await atacante.send(
-                                    "Reviver é ativada automaticamente quando você morre."
-                                )
-                                continue
-
-                            if not pronta:
-                                await atacante.send("Sua ultimate ainda não está pronta.")
-                                continue
-
-                            if usada:
-                                await atacante.send("Você já usou sua ultimate.")
-                                continue
-                            break
-                    else:
-                        if ultimate_jogador == "kirim":
-                            mana_p1 = 0
-                            if random.randint(1, 20) < 2:
-                                await ctx.send(f"{atacante} usou toda sua mana para invocar Kirim, mas errou!")
-                            else:
-                                dano = random.randint(60, 80)
-                                if p2_protegendo == True:
-                                    vida_p2 -= dano - 15
-                                else:
-                                    vida_p2 -= dano
-                                embed = discord.Embed(
-                                    title="Kirim",
-                                    description=f"{atacante} Gastou toda sua mana usando Kirim, e causou {dano}",
-                                    color=discord.Color.blue()
-                                )
-                                embed.set_image(url="https://c.tenor.com/I-STQyYk1QsAAAAC/tenor.gif")
-                                await ctx.send(embed=embed)
-                        elif ultimate_jogador == "sol nascente":
-                            if mana_p1 >= 20:
-                                mana_p1 -= 20
-                                embed = discord.Embed(
-                                    title="Sol nascente",
-                                    description=f"{atacante} invocou um sol nascente na arena de batalha, será que o oponente suporta o calor?",
-                                    color=discord.Color.yellow()
-                                )
-                                embed.set_image(url="https://c.tenor.com/kRg2pd68FHEAAAAd/tenor.gif")
-                                await ctx.send(embed=embed)
-                        elif ultimate_jogador == "meta vision":
-                            if mana_p1 >= 35:
-                                mana_p1 -= 35
-                                embed = discord.Embed(
-                                    title="Meta vision",
-                                    description=f"{atacante} começa a ver o campo de batalha de forma diferente... agora para acerta-lo será necessário o dobro de esforço!",
-                                    color=discord.Color.light_gray()
-                                )
-                                embed.set_image(url="https://c.tenor.com/08nSzJF021EAAAAd/tenor.gif")
-                                await ctx.send(embed=embed)
-                else: 
-                    if turno_p2 < 3 or ultimate_usada_p2 == True or ultimate_inimigo == "reviver":
-                        await atacante.send("Você não pode usar sua utlimate")
-                        while True:
-                            ataque = await esperar_ataque(atacante)
-                            if ataque != "ultimate":
-                                break
-                            if atacante == ctx.author:
-                                pronta = ultimate_pronta_p1
-                                usada = ultimate_usada_p1
-                                ultimate_escolhida = ultimate_jogador
-                            else:
-                                pronta = ultimate_pronta_p2
-                                usada = ultimate_usada_p2
-                                ultimate_escolhida = ultimate_inimigo
-
-                            if ultimate_escolhida == "reviver":
-                                await atacante.send(
-                                    "Reviver é ativada automaticamente quando você morre."
-                                )
-                                continue
-
-                            if not pronta:
-                                await atacante.send("Sua ultimate ainda não está pronta.")
-                                continue
-
-                            if usada:
-                                await atacante.send("Você já usou sua ultimate.")
-                                continue
-                            break
-                    else:
-                        if ultimate_inimigo == "kirim":
-                            mana_p2 = 0
-                            if random.randint(1, 20) < 2:
-                                await ctx.send(f"{atacante} usou toda sua mana para invocar Kirim, mas errou!")
-                            else:
-                                dano = random.randint(60, 80)
-                                if p1_protegendo == True:
-                                    vida_p1 -= dano - 15
-                                else:
-                                    vida_p1 -= dano
-                                embed = discord.Embed(
-                                    title="Kirim",
-                                    description=f"{atacante} Gastou toda sua mana usando Kirim, e causou {dano}",
-                                    color=discord.Color.blue()
-                                )
-                                embed.set_image(url="https://c.tenor.com/I-STQyYk1QsAAAAC/tenor.gif")
-                                await ctx.send(embed=embed)
-                        elif ultimate_inimigo == "sol nascente":
-                            if mana_p2 >= 20:
-                                mana_p2 -= 20
-                                embed = discord.Embed(
-                                    title="Sol nascente",
-                                    description=f"{atacante} invocou um sol nascente na arena de batalha, será que o oponente suporta o calor?",
-                                    color=discord.Color.yellow()
-                                )
-                                embed.set_image(url="https://c.tenor.com/kRg2pd68FHEAAAAd/tenor.gif")
-                                await ctx.send(embed=embed)
-                        elif ultimate_inimigo == "meta vision":
-                            if mana_p2 >= 35:
-                                mana_p2 -= 35
-                                embed = discord.Embed(
-                                    title="Meta vision",
-                                    description=f"{atacante} começa a ver o campo de batalha de forma diferente... agora para acerta-lo será necessário o dobro de esforço!",
-                                    color=discord.Color.light_gray()
-                                )
-                                embed.set_image(url="https://c.tenor.com/08nSzJF021EAAAAd/tenor.gif")
-                                await ctx.send(embed=embed)
-            elif ataque == "soco":
-                if atacante == ctx.author:
-                    dano = random.randint(5, 15)
-                    if p2_protegendo == True:
-                        vida_p2 == vida_p2
-                    else:
-                        vida_p2 -= dano
-                        await ctx.send(f"{atacante} socou {alvo}, causando {dano}")
-                else:
-                    dano = random.randint(5, 15)
-                    if p1_protegendo == True:
-                        vida_p1 == vida_p1
-                    else:
-                        vida_p1 -= dano
-                        await ctx.send(f"{atacante} socou {alvo}, causando {dano}!")
+                acao_valida = await usar_ultimate(atacante, alvo, dados, dados_alvo)
             elif ataque == "proteger":
-                if atacante == ctx.author:
-                    p1_protegendo = True
-                    await ctx.send(f"{atacante} se protegeu!")
-                else:
-                    p2_protegendo = True
-                    await ctx.send(f"{atacante} se protegeu!")
-
+                dados["protegendo"] = True
+                await ctx.send(f"{atacante.mention} se protegeu. O próximo golpe recebido terá 15 de dano reduzido.")
+            elif ataque == "soco":
+                dano = random.randint(5, 15)
+                dano_real = max(0, dano - (15 if dados_alvo["protegendo"] else 0))
+                dados_alvo["vida"] -= dano_real
+                dados_alvo["protegendo"] = False
+                await ctx.send(f"{atacante.mention} socou {alvo.mention}, causando {dano_real} de dano.")
             else:
-                if habilidades[ataque]["tipo"] != moveset:
-                    await atacante.send(f"❌ O golpe **{habilidades[ataque]['nome']}** " f"não pertence ao seu moveset de **{moveset}**.")
-                    continue
-                mana_atual = mana_p1 if atacante == ctx.author else mana_p2
-                if mana_atual < habilidades[ataque]["mana_gasta"]:
-                    await atacante.send(f"❌ Você não tem mana suficiente! " f"Você possui **{mana_atual}** de mana.")
-                    continue
+                habilidade = habilidades[ataque]
+                dados["mana"] -= habilidade["mana_gasta"]
+                ataque_perdido = False
+                if "paralisado" in dados["condicoes"]:
+                    del dados["condicoes"]["paralisado"]
+                    if random.randint(1, 2) == 1:
+                        await ctx.send(f"{atacante.mention} ficou paralisado e perdeu o ataque.")
+                        ataque_perdido = True
+                if "previsivel" in dados["condicoes"]:
+                    del dados["condicoes"]["previsivel"]
+                    await ctx.send(f"{atacante.mention} estava previsível e errou o ataque.")
+                    ataque_perdido = True
 
-                mana_gasta = habilidades[ataque]["mana_gasta"]
-                if atacante == ctx.author:
-                    mana_p1 -= mana_gasta
-                    await verificar_ult(atacante, turno_p1, ultimate_jogador, ultimate_pronta_p1, ultimate_usada_p1)
-                    if "paralisado" in condicoes_p1:
-                        if random.randint(1, 2) == 1:
-                            await ctx.send(f"{atacante.mention} ficou paralisado e perdeu o ataque.")
-                            del condicoes_p1["paralisado"]
-                            ataque_perdido = True
-                        else:
-                            del condicoes_p1["paralisado"]
-                            ataque_perdido = False
-                    if "previsivel" in condicoes_p1:
-                        await ctx.send(f"{atacante.mention} estava previsível e errou o ataque.")
-                        del condicoes_p1["previsivel"]
-                        ataque_perdido = True            
-                else:
-                    mana_p2 -= mana_gasta
-                    await verificar_ult(atacante, turno_p2, ultimate_inimigo, ultimate_pronta_p2, ultimate_usada_p2)
-                    if "paralisado" in condicoes_p2:
-                        if random.randint(1,2) == 1:
-                            await ctx.send(f"{atacante.mention} ficou paralisado e perdeu o ataque.")
-                            del condicoes_p1["paralisado"]
-                            ataque_perdido = True
-                        else:
-                            del condicoes_p1["paralisado"]
-                            ataque_perdido = True
-                    if "previsivel" in condicoes_p2:
-                        await ctx.send(f"{atacante.mention} estava previsível e errou o ataque.")
-                        del condicoes_p1["previsivel"]
-                        ataque_perdido = True      
-
-                d20 = random.randint(1, 20)
-                acerto = habilidades[ataque]["chance_de_acertar"]
-                if alvo == inimigo:
-                    if ultimate_inimigo == "meta vision" and ultimate_usada_p2 == True:
-                        acerto = habilidades[ataque]["chance_de_acertar"]/2
-                else:
-                    if ultimate_jogador == "metavision" and ultimate_usada_p1 == True:
-                        acerto = habilidades[ataque]["chance_de_acertar"]/2
-
-                if d20 > acerto:
-                    await ctx.send(f"{atacante.mention} tentou usar " f"**{habilidades[ataque]['nome']}**, mas errou!")
-                else:
-                    dano_ataque = random.randint(habilidades[ataque]["dano_min"], habilidades[ataque]["dano_max"])
-                    if alvo == ctx.author:
-                        if p1_protegendo:
-                            vida_p1 -= dano_ataque - 15
-                        else:
-                            vida_p1 -= dano_ataque
+                if not ataque_perdido:
+                    chance = habilidade["chance_de_acertar"]
+                    if dados_alvo.get("meta_vision", False):
+                        chance /= 2
+                    d20 = random.randint(1, 20)
+                    if d20 > chance:
+                        await ctx.send(f"{atacante.mention} tentou usar **{habilidade['nome']}**, mas errou (d20: {d20}).")
                     else:
-                        if p2_protegendo:
-                            vida_p2 -= dano_ataque - 15
-                        else:
-                            vida_p2 -= dano_ataque
-                    embed = criar_embed_ataque(atacante, alvo, ataque, dano_ataque)
-                    await ctx.send(embed=embed)
-                    efeito = habilidades[ataque]["efeitos"]
+                        dano = random.randint(habilidade["dano_min"], habilidade["dano_max"])
+                        dano_real = max(0, dano - (15 if dados_alvo["protegendo"] else 0))
+                        dados_alvo["vida"] -= dano_real
+                        dados_alvo["protegendo"] = False
+                        await ctx.send(embed=criar_embed_ataque(atacante, alvo, ataque, dano_real))
+                        efeito = habilidade["efeitos"]
+                        if efeito:
+                            aplicar_condicao(efeito, dados_alvo["condicoes"])
+                            await ctx.send(f"{alvo.mention} recebeu a condição **{efeito}**.")
 
-                    if efeito is not None:
-                        if alvo == ctx.author:
-                            aplicar_condicao(efeito, condicoes_p1)
-                        else:
-                            aplicar_condicao(efeito, condicoes_p2)
+            if not acao_valida:
+                continue
 
-                    await ctx.send(f"{alvo.mention} recebeu a condição {efeito}.")
-    if vida_p1 <= 0:
-        if ultimate == "reviver":
-            vida_p1 = 50
-            ultimate_usada_p1 = True
-            embed = discord.Embed(
-                title="Ressurreição",
-                description=f"{alvo} Morreu, mas voltou a vida graciosamente!",
-                color=discord.Color.gold()
+            dados["turnos"] += 1
+            dados["ultimate_pronta"] = await verificar_ult(
+                atacante, dados["turnos"], dados["ultimate"],
+                dados["ultimate_pronta"], dados["ultimate_usada"]
             )
-            embed.set_image(url="https://c.tenor.com/F7hviGTMsTcAAAAC/tenor.gif")
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send(f"{ctx.author.mention} morreu! " f"{inimigo.mention} venceu a batalha!")
-    elif vida_p2 <= 0:
-        if ultimate == "reviver":
-            vida_p2 = 50
-            ultimate_usada_p2 = True
-            embed = discord.Embed(
-                title="Ressurreição",
-                description=f"{alvo} Morreu, mas voltou a vida graciosamente!",
-                color=discord.Color.gold()
-            )
-            embed.set_image(url="https://c.tenor.com/F7hviGTMsTcAAAAC/tenor.gif")
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send(f"{inimigo.mention} morreu! " f"{ctx.author.mention} venceu a batalha!")
+            if await verificar_fim():
+                return
+
+            # Consome a proteção após ter absorvido um golpe; caso contrário ela persiste.
+            if jogadores[ctx.author]["vida"] <= 0 or jogadores[inimigo]["vida"] <= 0:
+                break
+
+        # Sincroniza variáveis legadas utilizadas no anúncio inicial.
+        vida_p1 = jogadores[ctx.author]["vida"]
+        vida_p2 = jogadores[inimigo]["vida"]
+        mana_p1 = jogadores[ctx.author]["mana"]
+        mana_p2 = jogadores[inimigo]["mana"]
+
 
 def setup_deathbattle_commands(target_bot: commands.Bot) -> None:
     global bot

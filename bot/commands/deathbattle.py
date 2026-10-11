@@ -28,7 +28,7 @@ habilidades = {
 
     "espada_de_fogo": {
         "nome": "Espada de Fogo",
-        "descricao": "{atacante} cria uma espada de fogo e a lanÃ§a em {alvo}, causando {dano} de dano e queimando-o!",
+        "descricao": "{atacante} cria uma espada de fogo e a lança em {alvo}, causando {dano} de dano e queimando-o!",
         "dano_min": 20,
         "dano_max": 30,
         "mana_gasta": 32,
@@ -39,8 +39,8 @@ habilidades = {
     },
 
     "sequencia_de_fogo": {
-        "nome": "SequÃªncia de Fogo",
-        "descricao": "{atacante} ataca com uma sequÃªncia de chamas, causando {dano} a {alvo}!",
+        "nome": "Sequência de Fogo",
+        "descricao": "{atacante} ataca com uma sequência de chamas, causando {dano} a {alvo}!",
         "dano_min": 16,
         "dano_max": 40,
         "mana_gasta": 20,
@@ -112,7 +112,7 @@ habilidades = {
 
     "sniper": {
         "nome": "Sniper",
-        "descricao": "{atacante} atira com precisÃ£o de sniper em {alvo}, causando {dano} de dano!",
+        "descricao": "{atacante} atira com precisão de sniper em {alvo}, causando {dano} de dano!",
         "dano_min": 25,
         "dano_max": 40,
         "mana_gasta": 25,
@@ -135,8 +135,8 @@ habilidades = {
     },
 
     "raio_psiquico": {
-        "nome": "Raio PsÃ­quico",
-        "descricao": "{atacante} dispara um raio psÃ­quico em {alvo}, causando {dano} de dano!",
+        "nome": "Raio Psíquico",
+        "descricao": "{atacante} dispara um raio psíquico em {alvo}, causando {dano} de dano!",
         "dano_min": 15,
         "dano_max": 30,
         "mana_gasta": 17,
@@ -147,8 +147,8 @@ habilidades = {
     },
 
     "visao": {
-        "nome": "VisÃ£o",
-        "descricao": "{atacante} usa sua habilidade de visÃ£o e prevÃª o prÃ³ximo movimento de {alvo}!",
+        "nome": "Visão",
+        "descricao": "{atacante} usa sua habilidade de visão e prevê o próximo movimento de {alvo}!",
         "dano_min": 0,
         "dano_max": 0,
         "mana_gasta": 30,
@@ -200,7 +200,7 @@ async def esperar_ataque(usuario):
         ataque = encontrar_habilidade(texto)
 
         if ataque is None:
-            await usuario.send("Esse golpe nÃ£o existe. Digite o nome de um golpe vÃ¡lido.")
+            await usuario.send("Esse golpe não existe. Digite o nome de um golpe válido.")
             continue
         return ataque
 
@@ -234,22 +234,22 @@ async def processar_condicoes(ctx, usuario, vida, condicoes_jogador):
         condicoes_jogador[efeito] -= 1
         if condicoes_jogador[efeito] <= 0:
             del condicoes_jogador[efeito]
-            await ctx.send(f"{usuario.mention} nÃ£o estÃ¡ mais {efeito}.")
+            await ctx.send(f"{usuario.mention} não está mais {efeito}.")
     return vida
 
 async def verificar_ult(usuario, turno, ultimate, pronta, usada):
     if turno >= 3 and not pronta and ultimate != "reviver":
         await usuario.send(
-            f"Sua ultimate {ultimate} estÃ¡ pronta para uso."
+            f"Sua ultimate {ultimate} está pronta para uso."
         )
         return True
 
     return pronta
 
-@bot.hybrid_command(name="deathbattle", description="Desafia outro jogador para uma batalha.")
+@bot.command(name="deathbattle")
 async def deathbattle(ctx, inimigo: discord.Member):
     if inimigo.bot:
-        await ctx.send("VocÃª nÃ£o pode desafiar um bot.")
+        await ctx.send("Você não pode desafiar um bot.")
         return
     resposta = None
     moveset_jogador = None
@@ -286,7 +286,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
             resposta = "aceito"
             view_acre.stop()
         else:
-            await interaction.response.send_message("VocÃª nÃ£o pode aceitar ou recusar este desafio.", ephemeral=True)
+            await interaction.response.send_message("Você não pode aceitar ou recusar este desafio.", ephemeral=True)
             return
     
     async def check_rejection(interaction):
@@ -296,7 +296,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
             resposta = "recusado"
             view_acre.stop()
         else:
-            await interaction.response.send_message("VocÃª nÃ£o pode aceitar ou recusar este desafio.", ephemeral=True)
+            await interaction.response.send_message("Você não pode aceitar ou recusar este desafio.", ephemeral=True)
             return
 
     async def escolher_moveset_jogador(interaction):
@@ -358,7 +358,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
     condicoes_p1 = {}
     condicoes_p2 = {}
     
-    await ctx.send(f"A batalha comeÃ§ou entre {ctx.author.mention} e {inimigo.mention}!\n\n{ctx.author.mention} - Vida: {vida_p1}, Mana: {mana_p1}\n{inimigo.mention} - Vida: {vida_p2}, Mana: {mana_p2}")
+    await ctx.send(f"A batalha começou entre {ctx.author.mention} e {inimigo.mention}!\n\n{ctx.author.mention} - Vida: {vida_p1}, Mana: {mana_p1}\n{inimigo.mention} - Vida: {vida_p2}, Mana: {mana_p2}")
 
     iniciativa_p1 = random.randint(1, 20)
     iniciativa_p2 = random.randint(1, 20)
@@ -384,7 +384,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
     p1_protegendo = False
     p2_protegendo = True
 
-    await ctx.send(f"{ctx.author.mention} tirou {iniciativa_p1} na iniciativa\n" f"{inimigo.mention} tirou {iniciativa_p2} na iniciativa\n\n" f"{primeiro[0].mention} comeÃ§a atacando!")
+    await ctx.send(f"{ctx.author.mention} tirou {iniciativa_p1} na iniciativa\n" f"{inimigo.mention} tirou {iniciativa_p2} na iniciativa\n\n" f"{primeiro[0].mention} começa atacando!")
 
     while vida_p1 > 0 and vida_p2 > 0:
         for atacante, alvo, moveset, ultimate in (primeiro, segundo):
@@ -399,17 +399,17 @@ async def deathbattle(ctx, inimigo: discord.Member):
                 turno_p1 += 1
                 if ultimate_inimigo == "sol nascente" and ultimate_usada_p2 == True:
                     vida_p1 -= 20
-                    await ctx.send("â˜€ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
+                    await ctx.send("☀ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
             else:
                 turno_p2 += 1
                 if ultimate_jogador == "sol nascente" and ultimate_usada_p1 == True:
                     vida_p2 -= 20
-                    await ctx.send("â˜€ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
+                    await ctx.send("☀ O sol criado pelo oponente torra {atacante}, causando 20 de dano")
             
             if ataque == "ultimate":
                 if atacante == ctx.author:
                     if turno_p1 < 3 or ultimate_usada_p1 == True or ultimate_jogador == "reviver":
-                        await atacante.send("VocÃª nÃ£o pode usar sua utlimate")
+                        await atacante.send("Você não pode usar sua utlimate")
                         while True:
                             ataque = await esperar_ataque(atacante)
                             if ataque != "ultimate":
@@ -425,16 +425,16 @@ async def deathbattle(ctx, inimigo: discord.Member):
 
                             if ultimate_escolhida == "reviver":
                                 await atacante.send(
-                                    "Reviver Ã© ativada automaticamente quando vocÃª morre."
+                                    "Reviver é ativada automaticamente quando você morre."
                                 )
                                 continue
 
                             if not pronta:
-                                await atacante.send("Sua ultimate ainda nÃ£o estÃ¡ pronta.")
+                                await atacante.send("Sua ultimate ainda não está pronta.")
                                 continue
 
                             if usada:
-                                await atacante.send("VocÃª jÃ¡ usou sua ultimate.")
+                                await atacante.send("Você já usou sua ultimate.")
                                 continue
                             break
                     else:
@@ -460,7 +460,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
                                 mana_p1 -= 20
                                 embed = discord.Embed(
                                     title="Sol nascente",
-                                    description=f"{atacante} invocou um sol nascente na arena de batalha, serÃ¡ que o oponente suporta o calor?",
+                                    description=f"{atacante} invocou um sol nascente na arena de batalha, será que o oponente suporta o calor?",
                                     color=discord.Color.yellow()
                                 )
                                 embed.set_image(url="https://c.tenor.com/kRg2pd68FHEAAAAd/tenor.gif")
@@ -470,14 +470,14 @@ async def deathbattle(ctx, inimigo: discord.Member):
                                 mana_p1 -= 35
                                 embed = discord.Embed(
                                     title="Meta vision",
-                                    description=f"{atacante} comeÃ§a a ver o campo de batalha de forma diferente... agora para acerta-lo serÃ¡ necessÃ¡rio o dobro de esforÃ§o!",
+                                    description=f"{atacante} começa a ver o campo de batalha de forma diferente... agora para acerta-lo será necessário o dobro de esforço!",
                                     color=discord.Color.light_gray()
                                 )
                                 embed.set_image(url="https://c.tenor.com/08nSzJF021EAAAAd/tenor.gif")
                                 await ctx.send(embed=embed)
                 else: 
                     if turno_p2 < 3 or ultimate_usada_p2 == True or ultimate_inimigo == "reviver":
-                        await atacante.send("VocÃª nÃ£o pode usar sua utlimate")
+                        await atacante.send("Você não pode usar sua utlimate")
                         while True:
                             ataque = await esperar_ataque(atacante)
                             if ataque != "ultimate":
@@ -493,16 +493,16 @@ async def deathbattle(ctx, inimigo: discord.Member):
 
                             if ultimate_escolhida == "reviver":
                                 await atacante.send(
-                                    "Reviver Ã© ativada automaticamente quando vocÃª morre."
+                                    "Reviver é ativada automaticamente quando você morre."
                                 )
                                 continue
 
                             if not pronta:
-                                await atacante.send("Sua ultimate ainda nÃ£o estÃ¡ pronta.")
+                                await atacante.send("Sua ultimate ainda não está pronta.")
                                 continue
 
                             if usada:
-                                await atacante.send("VocÃª jÃ¡ usou sua ultimate.")
+                                await atacante.send("Você já usou sua ultimate.")
                                 continue
                             break
                     else:
@@ -528,7 +528,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
                                 mana_p2 -= 20
                                 embed = discord.Embed(
                                     title="Sol nascente",
-                                    description=f"{atacante} invocou um sol nascente na arena de batalha, serÃ¡ que o oponente suporta o calor?",
+                                    description=f"{atacante} invocou um sol nascente na arena de batalha, será que o oponente suporta o calor?",
                                     color=discord.Color.yellow()
                                 )
                                 embed.set_image(url="https://c.tenor.com/kRg2pd68FHEAAAAd/tenor.gif")
@@ -538,7 +538,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
                                 mana_p2 -= 35
                                 embed = discord.Embed(
                                     title="Meta vision",
-                                    description=f"{atacante} comeÃ§a a ver o campo de batalha de forma diferente... agora para acerta-lo serÃ¡ necessÃ¡rio o dobro de esforÃ§o!",
+                                    description=f"{atacante} começa a ver o campo de batalha de forma diferente... agora para acerta-lo será necessário o dobro de esforço!",
                                     color=discord.Color.light_gray()
                                 )
                                 embed.set_image(url="https://c.tenor.com/08nSzJF021EAAAAd/tenor.gif")
@@ -568,11 +568,11 @@ async def deathbattle(ctx, inimigo: discord.Member):
 
             else:
                 if habilidades[ataque]["tipo"] != moveset:
-                    await atacante.send(f"âŒ O golpe **{habilidades[ataque]['nome']}** " f"nÃ£o pertence ao seu moveset de **{moveset}**.")
+                    await atacante.send(f"❌ O golpe **{habilidades[ataque]['nome']}** " f"não pertence ao seu moveset de **{moveset}**.")
                     continue
                 mana_atual = mana_p1 if atacante == ctx.author else mana_p2
                 if mana_atual < habilidades[ataque]["mana_gasta"]:
-                    await atacante.send(f"âŒ VocÃª nÃ£o tem mana suficiente! " f"VocÃª possui **{mana_atual}** de mana.")
+                    await atacante.send(f"❌ Você não tem mana suficiente! " f"Você possui **{mana_atual}** de mana.")
                     continue
 
                 mana_gasta = habilidades[ataque]["mana_gasta"]
@@ -588,7 +588,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
                             del condicoes_p1["paralisado"]
                             ataque_perdido = False
                     if "previsivel" in condicoes_p1:
-                        await ctx.send(f"{atacante.mention} estava previsÃ­vel e errou o ataque.")
+                        await ctx.send(f"{atacante.mention} estava previsível e errou o ataque.")
                         del condicoes_p1["previsivel"]
                         ataque_perdido = True            
                 else:
@@ -603,7 +603,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
                             del condicoes_p1["paralisado"]
                             ataque_perdido = True
                     if "previsivel" in condicoes_p2:
-                        await ctx.send(f"{atacante.mention} estava previsÃ­vel e errou o ataque.")
+                        await ctx.send(f"{atacante.mention} estava previsível e errou o ataque.")
                         del condicoes_p1["previsivel"]
                         ataque_perdido = True      
 
@@ -640,13 +640,13 @@ async def deathbattle(ctx, inimigo: discord.Member):
                         else:
                             aplicar_condicao(efeito, condicoes_p2)
 
-                    await ctx.send(f"{alvo.mention} recebeu a condiÃ§Ã£o {efeito}.")
+                    await ctx.send(f"{alvo.mention} recebeu a condição {efeito}.")
     if vida_p1 <= 0:
         if ultimate == "reviver":
             vida_p1 = 50
             ultimate_usada_p1 = True
             embed = discord.Embed(
-                title="RessurreiÃ§Ã£o",
+                title="Ressurreição",
                 description=f"{alvo} Morreu, mas voltou a vida graciosamente!",
                 color=discord.Color.gold()
             )
@@ -659,7 +659,7 @@ async def deathbattle(ctx, inimigo: discord.Member):
             vida_p2 = 50
             ultimate_usada_p2 = True
             embed = discord.Embed(
-                title="RessurreiÃ§Ã£o",
+                title="Ressurreição",
                 description=f"{alvo} Morreu, mas voltou a vida graciosamente!",
                 color=discord.Color.gold()
             )
@@ -667,7 +667,6 @@ async def deathbattle(ctx, inimigo: discord.Member):
             await ctx.send(embed=embed)
         else:
             await ctx.send(f"{inimigo.mention} morreu! " f"{ctx.author.mention} venceu a batalha!")
-
 
 def setup_deathbattle_commands(target_bot: commands.Bot) -> None:
     global bot

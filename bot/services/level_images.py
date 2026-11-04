@@ -1,7 +1,6 @@
 from io import BytesIO
 from pathlib import Path
 
-import aiohttp
 import discord
 from PIL import Image
 from PIL import ImageDraw
@@ -13,6 +12,8 @@ from PIL import UnidentifiedImageError
 from bot.services.level_service import LevelProfile
 from bot.services.level_service import ProfileCustomization
 from bot.services.economy_service import EconomyProfile
+from bot.services.profile_background_storage import ProfileBackgroundError
+from bot.services.profile_background_storage import fetch_background_bytes
 
 
 WIDTH = 980
@@ -234,24 +235,12 @@ async def _remote_image(url: str | None) -> Image.Image | None:
             with Image.open(local_path) as local_image:
                 return ImageOps.exif_transpose(local_image).convert("RGB").copy()
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 AylaBot/1.0",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        }
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status != 200:
-                    return None
-                if response.content_length and response.content_length > 8 * 1024 * 1024:
-                    return None
-                raw = await response.read()
-                if len(raw) > 8 * 1024 * 1024:
-                    return None
-                image = Image.open(BytesIO(raw))
-                image = ImageSequence.Iterator(image).__next__()
-                image = ImageOps.exif_transpose(image)
-                return image.convert("RGB")
-    except (OSError, UnidentifiedImageError, aiohttp.ClientError):
+        raw = await fetch_background_bytes(url, timeout_seconds=10)
+        image = Image.open(BytesIO(raw))
+        image = ImageSequence.Iterator(image).__next__()
+        image = ImageOps.exif_transpose(image)
+        return image.convert("RGB")
+    except (OSError, UnidentifiedImageError, ProfileBackgroundError):
         return None
 
 

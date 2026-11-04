@@ -3,6 +3,7 @@ davey
 PyNaCl
 python-dotenv
 aiohttp
+Brotli==1.2.1
 openai
 pillow
 ddgs

@@ -77,37 +77,7 @@ class ProfileBackgroundStorage:
         self.directory.mkdir(parents=True, exist_ok=True)
 
     async def download(self, user_id: int, url: str) -> str:
-        current_url = _validate_background_url(url)
-        headers = {"User-Agent": "Mozilla/5.0 AylaBot/1.0", "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"}
-        try:
-            connector = aiohttp.TCPConnector(resolver=PublicOnlyResolver(), use_dns_cache=False)
-            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-                for redirect_count in range(MAX_BACKGROUND_REDIRECTS + 1):
-                    async with session.get(
-                        current_url,
-                        timeout=aiohttp.ClientTimeout(total=20),
-                        allow_redirects=False,
-                    ) as response:
-                        if response.status in {301, 302, 303, 307, 308}:
-                            location = response.headers.get("Location")
-                            if not location:
-                                raise ProfileBackgroundError("O redirecionamento da imagem esta invalido.")
-                            if redirect_count >= MAX_BACKGROUND_REDIRECTS:
-                                raise ProfileBackgroundError("A imagem excedeu o limite de redirecionamentos.")
-                            current_url = _validate_background_url(location, current_url)
-                            continue
-                        if response.status != 200:
-                            raise ProfileBackgroundError(f"O servidor da imagem respondeu HTTP {response.status}.")
-                        if response.content_length and response.content_length > MAX_BACKGROUND_BYTES:
-                            raise ProfileBackgroundError("A imagem excede o limite de 8 MB.")
-                        raw = await _read_limited(response.content)
-                        break
-                else:
-                    raise ProfileBackgroundError("A imagem excedeu o limite de redirecionamentos.")
-        except ProfileBackgroundError:
-            raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            raise ProfileBackgroundError("Não consegui baixar essa imagem agora.") from error
+        raw = await fetch_background_bytes(url)
 
         try:
             with Image.open(BytesIO(raw)) as source:
@@ -128,6 +98,42 @@ class ProfileBackgroundStorage:
         finally:
             image.close()
         return str(target)
+
+
+async def fetch_background_bytes(url: str, *, timeout_seconds: int = 20) -> bytes:
+    """Fetch an image URL without allowing private-network access or unbounded reads."""
+    current_url = _validate_background_url(url)
+    headers = {
+        "User-Agent": "Mozilla/5.0 AylaBot/1.0",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }
+    try:
+        connector = aiohttp.TCPConnector(resolver=PublicOnlyResolver(), use_dns_cache=False)
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+            for redirect_count in range(MAX_BACKGROUND_REDIRECTS + 1):
+                async with session.get(
+                    current_url,
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                    allow_redirects=False,
+                ) as response:
+                    if response.status in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise ProfileBackgroundError("O redirecionamento da imagem está inválido.")
+                        if redirect_count >= MAX_BACKGROUND_REDIRECTS:
+                            raise ProfileBackgroundError("A imagem excedeu o limite de redirecionamentos.")
+                        current_url = _validate_background_url(location, current_url)
+                        continue
+                    if response.status != 200:
+                        raise ProfileBackgroundError(f"O servidor da imagem respondeu HTTP {response.status}.")
+                    if response.content_length and response.content_length > MAX_BACKGROUND_BYTES:
+                        raise ProfileBackgroundError("A imagem excede o limite de 8 MB.")
+                    return await _read_limited(response.content)
+            raise ProfileBackgroundError("A imagem excedeu o limite de redirecionamentos.")
+    except ProfileBackgroundError:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        raise ProfileBackgroundError("Não consegui baixar essa imagem agora.") from error
 
 
 async def _read_limited(stream: aiohttp.StreamReader) -> bytes:

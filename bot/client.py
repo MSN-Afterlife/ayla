@@ -15,6 +15,7 @@ from bot.commands.levels import setup_level_commands
 from bot.commands.media import setup_media_commands
 from bot.commands.migration import setup_migration_commands
 from bot.commands.minecraft import setup_minecraft_commands
+from bot.commands.moderation import setup_moderation_commands
 from bot.commands.music import setup_music_commands
 from bot.commands.presence import setup_presence_commands
 from bot.commands.presence import start_presence_rotation
@@ -26,6 +27,8 @@ from bot.command_debug import setup_command_debug
 from bot.events.messages import setup_message_events
 from bot.services.chat_config import ChatConfigStore
 from bot.services.minecraft_identity import MinecraftIdentityStore
+from bot.services.moderation_embed_config import ModerationEmbedConfigStore
+from bot.services.moderation_service import ModerationService
 from bot.services.staging_rbac import StagingRbacStore
 from bot.services.site_api import SiteApiServer
 from bot.services.economy_write_gate import EconomyWriteGate
@@ -43,12 +46,18 @@ class AylaBot(commands.Bot):
         self._lastfm = LastFmService(settings)
         self._lastfm_scrobbler = LastFmScrobbler(self._lastfm)
         self._minecraft_identity_store = MinecraftIdentityStore(settings)
+        self._moderation_service = ModerationService(settings.moderation_database_path)
+        self._moderation_embeds = ModerationEmbedConfigStore(
+            settings.moderation_embeds_path,
+            settings.moderation_assets_dir,
+        )
         self._site_api = SiteApiServer(
             settings,
             self.is_ready,
             lastfm=self._lastfm,
             minecraft_store=self._minecraft_identity_store,
             write_gate=self._economy_write_gate,
+            moderation_embeds=self._moderation_embeds,
         ) if settings.site_api_enabled else None
 
     async def setup_hook(self) -> None:
@@ -154,6 +163,12 @@ def create_bot(settings: Settings) -> commands.Bot:
     setup_bingo_commands(bot)
     setup_help_command(bot, settings)
     setup_minecraft_commands(bot, bot._minecraft_identity_store)
+    setup_moderation_commands(
+        bot,
+        settings,
+        moderation_service=bot._moderation_service,
+        embed_store=bot._moderation_embeds,
+    )
     setup_migration_commands(bot, settings)
     if settings.environment == "staging":
         setup_minecraft_auth_commands(bot, settings, client=bot._migration_engine_client, rbac_store=bot._staging_rbac)

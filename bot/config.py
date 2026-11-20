@@ -47,6 +47,9 @@ class Settings:
     uno_monsters_path: str = "data/monsters_catalog.json"
     chat_config_path: str = "data/chat_config.json"
     presence_config_path: str = "data/presence_config.json"
+    moderation_embeds_path: str = "data/moderation_embeds.json"
+    moderation_assets_dir: str = "data/moderation_assets"
+    moderation_database_path: str = "data/moderation.sqlite3"
     site_api_enabled: bool = True
     site_api_host: str = "0.0.0.0"
     site_api_port: int = 8090
@@ -141,6 +144,9 @@ def load_settings() -> Settings:
         uno_monsters_path=os.getenv("UNO_MONSTERS_PATH", "data/monsters_catalog.json"),
         chat_config_path=os.getenv("CHAT_CONFIG_PATH", "data/chat_config.json"),
         presence_config_path=os.getenv("PRESENCE_CONFIG_PATH", "data/presence_config.json"),
+        moderation_embeds_path=os.getenv("MODERATION_EMBEDS_PATH", "data/moderation_embeds.json"),
+        moderation_assets_dir=os.getenv("MODERATION_ASSETS_DIR", "data/moderation_assets"),
+        moderation_database_path=os.getenv("MODERATION_DATABASE_PATH", "data/moderation.sqlite3"),
         site_api_enabled=_load_bool("SITE_API_ENABLED", True),
         site_api_host=os.getenv("SITE_API_HOST", "0.0.0.0"),
         site_api_port=int(os.getenv("SITE_API_PORT", os.getenv("PORT", "8090"))),

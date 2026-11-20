@@ -14,6 +14,7 @@ from bot.services.economy_write_gate import EconomyWriteGate
 from bot.services.economy_write_gate import EconomyWriteRejected
 from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 from bot.services.minecraft_identity import MinecraftIdentityStore, MinecraftLinkError, valid_internal_token
+from bot.services.moderation_embed_config import MODERATION_ACTIONS, ModerationEmbedConfigStore
 from bot.commands.uno import CHAOS_CHARACTERS
 
 
@@ -25,6 +26,7 @@ class SiteApiServer:
         lastfm: LastFmService | None = None,
         minecraft_store: MinecraftIdentityStore | None = None,
         write_gate: EconomyWriteGate | None = None,
+        moderation_embeds: ModerationEmbedConfigStore | None = None,
     ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
@@ -33,6 +35,10 @@ class SiteApiServer:
         self._site: web.TCPSite | None = None
         self._lastfm = lastfm
         self._minecraft = minecraft_store or MinecraftIdentityStore(settings)
+        self._moderation_embeds = moderation_embeds or ModerationEmbedConfigStore(
+            settings.moderation_embeds_path,
+            settings.moderation_assets_dir,
+        )
 
     async def start(self) -> None:
         if self._runner:
@@ -53,6 +59,15 @@ class SiteApiServer:
         app.router.add_post("/api/admin/uno/monsters/{monster_id}/image", self._upload_monster_image)
         app.router.add_get("/api/uno/monsters/assets/{filename}", self._monster_asset)
         app.router.add_get("/api/admin/uno/monsters/assets/{filename}", self._monster_asset)
+        app.router.add_get("/api/moderation/embeds", self._moderation_embeds_list)
+        app.router.add_get("/api/moderation/embeds/schema", self._moderation_embeds_schema)
+        app.router.add_get("/api/admin/moderation/embeds", self._moderation_embeds_list)
+        app.router.add_get("/api/admin/moderation/embeds/schema", self._moderation_embeds_schema)
+        app.router.add_put("/api/admin/moderation/embeds/{action}", self._update_moderation_embed)
+        app.router.add_post("/api/admin/moderation/embeds/{action}/reset", self._reset_moderation_embed)
+        app.router.add_post("/api/admin/moderation/embeds/{action}/image", self._upload_moderation_embed_image)
+        app.router.add_get("/api/moderation/embeds/assets/{filename}", self._moderation_embed_asset)
+        app.router.add_get("/api/admin/moderation/embeds/assets/{filename}", self._moderation_embed_asset)
         app.router.add_post("/api/daily-ayla", self._daily)
         app.router.add_options("/api/daily-ayla", self._options)
         app.router.add_get("/auth/lastfm/callback", self._lastfm_callback)
@@ -263,6 +278,66 @@ class SiteApiServer:
                 },
             }
         )
+
+    async def _moderation_embeds_list(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "actions": self._moderation_embeds.get_all(),
+                "schema": self._moderation_embeds.schema(),
+            }
+        )
+
+    async def _moderation_embeds_schema(self, request: web.Request) -> web.Response:
+        return web.json_response(self._moderation_embeds.schema())
+
+    async def _update_moderation_embed(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
+        action = request.match_info["action"]
+        if action not in MODERATION_ACTIONS:
+            return web.json_response({"ok": False, "message": "Acao de moderacao nao encontrada."}, status=404)
+        try:
+            payload = await request.json()
+            updated = self._moderation_embeds.update_action(action, payload)
+        except (json.JSONDecodeError, ValueError, TypeError, web.HTTPException) as error:
+            return web.json_response({"ok": False, "message": str(error)}, status=400)
+        return web.json_response({"ok": True, "action": action, "config": updated})
+
+    async def _reset_moderation_embed(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
+        action = request.match_info["action"]
+        if action not in MODERATION_ACTIONS:
+            return web.json_response({"ok": False, "message": "Acao de moderacao nao encontrada."}, status=404)
+        reset = self._moderation_embeds.reset_action(action)
+        return web.json_response({"ok": True, "action": action, "config": reset})
+
+    async def _upload_moderation_embed_image(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
+        action = request.match_info["action"]
+        if action not in MODERATION_ACTIONS:
+            return web.json_response({"ok": False, "message": "Acao de moderacao nao encontrada."}, status=404)
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if field is None or field.name != "file":
+                raise ValueError("Envie o arquivo no campo 'file'.")
+            filename = Path(field.filename or "").name
+            data = await field.read(decode=False)
+            asset_url = self._moderation_embeds.save_asset(action, filename, data)
+        except (ValueError, web.HTTPException) as error:
+            return web.json_response({"ok": False, "message": str(error)}, status=400)
+        return web.json_response({"ok": True, "action": action, "imageUrl": asset_url})
+
+    async def _moderation_embed_asset(self, request: web.Request) -> web.StreamResponse:
+        path = self._moderation_embeds.resolve_asset_path(request.match_info["filename"])
+        if path is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(path, headers={"Content-Type": mimetypes.guess_type(path.name)[0] or "application/octet-stream"})
 
     async def _health(self, request: web.Request) -> web.Response:
         if not self._readiness_check():

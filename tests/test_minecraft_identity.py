@@ -205,6 +205,37 @@ class MinecraftApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.directory.cleanup()
 
+    async def test_reverse_moderation_unban_and_unmute_record_cases(self):
+        member = SimpleNamespace(timeout=AsyncMock())
+        guild = SimpleNamespace(id=10, unban=AsyncMock(), get_member=lambda _: None, fetch_member=AsyncMock(return_value=member))
+        self.server._guild_provider = lambda: guild
+        self.server._bot_user_id_provider = lambda: 20
+        for action in ("unban", "unmute"):
+            request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, json=AsyncMock(return_value={
+                "discord_user_id": "30", "action": action, "reason": "Revisao", "actor": "AdminMC", "duration_seconds": None,
+            }))
+            response = await self.server._minecraft_moderation_reverse(request)
+            self.assertEqual(response.status, 200)
+        self.assertEqual(guild.unban.await_args.args[0].id, 30)
+        self.assertEqual(guild.unban.await_args.kwargs["reason"], "Minecraft (AdminMC): Revisao")
+        guild.fetch_member.assert_awaited_once_with(30)
+        member.timeout.assert_awaited_once_with(None, reason="Minecraft (AdminMC): Revisao")
+        cases = self.server._moderation_service.list_user_cases(10, 30)
+        self.assertEqual([case.action for case in cases], ["unmute", "unban"])
+        self.assertEqual(cases[0].moderator_id, 20)
+
+    async def test_reverse_moderation_rejects_unauthorized_and_invalid_requests(self):
+        request = SimpleNamespace(headers={}, json=AsyncMock())
+        self.assertEqual((await self.server._minecraft_moderation_reverse(request)).status, 401)
+        request.json.assert_not_awaited()
+        for payload in ({"discord_user_id": "30", "action": "ban"}, {"discord_user_id": "abc", "action": "unban"}, []):
+            request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, json=AsyncMock(return_value=payload))
+            self.assertEqual((await self.server._minecraft_moderation_reverse(request)).status, 400)
+
+    async def test_reverse_moderation_requires_discord_connection(self):
+        request = SimpleNamespace(headers={"authorization": "Bearer internal-secret"}, json=AsyncMock(return_value={"discord_user_id": "30", "action": "unban"}))
+        self.assertEqual((await self.server._minecraft_moderation_reverse(request)).status, 503)
+
     async def test_internal_request_requires_token_and_accepts_valid_token(self):
         unauthorized = SimpleNamespace(headers={}, json=AsyncMock(return_value={}), remote="127.0.0.1")
         response = await self.server._minecraft_link_request(unauthorized)

@@ -60,6 +60,8 @@ class AylaBot(commands.Bot):
             moderation_embeds=self._moderation_embeds,
             moderation_service=self._moderation_service,
             bot_info_provider=self._bot_site_info,
+            guild_provider=self._select_primary_guild,
+            bot_user_id_provider=lambda: self.user.id if self.user else None,
         ) if settings.site_api_enabled else None
 
     def _bot_site_info(self) -> dict:

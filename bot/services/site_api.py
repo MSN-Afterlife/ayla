@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import discord
 from aiohttp import web
 
 from bot.config import Settings
@@ -30,6 +31,8 @@ class SiteApiServer:
         moderation_embeds: ModerationEmbedConfigStore | None = None,
         moderation_service: ModerationService | None = None,
         bot_info_provider: Callable[[], dict] | None = None,
+        guild_provider: Callable[[], discord.Guild | None] | None = None,
+        bot_user_id_provider: Callable[[], int | None] | None = None,
     ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
@@ -44,6 +47,8 @@ class SiteApiServer:
         )
         self._moderation_service = moderation_service or ModerationService(settings.moderation_database_path)
         self._bot_info_provider = bot_info_provider
+        self._guild_provider = guild_provider
+        self._bot_user_id_provider = bot_user_id_provider
 
     async def start(self) -> None:
         if self._runner:
@@ -78,6 +83,7 @@ class SiteApiServer:
         app.router.add_options("/api/daily-ayla", self._options)
         app.router.add_get("/auth/lastfm/callback", self._lastfm_callback)
         app.router.add_post("/internal/minecraft/link/request", self._minecraft_link_request)
+        app.router.add_post("/internal/minecraft/moderation/reverse", self._minecraft_moderation_reverse)
         app.router.add_get("/internal/minecraft/account/{platform}/{external_id}", self._minecraft_account_lookup)
         app.router.add_get("/internal/minecraft/account/java/{external_id}", self._minecraft_java_lookup)
 
@@ -457,6 +463,53 @@ class SiteApiServer:
         if supplied.lower().startswith("bearer "):
             supplied = supplied[7:].strip()
         return valid_internal_token(self._settings.ayla_minecraft_internal_token, supplied)
+
+    async def _minecraft_moderation_reverse(self, request: web.Request) -> web.Response:
+        if not self._internal_authorized(request):
+            return web.json_response({"ok": False, "message": "Nao autorizado."}, status=401)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError
+            raw_id = payload.get("discord_user_id")
+            if isinstance(raw_id, bool) or not str(raw_id).isascii() or not str(raw_id).isdigit():
+                raise ValueError
+            user_id = int(raw_id)
+            if not 0 < user_id < 2**63:
+                raise ValueError
+            action = payload.get("action")
+            if action not in ("unban", "unmute"):
+                raise ValueError
+            actor = payload.get("actor") or "Minecraft"
+            reason = payload.get("reason") or "Sem motivo informado"
+            if not isinstance(actor, str) or not isinstance(reason, str):
+                raise ValueError
+            audit_reason = f"Minecraft ({actor[:100]}): {reason}"[:500]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return web.json_response({"ok": False, "message": "Dados invalidos."}, status=400)
+
+        guild = self._guild_provider() if self._guild_provider else None
+        moderator_id = self._bot_user_id_provider() if self._bot_user_id_provider else None
+        if not self._readiness_check() or guild is None or moderator_id is None:
+            return web.json_response({"ok": False, "message": "Discord indisponivel."}, status=503)
+        try:
+            if action == "unban":
+                await guild.unban(discord.Object(id=user_id), reason=audit_reason)
+            else:
+                member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+                await member.timeout(None, reason=audit_reason)
+        except discord.NotFound:
+            return web.json_response({"ok": False, "message": "Usuario ou banimento nao encontrado."}, status=404)
+        except discord.Forbidden:
+            return web.json_response({"ok": False, "message": "Ayla sem permissao no Discord."}, status=403)
+        except discord.HTTPException:
+            return web.json_response({"ok": False, "message": "Falha na API do Discord."}, status=502)
+
+        case = self._moderation_service.record_case(
+            guild_id=guild.id, user_id=user_id, moderator_id=moderator_id,
+            action=action, reason=audit_reason, duration_seconds=None,
+        )
+        return web.json_response({"ok": True, "case_id": case.id})
 
     async def _minecraft_link_request(self, request: web.Request) -> web.Response:
         if not self._internal_authorized(request):

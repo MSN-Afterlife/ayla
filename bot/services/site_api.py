@@ -15,6 +15,7 @@ from bot.services.economy_write_gate import EconomyWriteRejected
 from bot.services.lastfm_service import LastFmError, LastFmService, safe_page
 from bot.services.minecraft_identity import MinecraftIdentityStore, MinecraftLinkError, valid_internal_token
 from bot.services.moderation_embed_config import MODERATION_ACTIONS, ModerationEmbedConfigStore
+from bot.services.moderation_service import ModerationService
 from bot.commands.uno import CHAOS_CHARACTERS
 
 
@@ -27,6 +28,8 @@ class SiteApiServer:
         minecraft_store: MinecraftIdentityStore | None = None,
         write_gate: EconomyWriteGate | None = None,
         moderation_embeds: ModerationEmbedConfigStore | None = None,
+        moderation_service: ModerationService | None = None,
+        bot_info_provider: Callable[[], dict] | None = None,
     ) -> None:
         self._settings = settings
         self._readiness_check = readiness_check
@@ -39,6 +42,8 @@ class SiteApiServer:
             settings.moderation_embeds_path,
             settings.moderation_assets_dir,
         )
+        self._moderation_service = moderation_service or ModerationService(settings.moderation_database_path)
+        self._bot_info_provider = bot_info_provider
 
     async def start(self) -> None:
         if self._runner:
@@ -63,6 +68,7 @@ class SiteApiServer:
         app.router.add_get("/api/moderation/embeds/schema", self._moderation_embeds_schema)
         app.router.add_get("/api/admin/moderation/embeds", self._moderation_embeds_list)
         app.router.add_get("/api/admin/moderation/embeds/schema", self._moderation_embeds_schema)
+        app.router.add_get("/api/admin/moderation/stats", self._moderation_stats)
         app.router.add_put("/api/admin/moderation/embeds/{action}", self._update_moderation_embed)
         app.router.add_post("/api/admin/moderation/embeds/{action}/reset", self._reset_moderation_embed)
         app.router.add_post("/api/admin/moderation/embeds/{action}/image", self._upload_moderation_embed_image)
@@ -109,7 +115,21 @@ class SiteApiServer:
         return web.Response(text=safe_page("Last.fm conectado", "Sua conta foi vinculada com sucesso. Você pode fechar esta janela."), content_type="text/html")
 
     async def _site_info(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "service": "ayla-bot", "dailyRoute": "/api/daily-ayla"})
+        info = self._bot_info_provider() if self._bot_info_provider else {}
+        payload = {
+            "ok": True,
+            "service": "ayla-bot",
+            "dailyRoute": "/api/daily-ayla",
+        }
+        if info:
+            payload["server"] = {
+                "name": info.get("guildName"),
+                "iconUrl": info.get("guildIconUrl"),
+            }
+            payload["bot"] = {
+                "avatarUrl": info.get("botAvatarUrl"),
+            }
+        return web.json_response(payload)
 
     async def _monsters(self, request: web.Request) -> web.Response:
         """Return the canonical UNO Caos monster catalog as JSON.
@@ -289,6 +309,23 @@ class SiteApiServer:
 
     async def _moderation_embeds_schema(self, request: web.Request) -> web.Response:
         return web.json_response(self._moderation_embeds.schema())
+
+    async def _moderation_stats(self, request: web.Request) -> web.Response:
+        auth_failure = self._admin_auth_failure(request)
+        if auth_failure:
+            return auth_failure
+        info = self._bot_info_provider() if self._bot_info_provider else {}
+        guild_id = info.get("guildId")
+        stats = self._moderation_service.get_stats(guild_id=guild_id)
+        return web.json_response(
+            {
+                "ok": True,
+                "counts": stats["counts"],
+                "lastCaseId": stats["lastCaseId"],
+                "guildName": info.get("guildName") or "MSN Afterlife",
+                "botAvatarUrl": info.get("botAvatarUrl"),
+            }
+        )
 
     async def _update_moderation_embed(self, request: web.Request) -> web.Response:
         auth_failure = self._admin_auth_failure(request)

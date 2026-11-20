@@ -240,3 +240,30 @@ class ModerationService:
                 (int(guild_id), now),
             )
             connection.commit()
+
+    def get_stats(self, guild_id: int | None = None) -> dict[str, object]:
+        counts = {action: 0 for action in ("ban", "unban", "kick", "mute", "unmute", "warn")}
+        with closing(self._connect()) as connection:
+            if guild_id is not None:
+                rows = connection.execute(
+                    "SELECT action, COUNT(*) AS total FROM moderation_cases WHERE guild_id = ? GROUP BY action",
+                    (int(guild_id),),
+                ).fetchall()
+                last_row = connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) AS last_id FROM moderation_cases WHERE guild_id = ?",
+                    (int(guild_id),),
+                ).fetchone()
+            else:
+                rows = connection.execute(
+                    "SELECT action, COUNT(*) AS total FROM moderation_cases GROUP BY action"
+                ).fetchall()
+                last_row = connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) AS last_id FROM moderation_cases"
+                ).fetchone()
+
+        for row in rows:
+            action = str(row["action"])
+            if action in counts:
+                counts[action] = int(row["total"])
+        last_case_id = int(last_row["last_id"]) if last_row else 0
+        return {"counts": counts, "lastCaseId": last_case_id}

@@ -58,7 +58,18 @@ class AylaBot(commands.Bot):
             minecraft_store=self._minecraft_identity_store,
             write_gate=self._economy_write_gate,
             moderation_embeds=self._moderation_embeds,
+            moderation_service=self._moderation_service,
+            bot_info_provider=self._bot_site_info,
         ) if settings.site_api_enabled else None
+
+    def _bot_site_info(self) -> dict:
+        guild = self.guilds[0] if self.guilds else None
+        return {
+            "guildId": guild.id if guild else None,
+            "guildName": guild.name if guild else None,
+            "guildIconUrl": guild.icon.replace(format="png", size=256).url if guild and guild.icon else None,
+            "botAvatarUrl": self.user.display_avatar.replace(format="png", size=256).url if self.user else None,
+        }
 
     async def setup_hook(self) -> None:
         if self._site_api:

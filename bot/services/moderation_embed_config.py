@@ -30,6 +30,13 @@ TEMPLATE_VARIABLES: dict[str, str] = {
     "case_id": "ID do caso de moderacao",
     "guild": "Nome do servidor",
     "warns_count": "Quantidade de advertencias ativas do usuario",
+    "ban_count": "Total de banimentos registrados no servidor",
+    "unban_count": "Total de desbanimentos registrados no servidor",
+    "kick_count": "Total de expulsoes registradas no servidor",
+    "mute_count": "Total de silenciamentos registrados no servidor",
+    "unmute_count": "Total de dessilenciamentos registrados no servidor",
+    "warn_count": "Total de advertencias registradas no servidor",
+    "acao_count": "Total de registros da acao atual no servidor",
 }
 
 DEFAULT_MODERATION_EMBEDS: dict[str, dict[str, Any]] = {

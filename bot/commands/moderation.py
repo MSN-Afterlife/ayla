@@ -629,7 +629,10 @@ def _build_member_context(
     case_id: int,
     duration: str = "",
     warns_count: int = 0,
+    action: str = "",
+    stats_counts: dict[str, int] | None = None,
 ) -> dict[str, object]:
+    counts = stats_counts or {}
     return {
         "user": target.display_name,
         "user_mention": target.mention,
@@ -642,6 +645,13 @@ def _build_member_context(
         "case_id": case_id,
         "guild": guild.name,
         "warns_count": warns_count,
+        "ban_count": counts.get("ban", 0),
+        "unban_count": counts.get("unban", 0),
+        "kick_count": counts.get("kick", 0),
+        "mute_count": counts.get("mute", 0),
+        "unmute_count": counts.get("unmute", 0),
+        "warn_count": counts.get("warn", 0),
+        "acao_count": counts.get(action, 0) if action else 0,
     }
 
 
@@ -680,6 +690,18 @@ async def _send_member_moderation_response(
 ) -> None:
     user_avatar = target.display_avatar.replace(format="png", size=256).url
     guild_icon = ctx.guild.icon.replace(format="png", size=128).url if ctx.guild and ctx.guild.icon else None
+    if ctx.guild:
+        counts = service.get_stats(ctx.guild.id)["counts"]
+        context = {
+            **context,
+            "ban_count": counts.get("ban", 0),
+            "unban_count": counts.get("unban", 0),
+            "kick_count": counts.get("kick", 0),
+            "mute_count": counts.get("mute", 0),
+            "unmute_count": counts.get("unmute", 0),
+            "warn_count": counts.get("warn", 0),
+            "acao_count": counts.get(action, 0),
+        }
     config = embed_store.get_action(action)
 
     if config.get("enabled", True):

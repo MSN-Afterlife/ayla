@@ -180,6 +180,12 @@ class ModerationSiteApiTests(unittest.IsolatedAsyncioTestCase):
                 moderation_database_path=str(self.root / "moderation.sqlite3"),
             ),
             readiness_check=lambda: True,
+            bot_info_provider=lambda: {
+                "guildId": 10,
+                "guildName": "MSN Afterlife",
+                "guildIconUrl": "https://cdn.discordapp.com/icons/10/abc.png",
+                "botAvatarUrl": "https://cdn.discordapp.com/avatars/1/xyz.png",
+            },
         )
 
     def tearDown(self):
@@ -221,6 +227,33 @@ class ModerationSiteApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list_res.status, 200)
         list_payload = json.loads(list_res.text)
         self.assertEqual(list_payload["actions"]["ban"]["imageUrl"], "/api/moderation/embeds/assets/ban.gif")
+
+    async def test_moderation_stats_and_site_info_endpoints(self):
+        self.server._moderation_service.record_case(
+            guild_id=10, user_id=100, moderator_id=1, action="ban", reason="Teste"
+        )
+        self.server._moderation_service.record_case(
+            guild_id=10, user_id=101, moderator_id=1, action="mute", reason="Teste 2", duration_seconds=60
+        )
+
+        unauth_stats = await self.server._moderation_stats(FakeRequest(headers={"Authorization": "Bearer nope"}))
+        self.assertEqual(unauth_stats.status, 401)
+
+        stats_res = await self.server._moderation_stats(FakeRequest(headers={"Authorization": "Bearer admin-secret"}))
+        self.assertEqual(stats_res.status, 200)
+        stats_payload = json.loads(stats_res.text)
+        self.assertTrue(stats_payload["ok"])
+        self.assertEqual(stats_payload["counts"]["ban"], 1)
+        self.assertEqual(stats_payload["counts"]["mute"], 1)
+        self.assertEqual(stats_payload["lastCaseId"], 2)
+        self.assertEqual(stats_payload["guildName"], "MSN Afterlife")
+        self.assertEqual(stats_payload["botAvatarUrl"], "https://cdn.discordapp.com/avatars/1/xyz.png")
+
+        site_res = await self.server._site_info(FakeRequest())
+        self.assertEqual(site_res.status, 200)
+        site_payload = json.loads(site_res.text)
+        self.assertEqual(site_payload["server"]["iconUrl"], "https://cdn.discordapp.com/icons/10/abc.png")
+        self.assertEqual(site_payload["bot"]["avatarUrl"], "https://cdn.discordapp.com/avatars/1/xyz.png")
 
 
 class ModerationCommandRegistrationTests(unittest.TestCase):

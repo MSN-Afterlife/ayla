@@ -63,13 +63,23 @@ class AylaBot(commands.Bot):
         ) if settings.site_api_enabled else None
 
     def _bot_site_info(self) -> dict:
-        guild = self.guilds[0] if self.guilds else None
+        guild = self._select_primary_guild()
         return {
             "guildId": guild.id if guild else None,
             "guildName": guild.name if guild else None,
             "guildIconUrl": guild.icon.replace(format="png", size=256).url if guild and guild.icon else None,
             "botAvatarUrl": self.user.display_avatar.replace(format="png", size=256).url if self.user else None,
         }
+
+    def _select_primary_guild(self) -> discord.Guild | None:
+        if self._settings.primary_guild_id:
+            configured = self.get_guild(self._settings.primary_guild_id)
+            if configured is not None:
+                return configured
+        for guild in self.guilds:
+            if "msn afterlife" in guild.name.lower():
+                return guild
+        return self.guilds[0] if self.guilds else None
 
     async def setup_hook(self) -> None:
         if self._site_api:

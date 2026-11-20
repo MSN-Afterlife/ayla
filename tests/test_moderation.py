@@ -245,7 +245,7 @@ class ModerationCommandRegistrationTests(unittest.TestCase):
                 )
             )
 
-        for name in ("ban", "unban", "kick", "mute", "unmute", "warn", "historico", "removerwarn", "limparwarns", "clear", "slowmode", "lock", "unlock"):
+        for name in ("ban", "unban", "kick", "mute", "unmute", "warn", "historico", "removerwarn", "limparwarns", "purge", "slowmode", "lock", "unlock"):
             self.assertIsNotNone(bot.get_command(name), f"Prefix command missing: {name}")
             self.assertIsNotNone(bot.tree.get_command(name), f"Slash command missing: {name}")
         self.assertIsNotNone(bot.tree.get_command("modconfig"))

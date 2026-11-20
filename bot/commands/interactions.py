@@ -27,7 +27,7 @@ INTERACTIONS: list[InteractionAction] = [
     InteractionAction("poke", ["cutucar"], "cutucou", "cutucou o proprio ombro", "anime poke", 0x85C1E9),
     InteractionAction("bonk", ["marretar"], "deu um bonk em", "tentou dar um bonk no proprio pensamento", "anime bonk", 0xD35400),
     InteractionAction("punch", ["soco", "socar"], "deu um soco em", "soco no ar, treino puro", "anime punch", 0xC0392B),
-    InteractionAction("kick", ["chute", "chutar"], "chutou", "chutou o vento com estilo", "anime kick", 0xA93226),
+    InteractionAction("chutar", ["chute"], "chutou", "chutou o vento com estilo", "anime kick", 0xA93226),
     InteractionAction("bite", ["morder", "mordida"], "mordeu", "mordeu a propria paciencia", "anime bite", 0x884EA0),
     InteractionAction("lick", ["lamber"], "lambeu", "lambeu o nada e fingiu normalidade", "anime lick", 0xBB8FCE),
     InteractionAction("cuddle", ["aconchegar"], "se aconchegou em", "se enrolou em conforto imaginario", "anime cuddle", 0xF1948A),

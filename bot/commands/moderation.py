@@ -415,7 +415,7 @@ def setup_moderation_commands(
         cleared = service.clear_user_warns(ctx.guild.id, membro.id)
         await _reply(ctx, f"**{cleared}** advertencia(s) ativa(s) removida(s) de {membro.mention}.")
 
-    @bot.hybrid_command(name="clear", aliases=["purge", "limpar"], description="Apaga mensagens recentes do canal.")
+    @bot.hybrid_command(name="purge", aliases=["limpar", "apagar"], description="Apaga mensagens recentes do canal.")
     @commands.check(staging_prefix_check("manage_messages"))
     @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(

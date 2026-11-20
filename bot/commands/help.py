@@ -185,7 +185,7 @@ HELP_CATEGORIES = {
             ("`{prefix}warn @user <motivo>`", "Aplica uma advertencia persistente ao membro.", False),
             ("`{prefix}historico @user`", "Consulta advertencias e casos de moderacao do membro.", False),
             ("`{prefix}removerwarn <caso_id>` / `{prefix}limparwarns @user`", "Remove uma advertencia ou limpa todas de um membro.", False),
-            ("`{prefix}clear <qtd> [@user]`", "Apaga de 1 a 100 mensagens (opcionalmente filtrando por membro).", False),
+            ("`{prefix}purge <qtd> [@user]`", "Apaga de 1 a 100 mensagens (opcionalmente filtrando por membro).", False),
             ("`{prefix}slowmode <segundos>` / `{prefix}lock` / `{prefix}unlock`", "Controla modo lento e bloqueio de mensagens no canal.", False),
             ("`/modconfig canal #canal`", "Define o canal de logs de moderacao.", False),
         ],
